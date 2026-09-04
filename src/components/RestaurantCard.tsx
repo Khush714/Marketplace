@@ -4,6 +4,7 @@ import Link from "next/link";
 import type { PublicRestaurant } from "@/lib/marketplace";
 import { Stars } from "./Stars";
 import { formatDistance } from "@/lib/geo";
+import { resolveMenuLink } from "@/lib/menu-url";
 
 /**
  * PHASE 6 discovery card.
@@ -20,6 +21,7 @@ import { formatDistance } from "@/lib/geo";
  */
 export function RestaurantCard({ r }: { r: PublicRestaurant }) {
   const orderable = r.isOpen && r.accepts.onlineOrders;
+  const menuHref = resolveMenuLink(r.menuUrl, r.slug);
 
   return (
     <article className="group flex flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm transition hover:-translate-y-0.5 hover:shadow-lg">
@@ -106,12 +108,12 @@ export function RestaurantCard({ r }: { r: PublicRestaurant }) {
         {/* ORDER ONLINE points to our stable redirect layer. */}
         <div className="mt-4">
           {orderable && r.menuUrl ? (
-            <Link
-              href={`/restaurants/${r.slug}/menu`}
+            <a
+              href={menuHref}
               className="block w-full rounded-xl bg-orange-500 py-2.5 text-center text-sm font-bold tracking-wide text-white transition hover:bg-orange-600"
             >
               ORDER ONLINE
-            </Link>
+            </a>
           ) : orderable ? (
             <span className="block w-full cursor-not-allowed rounded-xl bg-slate-100 py-2.5 text-center text-sm font-bold tracking-wide text-slate-400">
               MENU LINK NOT SET

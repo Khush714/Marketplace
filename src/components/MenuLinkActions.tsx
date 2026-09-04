@@ -15,10 +15,13 @@ export function MenuLinkActions({ url }: { url: string }) {
     }
   }
 
+  const isExternal = /^https?:\/\//.test(url);
+
   return (
     <div className="flex flex-wrap gap-2">
       <a
         href={url}
+        {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
         className="rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-orange-600"
       >
         OPEN MENU

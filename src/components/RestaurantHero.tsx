@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { PublicRestaurant } from "@/lib/marketplace";
 import { currency } from "@/lib/format";
+import { resolveMenuLink } from "@/lib/menu-url";
 import { Stars } from "./Stars";
 import { SaveRestaurantButton } from "./SaveRestaurantButton";
 
@@ -101,12 +102,12 @@ export function RestaurantHero({
         {/* ORDER ONLINE points to our stable marketplace redirect URL. */}
         <div className="mt-5">
           {r.isOpen && r.accepts.onlineOrders && r.menuUrl ? (
-            <Link
-              href={`/restaurants/${r.slug}/menu`}
+            <a
+              href={resolveMenuLink(r.menuUrl, r.slug)}
               className="block w-full rounded-xl bg-orange-500 py-3.5 text-center text-sm font-bold tracking-wide text-white shadow-sm transition hover:bg-orange-600"
             >
               ORDER ONLINE
-            </Link>
+            </a>
           ) : r.isOpen && r.accepts.onlineOrders ? (
             <span className="block w-full rounded-xl bg-slate-100 py-3.5 text-center text-sm font-bold tracking-wide text-slate-400">
               MENU LINK NOT SET

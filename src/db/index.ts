@@ -12,18 +12,29 @@ const isTlsRequired =
   /(?:sslmode|ssl)(?:=|\b)/i.test(databaseUrl);
 
 const globalForDb = globalThis as typeof globalThis & {
-  __arenaNextJsPostgresqlPool?: Pool;
+  __tablzPool?: Pool;
 };
 
-export const pool =
-  globalForDb.__arenaNextJsPostgresqlPool ??
-  new Pool({
+function createPool() {
+  const pool = new Pool({
     connectionString: databaseUrl,
+    max: 10,
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
     ...(isTlsRequired ? { ssl: { rejectUnauthorized: false } } : {}),
   });
 
+  pool.on("error", (err) => {
+    console.error("[db] idle client error", err.message);
+  });
+
+  return pool;
+}
+
+export const pool = globalForDb.__tablzPool ?? createPool();
+
 if (process.env.NODE_ENV !== "production") {
-  globalForDb.__arenaNextJsPostgresqlPool = pool;
+  globalForDb.__tablzPool = pool;
 }
 
 export const db = drizzle(pool);

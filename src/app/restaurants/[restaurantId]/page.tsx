@@ -12,6 +12,7 @@ import { RestaurantPhotos } from "@/components/RestaurantPhotos";
 import { RestaurantMenuQR } from "@/components/RestaurantMenuQR";
 import { MenuLinkActions } from "@/components/MenuLinkActions";
 import { currency } from "@/lib/format";
+import { resolveMenuLink } from "@/lib/menu-url";
 
 export const dynamic = "force-dynamic";
 
@@ -38,8 +39,9 @@ export default async function RestaurantOverview({
   ]);
   if (!r) notFound();
 
-  const baseUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
-  const menuLink = `${baseUrl}/restaurants/${r.slug}/menu`;
+  // OPEN MENU → the restaurant's own hosted menu when it's published as a
+  // real external URL, otherwise the marketplace's stable menu page.
+  const menuLink = resolveMenuLink(r.menuUrl, r.slug);
   // Phase 22 — existing accepts{} logic is reused unchanged.
   const orderable = r.isOpen && r.accepts.onlineOrders;
 
@@ -111,8 +113,9 @@ export default async function RestaurantOverview({
                 {menuLink}
               </p>
               <p className="mt-2 text-center text-xs text-slate-400">
-                This link is permanent. If {r.name} changes its ordering system,
-                the link and printed QR codes keep working.
+                {menuLink.startsWith("/")
+                  ? `This link is permanent. If ${r.name} changes its ordering system, the link and printed QR codes keep working.`
+                  : `This opens ${r.name}'s own ordering page in a new tab.`}
               </p>
             </>
           ) : (
