@@ -141,6 +141,22 @@ export function HomeScreen({
           >
             Browse all restaurants →
           </Link>
+
+          <div className="mt-4 rounded-2xl bg-slate-100 p-6 text-center sm:p-8">
+            <h3 className="text-lg font-bold tracking-tight text-slate-900">
+              Run a restaurant?
+            </h3>
+            <p className="mx-auto mt-1 max-w-md text-sm text-slate-500">
+              Get discovered by local customers and start receiving online
+              orders. It takes a couple of minutes.
+            </p>
+            <Link
+              href="/list-your-restaurant"
+              className="mt-4 inline-block rounded-xl bg-orange-500 px-6 py-3 text-sm font-semibold text-white shadow-sm transition hover:bg-orange-600"
+            >
+              List your restaurant →
+            </Link>
+          </div>
         </div>
       </div>
     </main>

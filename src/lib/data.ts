@@ -345,6 +345,10 @@ export type ListingRow = {
   name: string;
   slug: string;
   cuisine: string;
+  description: string;
+  address: string;
+  imageUrl: string;
+  menuUrl: string;
   isListed: boolean;
   marketplaceStatus: string;
   isFeatured: boolean;
@@ -367,6 +371,9 @@ export async function getAllListings(): Promise<ListingRow[]> {
       name: restaurants.name,
       slug: restaurants.slug,
       cuisine: restaurants.cuisine,
+      description: restaurants.description,
+      address: restaurants.address,
+      imageUrl: restaurants.imageUrl,
       isListed: marketplaceProfiles.isListed,
       marketplaceStatus: marketplaceProfiles.marketplaceStatus,
       isFeatured: marketplaceProfiles.isFeatured,
@@ -377,6 +384,7 @@ export async function getAllListings(): Promise<ListingRow[]> {
       minOrder: marketplaceProfiles.minOrder,
       etaMinutes: marketplaceProfiles.etaMinutes,
       commissionRate: marketplaceProfiles.commissionRate,
+      menuUrl: marketplaceProfiles.menuUrl,
       hasOverride: sql<boolean>`(${marketplaceProfiles.descriptionOverride} is not null or ${marketplaceProfiles.coverImageOverride} is not null)`,
     })
     .from(restaurants)

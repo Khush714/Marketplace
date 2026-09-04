@@ -1,6 +1,9 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
+  turbopack: {
+    root: process.cwd(),
+  },
   async redirects() {
     return [
       // Legacy storefront URLs → canonical consumer routes.

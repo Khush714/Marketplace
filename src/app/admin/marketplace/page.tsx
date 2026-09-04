@@ -1,10 +1,23 @@
 import Link from "next/link";
 import { getAllListings } from "@/lib/data";
+import { PendingReviewCard } from "@/components/admin/PendingReviewCard";
 
 export const dynamic = "force-dynamic";
 
+type PendingType = {
+  name: string;
+  slug: string;
+  cuisine: string;
+  address: string | null;
+  description: string | null;
+  menuUrl: string | null;
+};
+
 export default async function MarketplaceOnboardingIndex() {
   const listings = await getAllListings();
+  const pending = listings.filter(
+    (l) => l.marketplaceStatus === "pending_review",
+  );
 
   return (
     <main className="mx-auto max-w-5xl px-4 pb-16 sm:px-6">
@@ -16,12 +29,15 @@ export default async function MarketplaceOnboardingIndex() {
           Restaurant marketplace onboarding
         </h1>
         <p className="mt-2 max-w-2xl text-slate-500">
-          Restaurant admins publish themselves to the consumer platform. Enabling{" "}
-          <em>List my restaurant</em> sets{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
-            is_listed = true
-          </code>{" "}
-          and makes the restaurant immediately eligible for ordering.
+          Restaurants can publish themselves from the public{" "}
+          <Link
+            href="/list-your-restaurant"
+            className="text-orange-600 underline"
+          >
+            List your restaurant
+          </Link>{" "}
+          page. New submissions land here as{" "}
+          <em>pending review</em> until an operator approves them.
         </p>
       </div>
 
@@ -40,7 +56,40 @@ export default async function MarketplaceOnboardingIndex() {
         </Link>
       </nav>
 
-      <div className="mt-8 grid gap-3 sm:grid-cols-2">
+      {/* Pending review */}
+      <section className="mt-8">
+        <h2 className="text-sm font-bold uppercase tracking-[0.12em] text-amber-600">
+          Pending approval{" "}
+          <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">
+            {pending.length}
+          </span>
+        </h2>
+        {pending.length === 0 ? (
+          <p className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+            No restaurants awaiting approval.
+          </p>
+        ) : (
+          <div className="mt-3 grid gap-3 sm:grid-cols-2">
+            {pending.map((l) => (
+              <PendingReviewCard
+                key={l.restaurantId}
+                name={l.name}
+                slug={l.slug}
+                cuisine={l.cuisine}
+                address={l.address ?? ""}
+                description={l.description ?? ""}
+                menuUrl={l.menuUrl ?? ""}
+              />
+            ))}
+          </div>
+        )}
+      </section>
+
+      {/* All restaurants */}
+      <h2 className="mt-10 text-sm font-bold uppercase tracking-[0.12em] text-slate-500">
+        All restaurants
+      </h2>
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
         {listings.map((l) => (
           <Link
             key={l.restaurantId}
