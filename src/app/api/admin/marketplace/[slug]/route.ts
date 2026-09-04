@@ -3,6 +3,7 @@ import { restaurants, marketplaceProfiles } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { marketplaceStats } from "@/lib/admin";
 import { normalizeMenuUrl } from "@/lib/menu-url";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ export async function GET(
   _request: Request,
   { params }: { params: Promise<{ slug: string }> },
 ) {
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const { slug } = await params;
   const [row] = await db
     .select({ restaurant: restaurants, profile: marketplaceProfiles })
@@ -72,6 +76,9 @@ export async function PUT(
 ) {
   const { slug } = await params;
   try {
+    if (!(await requireAdmin())) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
 
     const [restaurant] = await db

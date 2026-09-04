@@ -7,11 +7,15 @@ import {
   reviewReports,
 } from "@/db/schema";
 import { eq, sql } from "drizzle-orm";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/admin/overview — operator KPI strip. */
 export async function GET() {
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const [rest, ord, rev, reports] = await Promise.all([
     db
       .select({

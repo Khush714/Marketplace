@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { restaurants, marketplaceProfiles } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ export async function POST(
   { params }: { params: Promise<{ slug: string }> },
 ) {
   try {
+    if (!(await requireAdmin())) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const { slug } = await params;
     const body = await request.json();
     const action = String(body.action ?? "");

@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { restaurants, marketplaceProfiles } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { normalizeMenuUrl } from "@/lib/menu-url";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -22,6 +23,9 @@ const REQUIRED: Array<{ key: string; label: string }> = [
  * including unlisted and pending-review entries. Used by the operator console.
  */
 export async function GET() {
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const rows = await db
     .select({
       restaurantId: restaurants.id,

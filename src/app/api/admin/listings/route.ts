@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { marketplaceProfiles, restaurants } from "@/db/schema";
 import { getAllListings } from "@/lib/data";
 import { eq } from "drizzle-orm";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -9,6 +10,9 @@ const STATUSES = ["draft", "pending_review", "live", "suspended"];
 
 export async function GET() {
   try {
+    if (!(await requireAdmin())) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
     return Response.json({ listings: await getAllListings() });
   } catch (e) {
     console.error(e);
@@ -18,6 +22,9 @@ export async function GET() {
 
 export async function PATCH(request: Request) {
   try {
+    if (!(await requireAdmin())) {
+      return Response.json({ error: "Unauthorized" }, { status: 401 });
+    }
     const body = await request.json();
     const slug = String(body.slug ?? "").trim();
     if (!slug) {

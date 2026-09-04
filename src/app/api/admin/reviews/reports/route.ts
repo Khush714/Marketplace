@@ -1,11 +1,15 @@
 import { db } from "@/db";
 import { reviewReports, reviews, restaurants } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/admin/reviews/reports — reported reviews for the operator. */
 export async function GET() {
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const rows = await db
     .select({
       id: reviewReports.id,

@@ -2,11 +2,15 @@ import { db } from "@/db";
 import { reviews, restaurants } from "@/db/schema";
 import { desc, eq } from "drizzle-orm";
 import { num } from "@/lib/format";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
 /** GET /api/admin/reviews — full moderation queue with restaurant info. */
 export async function GET() {
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const rows = await db
     .select({
       id: reviews.id,

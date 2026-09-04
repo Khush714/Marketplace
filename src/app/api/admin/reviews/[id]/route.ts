@@ -1,6 +1,7 @@
 import { db } from "@/db";
 import { reviews } from "@/db/schema";
 import { eq } from "drizzle-orm";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -13,6 +14,9 @@ export async function PATCH(
   { params }: { params: Promise<{ id: string }> },
 ) {
   const { id } = await params;
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const body = await request.json().catch(() => ({}));
   const reviewId = Number(id);
   if (!Number.isInteger(reviewId)) {

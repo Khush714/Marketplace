@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { restaurants, marketplaceProfiles } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { generatePosKey, rotatePosKey, getPosKeyHash } from "@/lib/pos";
+import { requireAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -17,6 +18,9 @@ export async function GET(
   { params }: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await params;
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const [r] = await db
     .select({
       id: restaurants.id,
@@ -44,6 +48,9 @@ export async function POST(
   { params }: { params: Promise<{ slug: string }> },
 ) {
   const { slug } = await params;
+  if (!(await requireAdmin())) {
+    return Response.json({ error: "Unauthorized" }, { status: 401 });
+  }
   const [r] = await db
     .select({
       id: restaurants.id,
