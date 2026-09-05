@@ -60,6 +60,7 @@ export default async function OnboardingPage({
             imageUrl: row.r.imageUrl,
             tagline: row.p.tagline,
             menuUrl: row.p.menuUrl,
+            qrImageUrl: row.p.qrImageUrl ?? "",
             acceptOnlineOrders: row.p.acceptOnlineOrders,
             acceptDelivery: row.p.acceptDelivery,
             acceptPickup: row.p.acceptPickup,

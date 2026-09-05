@@ -93,6 +93,6 @@ export function generateOtp(): string {
   return String(n).padStart(6, "0");
 }
 
-export function hashOtp(code: string, phone: string): string {
-  return createHmac("sha256", secret()).update(`${phone}:${code}`).digest("hex");
+export function hashOtp(code: string, identity: string): string {
+  return createHmac("sha256", secret()).update(`${identity}:${code}`).digest("hex");
 }

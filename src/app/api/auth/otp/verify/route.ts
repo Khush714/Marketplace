@@ -6,20 +6,20 @@ import { hashOtp, setSessionCookie } from "@/lib/session";
 export const dynamic = "force-dynamic";
 
 /**
- * POST /api/auth/otp/verify  { phone, code, name? }
- * Verifies the OTP, finds or creates a customer, sets the session cookie.
- * The customer directory here is the SAME `customers` table the POS uses —
- * no second identity store.
+ * POST /api/auth/otp/verify  { email, code, name? }
+ * Verifies the email OTP, finds or creates a customer by email, sets the
+ * session cookie. The customer directory is the SAME `customers` table the
+ * POS uses — no second identity store.
  */
 export async function POST(request: Request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const phone = String(body.phone ?? "").trim();
+    const email = String(body.email ?? "").trim().toLowerCase();
     const code = String(body.code ?? "").trim();
     const name = String(body.name ?? "").trim();
 
-    if (!phone || !code) {
-      return Response.json({ error: "Phone and code are required." }, { status: 400 });
+    if (!email || !code) {
+      return Response.json({ error: "Email and code are required." }, { status: 400 });
     }
 
     const [challenge] = await db
@@ -27,7 +27,7 @@ export async function POST(request: Request) {
       .from(otpChallenges)
       .where(
         and(
-          eq(otpChallenges.phone, phone),
+          eq(otpChallenges.email, email),
           isNull(otpChallenges.consumedAt),
           gt(otpChallenges.expiresAt, new Date()),
         ),
@@ -48,7 +48,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const expected = hashOtp(code, phone);
+    const expected = hashOtp(code, email);
     if (expected !== challenge.codeHash) {
       await db
         .update(otpChallenges)
@@ -63,11 +63,11 @@ export async function POST(request: Request) {
       .set({ consumedAt: new Date() })
       .where(eq(otpChallenges.id, challenge.id));
 
-    // Find or create customer by phone (unique constraint enforces this).
+    // Find or create customer by email (unique constraint enforces this).
     const [existing] = await db
       .select({ id: customers.id, name: customers.name })
       .from(customers)
-      .where(eq(customers.phone, phone))
+      .where(eq(customers.email, email))
       .limit(1);
 
     let customerId: number;
@@ -79,7 +79,7 @@ export async function POST(request: Request) {
     } else {
       const [created] = await db
         .insert(customers)
-        .values({ name: name || "Guest", phone })
+        .values({ name: name || "Guest", email })
         .returning({ id: customers.id });
       customerId = created.id;
     }

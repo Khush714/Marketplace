@@ -10,8 +10,8 @@ function secret(): string {
 async function verifyAdminToken(token: string | undefined): Promise<boolean> {
   if (!token) return false;
   const parts = token.split(".");
-  if (parts.length !== 3) return false;
-  const [role, issued, sig] = parts;
+  if (parts.length !== 4) return false;
+  const [id, role, issued, sig] = parts;
   if (Date.now() - Number(issued) > MAX_AGE * 1000) return false;
 
   const enc = new TextEncoder();
@@ -22,7 +22,7 @@ async function verifyAdminToken(token: string | undefined): Promise<boolean> {
     false,
     ["sign"],
   );
-  const macBuf = await crypto.subtle.sign("HMAC", key, enc.encode(`${role}.${issued}`));
+  const macBuf = await crypto.subtle.sign("HMAC", key, enc.encode(`${id}.${role}.${issued}`));
   const mac = btoa(String.fromCharCode(...new Uint8Array(macBuf)))
     .replace(/\+/g, "-")
     .replace(/\//g, "_")

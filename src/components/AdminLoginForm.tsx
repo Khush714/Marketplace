@@ -3,9 +3,10 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-/** Admin login — password guard for /admin/*. */
+/** Admin login — per-user operator authentication for /admin/*. */
 export function AdminLoginForm() {
   const router = useRouter();
+  const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -17,7 +18,7 @@ export function AdminLoginForm() {
       const res = await fetch("/api/admin/login", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ password }),
+        body: JSON.stringify({ email, password }),
       });
       const data = await res.json();
       if (!res.ok) {
@@ -47,6 +48,18 @@ export function AdminLoginForm() {
 
       <div className="mt-8 rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
         <label className="text-xs font-semibold uppercase tracking-wide text-slate-500">
+          Email
+        </label>
+        <input
+          type="email"
+          value={email}
+          onChange={(e) => setEmail(e.target.value)}
+          placeholder="you@company.com"
+          autoComplete="username"
+          autoFocus
+          className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+        />
+        <label className="mt-3 block text-xs font-semibold uppercase tracking-wide text-slate-500">
           Password
         </label>
         <input
@@ -55,7 +68,7 @@ export function AdminLoginForm() {
           onChange={(e) => setPassword(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && submit()}
           placeholder="••••••••"
-          autoFocus
+          autoComplete="current-password"
           className="mt-1 w-full rounded-xl border border-slate-200 px-3 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
         />
         {error && (
@@ -65,7 +78,7 @@ export function AdminLoginForm() {
         )}
         <button
           onClick={submit}
-          disabled={busy || !password}
+          disabled={busy || !email || !password}
           className="mt-5 w-full rounded-xl bg-slate-900 py-3 text-sm font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
         >
           {busy ? "Signing in…" : "Sign in"}

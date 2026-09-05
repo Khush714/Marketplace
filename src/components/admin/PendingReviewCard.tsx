@@ -11,6 +11,7 @@ export function PendingReviewCard({
   address,
   description,
   menuUrl,
+  qrImageUrl,
 }: {
   name: string;
   slug: string;
@@ -18,6 +19,7 @@ export function PendingReviewCard({
   address: string;
   description: string;
   menuUrl: string;
+  qrImageUrl?: string;
 }) {
   const router = useRouter();
   const [busy, setBusy] = useState<string | null>(null);
@@ -66,6 +68,21 @@ export function PendingReviewCard({
 
       {menuUrl && (
         <p className="mt-2 break-all text-xs text-slate-400">Menu: {menuUrl}</p>
+      )}
+
+      {qrImageUrl && (
+        <div className="mt-3 flex items-center gap-3 rounded-xl border border-slate-200 bg-white p-3">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={qrImageUrl}
+            alt={`Menu QR for ${name}`}
+            className="h-20 w-20 rounded-lg border border-slate-200 bg-white object-contain"
+          />
+          <p className="text-xs text-slate-500">
+            Restaurant uploaded a menu QR code. Verify it scans to their menu
+            before approving.
+          </p>
+        </div>
       )}
 
       <div className="mt-4 flex gap-2">

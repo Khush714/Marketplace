@@ -106,7 +106,11 @@ export default async function RestaurantOverview({
               </div>
 
               <div className="mt-8 flex flex-col items-center">
-                <RestaurantMenuQR url={menuLink} restaurantName={r.name} />
+                <RestaurantMenuQR
+                  url={menuLink}
+                  restaurantName={r.name}
+                  uploadedQrUrl={r.qrImageUrl}
+                />
               </div>
 
               <p className="mt-6 break-all text-center font-mono text-xs text-slate-400">

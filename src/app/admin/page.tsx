@@ -30,6 +30,9 @@ export default function PlatformAdminPage() {
         <Link href="/admin/reviews" className="rounded-full border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-600">
           Review moderation
         </Link>
+        <Link href="/admin/users" className="rounded-full border border-slate-200 bg-white px-3 py-1.5 font-semibold text-slate-600">
+          Operators
+        </Link>
       </nav>
       <div className="mt-6">
         <OperatorDashboard />

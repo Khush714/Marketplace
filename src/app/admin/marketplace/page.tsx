@@ -11,6 +11,7 @@ type PendingType = {
   address: string | null;
   description: string | null;
   menuUrl: string | null;
+  qrImageUrl?: string | null;
 };
 
 export default async function MarketplaceOnboardingIndex() {
@@ -79,6 +80,7 @@ export default async function MarketplaceOnboardingIndex() {
                 address={l.address ?? ""}
                 description={l.description ?? ""}
                 menuUrl={l.menuUrl ?? ""}
+                qrImageUrl={l.qrImageUrl ?? ""}
               />
             ))}
           </div>

@@ -155,6 +155,7 @@ export async function POST(request: Request) {
     const pickupEtaMinutes = int(body.pickupEtaMinutes, 15);
     const tagline = typeof body.tagline === "string" ? body.tagline.trim().slice(0, 200) : "";
     const imageUrl = body.imageUrl.trim();
+    const qrImageUrl = typeof body.qrImageUrl === "string" && body.qrImageUrl.trim() ? body.qrImageUrl.trim() : null;
     const taxRate = body.taxRate !== undefined ? n(body.taxRate, 0) : "0";
 
     const id = await db.transaction(async (tx) => {
@@ -182,6 +183,7 @@ export async function POST(request: Request) {
         acceptPickup,
         menuUrl,
         tagline,
+        qrImageUrl,
         deliveryFee,
         minOrder,
         etaMinutes: Number(etaMinutes),

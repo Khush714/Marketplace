@@ -152,6 +152,8 @@ export type PublicRestaurant = {
   logoUrl: string;
   /** Restaurant POS ordering URL. Marketplace deep-links here — never places orders. */
   menuUrl: string;
+  /** Owner-uploaded image of their existing POS menu QR code. */
+  qrImageUrl: string;
   priceRange: string;
   address: string;
   rating: number;
@@ -294,6 +296,7 @@ const publicRestaurantColumns = {
   logoUrl: marketplaceProfiles.logoUrl,
   // NEW — deep link to the existing restaurant POS ordering page.
   menuUrl: marketplaceProfiles.menuUrl,
+  qrImageUrl: marketplaceProfiles.qrImageUrl,
   priceRange: restaurants.priceRange,
   address: restaurants.address,
   etaMinutes: marketplaceProfiles.etaMinutes,
@@ -321,6 +324,7 @@ type RawRestaurant = {
   imageUrl: string;
   logoUrl: string;
   menuUrl: string;
+  qrImageUrl: string | null;
   priceRange: string;
   address: string;
   etaMinutes: number;
@@ -366,6 +370,7 @@ function toPublicRestaurant(
     imageUrl: r.imageUrl,
     logoUrl: r.logoUrl,
     menuUrl: r.menuUrl,
+    qrImageUrl: r.qrImageUrl ?? "",
     priceRange: r.priceRange,
     address: r.address,
     rating: Math.round(rating * 10) / 10,

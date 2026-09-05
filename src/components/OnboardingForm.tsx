@@ -16,6 +16,8 @@ export type OnboardingState = {
   tagline: string;
   /** ORDER ONLINE deep-link — the restaurant's own POS menu / ordering page. */
   menuUrl: string;
+  /** Restaurant's own QR code image (uploaded from their POS). */
+  qrImageUrl: string;
   acceptOnlineOrders: boolean;
   acceptDelivery: boolean;
   acceptPickup: boolean;
@@ -49,10 +51,12 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
   const [advanced, setAdvanced] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingQr, setUploadingQr] = useState(false);
   const [message, setMessage] = useState<
     { kind: "ok" | "err"; text: string } | null
   >(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const qrFileRef = useRef<HTMLInputElement>(null);
 
   // Reuse the consumer categories endpoint to populate the cuisine dropdown.
   useEffect(() => {
@@ -89,6 +93,26 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
       setMessage({ kind: "err", text: "Upload failed" });
     } finally {
       setUploading(false);
+    }
+  }
+
+  async function uploadQr(file: File) {
+    setUploadingQr(true);
+    setMessage(null);
+    try {
+      const body = new FormData();
+      body.append("file", file);
+      const res = await fetch("/api/admin/media", { method: "POST", body });
+      const data = await res.json();
+      if (!res.ok) {
+        setMessage({ kind: "err", text: data.error ?? "Upload failed" });
+      } else {
+        set("qrImageUrl", data.url as string);
+      }
+    } catch {
+      setMessage({ kind: "err", text: "QR upload failed" });
+    } finally {
+      setUploadingQr(false);
     }
   }
 
@@ -245,6 +269,47 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
                 </button>
                 <p className="mt-1 text-xs text-slate-400">
                   JPEG, PNG or WebP · max 4 MB
+                </p>
+              </div>
+            </div>
+          </Field>
+
+          {/* QR code image upload */}
+          <Field label="Menu QR code image (optional)" className="mt-4">
+            <div className="mt-1 flex items-center gap-3">
+              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-slate-200">
+                {form.qrImageUrl ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img
+                    src={form.qrImageUrl}
+                    alt="Menu QR"
+                    className="h-full w-full object-contain"
+                  />
+                ) : null}
+              </div>
+              <div>
+                <input
+                  ref={qrFileRef}
+                  type="file"
+                  accept="image/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    if (f) void uploadQr(f);
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => qrFileRef.current?.click()}
+                  disabled={uploadingQr}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                >
+                  {uploadingQr ? "Uploading…" : "Upload QR"}
+                </button>
+                <p className="mt-1 text-xs text-slate-400">
+                  Upload your existing menu QR code from your POS system. It
+                  will appear on your public listing so customers can scan it
+                  to open your menu.
                 </p>
               </div>
             </div>

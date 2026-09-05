@@ -93,7 +93,31 @@ export const customers = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [unique("customers_phone_key").on(t.phone)],
+  (t) => [
+    unique("customers_phone_key").on(t.phone),
+    unique("customers_email_key").on(t.email),
+  ],
+);
+
+/**
+ * Platform operators. Per-user admin accounts with a role; the shared
+ * ADMIN_PASSWORD fallback is retained only transiently for bootstrapping.
+ */
+export const adminUsers = pgTable(
+  "admin_users",
+  {
+    id: serial("id").primaryKey(),
+    email: varchar("email", { length: 200 }).notNull(),
+    name: varchar("name", { length: 160 }).notNull(),
+    passwordHash: varchar("password_hash", { length: 200 }).notNull(),
+    role: varchar("role", { length: 40 }).notNull().default("operator"),
+    active: boolean("active").notNull().default(true),
+    lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [unique("admin_users_email_key").on(t.email)],
 );
 
 // ---------------------------------------------------------------------------
@@ -138,6 +162,9 @@ export const marketplaceProfiles = pgTable(
     // Overrides — null means "inherit from the POS restaurant record"
     descriptionOverride: text("description_override"),
     coverImageOverride: text("cover_image_override"),
+
+    // Restaurant's own QR code image (uploaded by the owner from their POS)
+    qrImageUrl: text("qr_image_url"),
 
     // Fulfilment capabilities
     acceptOnlineOrders: boolean("accept_online_orders").notNull().default(true),
@@ -439,7 +466,7 @@ export const otpChallenges = pgTable(
   "otp_challenges",
   {
     id: serial("id").primaryKey(),
-    phone: varchar("phone", { length: 40 }).notNull(),
+    email: varchar("email", { length: 200 }).notNull(),
     codeHash: varchar("code_hash", { length: 128 }).notNull(),
     attempts: integer("attempts").notNull().default(0),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
@@ -448,7 +475,7 @@ export const otpChallenges = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("otp_challenges_phone_idx").on(t.phone)],
+  (t) => [index("otp_challenges_email_idx").on(t.email)],
 );
 
 // ---------------------------------------------------------------------------
@@ -585,3 +612,4 @@ export type LoyaltyLedger = typeof loyaltyLedger.$inferSelect;
 export type ReviewReport = typeof reviewReports.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
+export type AdminUser = typeof adminUsers.$inferSelect;

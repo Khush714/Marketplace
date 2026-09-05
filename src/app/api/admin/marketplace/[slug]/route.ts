@@ -59,6 +59,7 @@ export async function GET(
       tagline: p.tagline,
       logoUrl: p.logoUrl,
       menuUrl: p.menuUrl,
+      qrImageUrl: p.qrImageUrl,
     },
     stats,
   });
@@ -123,6 +124,9 @@ export async function PUT(
     }
     if (typeof body.tagline === "string") {
       profilePatch.tagline = body.tagline.trim().slice(0, 200);
+    }
+    if (typeof body.qrImageUrl === "string") {
+      profilePatch.qrImageUrl = body.qrImageUrl.trim() || null;
     }
     if (typeof body.menuUrl === "string") {
       try {
