@@ -1,1 +1,15 @@
 @import "tailwindcss";
+
+/* Status transitions — motion handled with CSS keyframes (no external
+   animation dependency). fadeInUp is used by the order tracking rail. */
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+

@@ -13,6 +13,7 @@ import { RestaurantMenuQR } from "@/components/RestaurantMenuQR";
 import { MenuLinkActions } from "@/components/MenuLinkActions";
 import { currency } from "@/lib/format";
 import { resolveMenuLink } from "@/lib/menu-url";
+import { getCurrentAdmin } from "@/lib/admin-auth";
 
 export const dynamic = "force-dynamic";
 
@@ -39,6 +40,10 @@ export default async function RestaurantOverview({
   ]);
   if (!r) notFound();
 
+  // Only the restaurant owner (signed-in admin) ever sees the management bar.
+  // Normal customers get the plain storefront with no owner affordances.
+  const owner = await getCurrentAdmin();
+
   // OPEN MENU → the restaurant's own hosted menu when it's published as a
   // real external URL, otherwise the marketplace's stable menu page.
   const menuLink = resolveMenuLink(r.menuUrl, r.slug);
@@ -51,6 +56,25 @@ export default async function RestaurantOverview({
       <RestaurantHero r={r} active="overview" />
 
       <div className="px-4 sm:px-6">
+        {/* Owner-only management bar — invisible to normal customers. */}
+        {owner && owner.role !== "support" && (
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+            <div>
+              <p className="text-sm font-bold text-slate-800">Owner view</p>
+              <p className="text-xs text-slate-500">
+                You can see and edit the ordering link, menu QR and listing
+                settings for {r.name}.
+              </p>
+            </div>
+            <Link
+              href={`/admin/marketplace/${r.slug}`}
+              className="shrink-0 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-slate-800"
+            >
+              Manage menu &amp; QR →
+            </Link>
+          </div>
+        )}
+
         {/* About — per spec */}
         <section id="about" className="mt-8 scroll-mt-24">
           <h2 className="text-lg font-bold tracking-tight text-slate-900">

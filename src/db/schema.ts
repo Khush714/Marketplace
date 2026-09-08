@@ -577,6 +577,56 @@ export const reviewReports = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// PHASE 24 — PAYMENTS (Razorpay audit trail).
+// Every payment attempt — success, failure, or refund — is recorded here.
+// The orders.payment_status column is a denormalized summary derived from
+// this table for fast reads.
+//
+// orderId is NULL until the payment is verified — the marketplace order is
+// created only after a captured payment, so the intent row is linked by
+// `reference` (the order reference assigned at intent time) before the order
+// row exists.
+// ---------------------------------------------------------------------------
+
+export const payments = pgTable(
+  "payments",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id").references(() => orders.id, {
+      onDelete: "set null",
+    }),
+    reference: varchar("reference", { length: 24 })
+      .notNull()
+      .unique(),
+    razorpayOrderId: varchar("razorpay_order_id", { length: 64 }).notNull(),
+    razorpayPaymentId: varchar("razorpay_payment_id", { length: 64 }),
+    razorpaySignature: varchar("razorpay_signature", { length: 128 }),
+    amount: numeric("amount", { precision: 10, scale: 2 }).notNull(),
+    currency: varchar("currency", { length: 8 }).notNull().default("INR"),
+    status: varchar("status", { length: 24 })
+      .notNull()
+      .default("created"), // created | authorized | captured | failed | refunded | partial_refunded
+    failureReason: text("failure_reason"),
+    refundId: varchar("refund_id", { length: 64 }),
+    refundAmount: numeric("refund_amount", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    metadata: text("metadata").notNull().default("{}"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("payments_order_idx").on(t.orderId),
+    index("payments_razorpay_order_idx").on(t.razorpayOrderId),
+    index("payments_status_idx").on(t.status),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // MEDIA — restaurant-uploaded images (Phase 4 onboarding).
 // Stored in Postgres and served through /api/media/[id] so uploads survive
 // production rebuilds where the filesystem is not persistent.
@@ -613,3 +663,4 @@ export type ReviewReport = typeof reviewReports.$inferSelect;
 export type Notification = typeof notifications.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type AdminUser = typeof adminUsers.$inferSelect;
+export type Payment = typeof payments.$inferSelect;

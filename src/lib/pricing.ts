@@ -75,7 +75,7 @@ export function priceCart(input: PricingInput): PricingResult {
 
   if (input.discount) {
     if (subtotal < input.discount.minSubtotal) {
-      discountError = `Code ${input.discount.code} needs a subtotal of at least $${input.discount.minSubtotal.toFixed(2)}.`;
+      discountError = `Code ${input.discount.code} needs a subtotal of at least ${input.discount.minSubtotal.toFixed(2)}.`;
     } else {
       discountCode = input.discount.code;
       discountAmount =

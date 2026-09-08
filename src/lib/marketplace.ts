@@ -15,10 +15,10 @@ import {
   customers,
   notifications,
 } from "@/db/schema";
-import { priceCart, type LineInput, type LineModifierSelection } from "./pricing";
+import { priceCart, type LineInput, type LineModifierSelection, type PricingResult } from "./pricing";
 import { summarizeStatus, statusLabel } from "./order-lifecycle";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
-import { num, orderReference } from "./format";
+import { num, orderReference, currency } from "./format";
 import { haversineKm } from "./geo";
 
 // ===========================================================================
@@ -938,6 +938,12 @@ export type PlaceOrderInput = {
   /** Simulates a card-gateway decline (fail-pre-check). Test-only in this build. */
   simulatePaymentFailure?: boolean;
   items: IncomingLine[];
+  /**
+   * PHASE 24 — optional pre-assigned order reference. Used by the Razorpay
+   * flow so the order carries the same reference the customer was charged
+   * against at payment-intent time. Validated to the MKT-xxxx pattern.
+   */
+  reference?: string;
 };
 
 export type LookupDiscountResult =
@@ -981,12 +987,36 @@ export async function lookupDiscount(
 }
 
 export type PlaceOrderResult =
-  | { ok: true; reference: string; total: number; fulfillment: string }
+  | { ok: true; id: number; reference: string; total: number; fulfillment: string }
   | { ok: false; status: number; error: string };
 
-export async function placeOrder(
+// ---------------------------------------------------------------------------
+// PHASE 24 — marketplace pricing quote. Extracted from placeOrder so the
+// payment-intent flow (Razorpay) can quote the exact amount it will charge
+// WITHOUT creating any order row — order creation happens only after the
+// payment is verified (see src/app/api/payments/verify). Both paths share one
+// pricing authority.
+// ---------------------------------------------------------------------------
+
+type MarketplaceQuote = {
+  restaurant: typeof restaurants.$inferSelect;
+  profile: typeof marketplaceProfiles.$inferSelect;
+  pricing: PricingResult;
+  customerName: string;
+  customerPhone: string;
+  customerAddress: string;
+  fulfillmentType: "delivery" | "pickup";
+  paymentMethod: "cash" | "card";
+  reference: string;
+};
+
+export type ComputeMarketplacePricingResult =
+  | { ok: true; quote: MarketplaceQuote }
+  | { ok: false; status: number; error: string };
+
+export async function computeMarketplacePricing(
   input: PlaceOrderInput,
-): Promise<PlaceOrderResult> {
+): Promise<ComputeMarketplacePricingResult> {
   const customerName = input.customerName.trim();
   const customerPhone = input.customerPhone.trim();
   const customerAddress = (input.customerAddress ?? "").trim();
@@ -1162,11 +1192,56 @@ export async function placeOrder(
     return {
       ok: false,
       status: 400,
-      error: `Minimum order is $${minOrder.toFixed(2)}. Add $${(minOrder - pricing.subtotal).toFixed(2)} more.`,
+      error: `Minimum order is ${currency(minOrder)}. Add ${currency(minOrder - pricing.subtotal)} more.`,
     };
   }
 
-  const reference = orderReference();
+  // PHASE 24 — an optional pre-assigned reference lets the Razorpay flow keep
+  // the same reference the customer was charged against.
+  let reference: string;
+  if (input.reference) {
+    const cleanRef = input.reference.trim().toUpperCase();
+    if (!/^MKT-[A-Z0-9]+$/.test(cleanRef)) {
+      return { ok: false, status: 400, error: "Invalid order reference" };
+    }
+    reference = cleanRef;
+  } else {
+    reference = orderReference();
+  }
+
+  return {
+    ok: true,
+    quote: {
+      restaurant,
+      profile,
+      pricing,
+      customerName,
+      customerPhone,
+      customerAddress,
+      fulfillmentType,
+      paymentMethod,
+      reference,
+    },
+  };
+}
+
+export async function placeOrder(
+  input: PlaceOrderInput,
+): Promise<PlaceOrderResult> {
+  const priced = await computeMarketplacePricing(input);
+  if (!priced.ok) return { ok: false, status: priced.status, error: priced.error };
+
+  const {
+    restaurant,
+    pricing,
+    customerName,
+    customerPhone,
+    customerAddress,
+    fulfillmentType,
+    paymentMethod,
+    reference,
+  } = priced.quote;
+
   const created = await db.transaction(async (tx) => {
     let customerId: number;
     if (input.customerId) {
@@ -1253,7 +1328,7 @@ export async function placeOrder(
         phone: customerPhone,
         orderId: order.id,
         kind: "payment_successful",
-        message: `Payment of $${pricing.total.toFixed(2)} for order ${reference} was successful.`,
+        message: `Payment of ${currency(pricing.total)} for order ${reference} was successful.`,
         channel: "push",
       });
     }
@@ -1263,6 +1338,7 @@ export async function placeOrder(
 
   return {
     ok: true,
+    id: created.id,
     reference: created.reference,
     total: pricing.total,
     fulfillment: fulfillmentType,
@@ -1288,11 +1364,11 @@ export async function listSavedRestaurantsForCustomer(
 export async function getPublicOrder(
   idOrReference: string,
 ): Promise<PublicOrder | null> {
-  const numeric = Number(idOrReference);
-  const match =
-    Number.isInteger(numeric) && numeric > 0
-      ? eq(orders.id, numeric)
-      : eq(orders.reference, idOrReference.toUpperCase());
+  // PHASE 27 — references only. Numeric id lookup removed: sequential order
+  // ids made every order enumerable in one scan. On public-facing endpoints
+  // the reference is the (high-entropy) access credential, so ids must never
+  // be an alternative route in.
+  const match = eq(orders.reference, idOrReference.toUpperCase());
 
   const [row] = await db
     .select({

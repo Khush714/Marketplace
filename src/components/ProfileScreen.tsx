@@ -160,6 +160,7 @@ export function ProfileScreen() {
         </section>
 
         <section className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+          <RowLink href="/notifications" icon="🔔" label="Notifications" />
           <RowLink href="/restaurants" icon="🍽️" label="Browse restaurants" />
           <RowLink href="/admin/marketplace" icon="🏪" label="I own a restaurant" />
           <RowLink href="/roadmap" icon="🗺️" label="Product roadmap" />
@@ -341,6 +342,7 @@ export function ProfileScreen() {
       </section>
 
       <section className="mt-4 overflow-hidden rounded-2xl border border-slate-200 bg-white">
+        <RowLink href="/notifications" icon="🔔" label="Notifications" />
         <RowLink href="/restaurants" icon="🍽️" label="Browse restaurants" />
         <RowLink href="/admin/marketplace" icon="🏪" label="I own a restaurant" />
         <RowLink href="/roadmap" icon="🗺️" label="Product roadmap" />

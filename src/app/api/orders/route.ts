@@ -1,8 +1,20 @@
-/** DEPRECATED — marketplace is discovery-only. Use restaurant menu_url. */
+import { placeOrder } from "@/lib/marketplace";
+import { safeJson, errorJson } from "@/lib/api";
+
 export const dynamic = "force-dynamic";
-export async function POST() {
-  return Response.json(
-    { error: "Marketplace does not create orders." },
-    { status: 410 },
-  );
+
+export async function POST(request: Request) {
+  try {
+    const body = await request.json();
+    const result = await placeOrder(body);
+
+    if (!result.ok) {
+      return errorJson(result.error, result.status);
+    }
+
+    return safeJson(result, 201);
+  } catch (e) {
+    console.error("POST /api/orders", e);
+    return errorJson("Failed to place order", 500);
+  }
 }

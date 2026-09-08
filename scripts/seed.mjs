@@ -6,10 +6,21 @@
  */
 import { Pool } from "pg";
 
+const databaseUrl =
+  process.env.DATABASE_URL ||
+  "postgresql://postgres:postgres@127.0.0.1:5432/app_db";
+
+// Mirror src/db/index.ts: production / ssl-marked URLs must use TLS, or the
+// pooled connection is rejected by managed Postgres (Neon/Supabase/Vercel).
+const isTlsRequired =
+  process.env.NODE_ENV === "production" ||
+  /(?:sslmode|ssl)(?:=|\b)/i.test(databaseUrl);
+
 const pool = new Pool({
-  connectionString:
-    process.env.DATABASE_URL ||
-    "postgresql://postgres:postgres@127.0.0.1:5432/app_db",
+  connectionString: databaseUrl,
+  max: 6,
+  connectionTimeoutMillis: 10_000,
+  ...(isTlsRequired ? { ssl: { rejectUnauthorized: false } } : {}),
 });
 const q = (t, p) => pool.query(t, p);
 
@@ -60,6 +71,221 @@ const NEW = [
 ];
 
 const CUSTOMERS_PER = 120;
+
+/**
+ * PHASE 35 — production demo orders. Keeps the exact references the tracking
+ * deep-links use (MKT-MAOO8Z62 / MKT-16MS8GWNOWNON) plus one LIVE (placed)
+ * order so the polling/LIVE UI has something non-terminal to render on a
+ * freshly-seeded environment. Idempotent: any reference already present is
+ * skipped.
+ */
+const DEMO_ORDERS = [
+  {
+    reference: "MKT-MAOO8Z62",
+    customerPhone: "+15550141011",
+    customerName: "E2E Tester",
+    customerAddress: "41 W 14th St, New York, NY",
+    fulfillment: "pickup",
+    status: "completed",
+    paymentMethod: "cash",
+    paymentStatus: "unpaid",
+    subtotal: "27.50",
+    tax: "2.20",
+    discount: "0",
+    discountCode: null,
+    deliveryFee: "0",
+    total: "29.70",
+    items: [
+      ["Margherita Pizza", 26.5, 2],
+      ["Coca-Cola", 1.0, 1],
+    ],
+    // [toStatus, minutesAgo, actor]
+    timeline: [
+      ["placed", 40, "system"],
+      ["accepted", 32, "pos"],
+      ["preparing", 25, "pos"],
+      ["ready", 10, "pos"],
+      ["completed", 5, "pos"],
+    ],
+  },
+  {
+    reference: "MKT-16MS8GWNOWNON",
+    customerPhone: "+15550141012",
+    customerName: "E2E Customer",
+    customerAddress: "88 Bleecker St, New York, NY",
+    fulfillment: "delivery",
+    status: "completed",
+    paymentMethod: "cash",
+    paymentStatus: "unpaid",
+    subtotal: "20.50",
+    tax: "1.64",
+    discount: "0",
+    discountCode: null,
+    deliveryFee: "2.99",
+    total: "25.13",
+    items: [
+      ["Spaghetti Carbonara", 14.0, 1],
+      ["Tiramisu", 6.5, 1],
+    ],
+    timeline: [
+      ["placed", 55, "system"],
+      ["accepted", 48, "pos"],
+      ["preparing", 40, "pos"],
+      ["ready", 25, "pos"],
+      ["completed", 18, "pos"],
+    ],
+  },
+  {
+    reference: "MKT-DEMO-LIVE",
+    customerPhone: "+15550141011",
+    customerName: "E2E Tester",
+    customerAddress: "41 W 14th St, New York, NY",
+    fulfillment: "pickup",
+    status: "placed",
+    paymentMethod: "cash",
+    paymentStatus: "unpaid",
+    subtotal: "12.50",
+    tax: "1.00",
+    discount: "0",
+    discountCode: null,
+    deliveryFee: "0",
+    total: "13.50",
+    items: [["Margherita Pizza", 12.5, 1]],
+    timeline: [["placed", 1, "system"]],
+  },
+];
+
+async function ensureCustomer(name, phone) {
+  const { rows } = await q(
+    `SELECT id FROM customers WHERE phone=$1 OR name=$1`,
+    [phone],
+  );
+  if (rows[0]) return rows[0].id;
+  const ins = await q(
+    `INSERT INTO customers (name, phone) VALUES ($1,$2) RETURNING id`,
+    [name, phone],
+  );
+  return ins.rows[0].id;
+}
+
+/** Insert a demo order + its items + its status-event trail (skip if present). */
+async function ensureOrder(def, restaurantId) {
+  const { rows } = await q(`SELECT id FROM orders WHERE reference=$1`, [
+    def.reference,
+  ]);
+  if (rows[0]) return;
+
+  const now = Date.now();
+  const at = (minsAgo) => new Date(now - minsAgo * 60_000);
+  const events = def.timeline.map(([toStatus, minsAgo, actor]) => ({
+    toStatus,
+    at: at(minsAgo),
+    actor,
+  }));
+  const created = events[0].at;
+  const last = events[events.length - 1];
+  const cap = (s) => (s?.toStatus === "completed" ? last.at : null);
+  const accepted = events.find((e) => e.toStatus === "accepted")?.at ?? null;
+  const ready = events.find((e) => e.toStatus === "ready")?.at ?? null;
+  const cancelled = events.find((e) => e.toStatus === "cancelled")?.at ?? null;
+
+  const ins = await q(
+    `INSERT INTO orders
+      (reference, restaurant_id, customer_id, customer_name, customer_phone,
+       customer_address, channel, fulfillment_type, status, payment_method,
+       payment_status, subtotal, tax_amount, discount_code, discount_amount,
+       delivery_fee, total, notes, status_updated_at, accepted_at, ready_at,
+       completed_at, cancelled_at, created_at)
+     VALUES ($1,$2,$3,$4,$5,$6,'marketplace',$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,'',$17,$18,$19,$20,$21,$22)
+     RETURNING id`,
+    [
+      def.reference,
+      restaurantId,
+      def.customerId,
+      def.customerName,
+      def.customerPhone,
+      def.customerAddress,
+      def.fulfillment,
+      def.status,
+      def.paymentMethod,
+      def.paymentStatus,
+      def.subtotal,
+      def.tax,
+      def.discountCode,
+      def.discount,
+      def.deliveryFee,
+      def.total,
+      last.at,
+      accepted,
+      ready,
+      cap({ toStatus: def.status === "completed" ? "completed" : null }),
+      cancelled,
+      created,
+    ],
+  );
+  const orderId = ins.rows[0].id;
+
+  for (const [name, unitPrice, quantity] of def.items) {
+    await q(
+      `INSERT INTO order_items (order_id, menu_item_id, name, unit_price, quantity, modifiers)
+       VALUES ($1,NULL,$2,$3,$4,'[]')`,
+      [orderId, name, unitPrice, quantity],
+    );
+  }
+
+  let from = null;
+  for (const { toStatus, at: when, actor } of events) {
+    await q(
+      `INSERT INTO order_status_events (order_id, from_status, to_status, actor, note, created_at)
+       VALUES ($1,$2,$3,$4,'',$5)`,
+      [orderId, from, toStatus, actor, when],
+    );
+    from = toStatus;
+  }
+}
+
+async function seedOrders() {
+  const {
+    rows: [restaurant],
+  } = await q(`SELECT id FROM restaurants ORDER BY id LIMIT 1`);
+  if (!restaurant) {
+    console.log("Demo orders skipped: no restaurants seeded yet.");
+    return;
+  }
+  for (const def of DEMO_ORDERS) {
+    def.customerId = await ensureCustomer(def.customerName, def.customerPhone);
+    await ensureOrder(def, restaurant.id);
+  }
+}
+
+/**
+ * PHASE 35 — marketplace activation. A restaurant is consumer-visible only when
+ * its profile is is_listed=true AND marketplace_status='live'. Pre-existing
+ * rows (e.g. a DB seeded before listing existed) are often draft/hidden, which
+ * makes the marketplace browse list empty. This idempotent pass guarantees
+ * every restaurant has a live, listed profile.
+ */
+async function activateMarketplace() {
+  const { rows } = await q(`SELECT id, slug FROM restaurants`);
+  for (const r of rows) {
+    const menuUrl = `https://pos.example.com/order/${r.slug}`;
+    await q(
+      `INSERT INTO restaurant_marketplace_profiles
+         (restaurant_id, is_listed, marketplace_status, is_featured, tagline,
+          menu_url, pos_key_hash, accept_online_orders, accept_delivery,
+          accept_pickup, delivery_fee, min_order, eta_minutes,
+          pickup_eta_minutes, commission_rate, listed_at, updated_at)
+       VALUES ($1,true,'live',false,'',$2,'',true,true,true,2.99,15,30,15,12.00,now(),now())
+       ON CONFLICT (restaurant_id) DO UPDATE SET
+         is_listed = true,
+         marketplace_status = 'live',
+         menu_url = COALESCE(restaurant_marketplace_profiles.menu_url, $2),
+         listed_at = COALESCE(restaurant_marketplace_profiles.listed_at, now()),
+         updated_at = now()`,
+      [r.id, menuUrl],
+    );
+  }
+}
 
 async function main() {
   let added = 0;
@@ -120,18 +346,31 @@ async function main() {
     }
   }
 
+  await seedOrders();
+await activateMarketplace();
+
   const {
     rows: [made],
   } = await q(`SELECT count(*)::int AS r FROM restaurants`);
   const {
     rows: [cust],
   } = await q(`SELECT count(*)::int AS c FROM customers`);
-  console.log(`Launch seed: ${added} restaurants added → ${made.r} total; ${cust.c} customers.`);
+  const {
+    rows: [ord],
+  } = await q(`SELECT count(*)::int AS o FROM orders`);
+  console.log(`Launch seed: ${added} restaurants added → ${made.r} total; ${cust.c} customers; ${ord.o} orders.`);
 }
 
 main()
   .catch((e) => {
-    console.error(e);
-    process.exitCode = 1;
+    // A deploy-time build hook should not hard-fail a deploy just because the
+    // DB was unreachable — unless seeding was explicitly requested by setting
+    // DATABASE_URL, in which case we surface the failure loudly.
+    if (process.env.DATABASE_URL) {
+      console.error(e);
+      process.exitCode = 1;
+    } else {
+      console.warn(`Seed skipped (unable to connect, no DATABASE_URL set): ${e.message}`);
+    }
   })
   .finally(() => pool.end());

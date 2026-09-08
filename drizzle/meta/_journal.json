@@ -8,6 +8,13 @@
       "when": 1788244470015,
       "tag": "0000_phase12",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1788244470000,
+      "tag": "0001_phase24_payments",
+      "breakpoints": true
     }
   ]
 }

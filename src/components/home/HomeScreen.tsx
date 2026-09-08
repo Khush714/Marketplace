@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import type { PublicRestaurant } from "@/lib/marketplace";
 import { RestaurantCard } from "../RestaurantCard";
+import { HomeRecentOrders } from "./HomeRecentOrders";
 
 export type Rail = {
   key: string;
@@ -78,6 +79,9 @@ export function HomeScreen({
           </form>
         </div>
       </section>
+
+      {/* Recent orders / live tracking — Zomato style; hidden when no history */}
+      <HomeRecentOrders />
 
       <div className="mx-auto max-w-6xl px-4 sm:px-6">
         {/* Categories */}

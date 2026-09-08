@@ -1,8 +1,9 @@
-import { notFound } from "next/navigation";
+import { notFound, redirect } from "next/navigation";
 import { db } from "@/db";
 import { restaurants, marketplaceProfiles } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { num } from "@/lib/format";
+import { getCurrentAdmin } from "@/lib/admin-auth";
 import { OnboardingForm } from "@/components/OnboardingForm";
 import { MarketplaceStatusDashboard } from "@/components/admin/MarketplaceStatusDashboard";
 import { marketplaceStats } from "@/lib/admin";
@@ -15,6 +16,10 @@ export default async function OnboardingPage({
   params: Promise<{ slug: string }>;
 }) {
   const { slug } = await params;
+
+  // Owner-only — normal customers must never reach the edit form.
+  if (!(await getCurrentAdmin())) redirect("/admin/login");
+
   const [row] = await db
     .select({ r: restaurants, p: marketplaceProfiles })
     .from(restaurants)

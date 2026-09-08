@@ -1,7 +1,7 @@
 import { notFound } from "next/navigation";
 import Link from "next/link";
 import { getPublicMenu } from "@/lib/marketplace";
-import { currency } from "@/lib/format";
+import { OrderMenuClient } from "@/components/OrderMenuClient";
 
 export const dynamic = "force-dynamic";
 
@@ -69,71 +69,17 @@ export default async function RestaurantMenuPage({
             </p>
           </div>
         ) : (
-          categories.map((cat) => (
-            <section key={cat.name} className="mb-10">
-              <h2 className="sticky top-0 z-10 -mx-4 border-b border-slate-100 bg-white/95 px-4 py-3 text-lg font-bold tracking-tight text-slate-900 backdrop-blur sm:-mx-6 sm:px-6">
-                {cat.name}
-              </h2>
-
-              <div className="mt-4 space-y-4">
-                {cat.items.map((item) => (
-                  <div
-                    key={item.id}
-                    className={`flex gap-4 rounded-xl border border-slate-100 bg-white p-4 shadow-sm transition hover:shadow-md ${
-                      !item.available ? "opacity-50" : ""
-                    }`}
-                  >
-                    {/* Item info */}
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2">
-                        <h3 className="font-semibold text-slate-900">
-                          {item.name}
-                        </h3>
-                        {item.popular && (
-                          <span className="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-orange-600">
-                            Popular
-                          </span>
-                        )}
-                        {item.vegetarian && (
-                          <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green-600">
-                            Veg
-                          </span>
-                        )}
-                      </div>
-
-                      {item.description && (
-                        <p className="mt-1 line-clamp-2 text-sm text-slate-500">
-                          {item.description}
-                        </p>
-                      )}
-
-                      <p className="mt-2 text-sm font-semibold text-slate-900">
-                        {currency(item.price)}
-                      </p>
-
-                      {!item.available && (
-                        <p className="mt-1 text-xs font-medium text-red-400">
-                          Currently unavailable
-                        </p>
-                      )}
-                    </div>
-
-                    {/* Item image */}
-                    {item.imageUrl && (
-                      <div className="h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-slate-100">
-                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                        <img
-                          src={item.imageUrl}
-                          alt={item.name}
-                          className="h-full w-full object-cover"
-                        />
-                      </div>
-                    )}
-                  </div>
-                ))}
-              </div>
-            </section>
-          ))
+          <OrderMenuClient
+            categories={categories}
+            restaurant={{
+              slug: r.slug,
+              name: r.name,
+              taxRate: r.taxRate,
+              deliveryFee: r.deliveryFee,
+              minOrder: r.minOrder,
+              accepts: r.accepts,
+            }}
+          />
         )}
 
         {/* Back link */}
