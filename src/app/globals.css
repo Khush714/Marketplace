@@ -1,15 +1,202 @@
 @import "tailwindcss";
 
-/* Status transitions — motion handled with CSS keyframes (no external
-   animation dependency). fadeInUp is used by the order tracking rail. */
+@theme {
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Instrument Sans", var(--font-sans);
+
+  --color-ink-950: #0c0c0f;
+  --color-ink-900: #121216;
+  --color-ink-850: #17171c;
+  --color-ink-800: #1d1d24;
+  --color-ink-700: #26262e;
+  --color-ink-600: #34343e;
+
+  --color-cream-50: #faf7f2;
+  --color-cream-100: #f4efe7;
+  --color-cream-200: #e9e1d4;
+
+  --color-ember-400: #ff9d4d;
+  --color-ember-500: #ff7a1a;
+  --color-ember-600: #f4650f;
+
+  --radius-xl2: 1.5rem;
+  --radius-xl3: 1.875rem;
+}
+
+:root {
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html {
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  scroll-behavior: smooth;
+}
+
+body {
+  margin: 0;
+  background-color: var(--color-ink-950);
+  color: #f5f3ef;
+}
+
+/* Subtle grain/noise texture overlay for premium feel */
+.noise::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 60;
+  opacity: 0.025;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+}
+
+/* Glass surface */
+.glass {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+}
+
+.glass-strong {
+  background: rgba(20, 20, 26, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(24px) saturate(140%);
+  -webkit-backdrop-filter: blur(24px) saturate(140%);
+}
+
+/* Premium gradient text */
+.text-gradient {
+  background: linear-gradient(180deg, #ffffff 0%, #c9c4bb 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+.text-ember {
+  background: linear-gradient(135deg, #ffd0a1 0%, #ff7a1a 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2c2c34;
+  border-radius: 999px;
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3d3d46;
+  background-clip: content-box;
+}
+
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Card lift animation */
+.card-lift {
+  transition: transform 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 0.35s cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+.card-lift:hover {
+  transform: translateY(-4px);
+  border-color: rgba(255, 255, 255, 0.14);
+}
+
+/* Ordering overlays (item drawer, cart, checkout) hide the footer tab bar so
+   its actions can never be covered on mobile. */
+body.ordering-overlay-open .app-tabbar {
+  display: none;
+}
+
+/* Bottom-sheet drawers cap to the viewport. The vh fallback keeps them
+   scrollable on iOS < 15.4, where dvh is unsupported and a bare dvh
+   max-height would be dropped entirely (clipping the sheet). */
+.max-h-sheet {
+  max-height: 90vh;
+}
+.max-h-sheet-tight {
+  max-height: 90vh;
+}
+@supports (height: 1dvh) {
+  .max-h-sheet {
+    max-height: 92dvh;
+  }
+  .max-h-sheet-tight {
+    max-height: 90dvh;
+  }
+}
+
 @keyframes fadeInUp {
   from {
     opacity: 0;
-    transform: translateY(8px);
+    transform: translateY(12px);
   }
   to {
     opacity: 1;
     transform: translateY(0);
   }
 }
+.animate-fade-in-up {
+  animation: fadeInUp 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
 
+@keyframes cartPop {
+  0% {
+    transform: translate(-50%, 0) scale(1);
+  }
+  40% {
+    transform: translate(-50%, 0) scale(1.06);
+  }
+  100% {
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+.animate-cart-pop {
+  animation: cartPop 0.35s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0.03) 25%,
+    rgba(255, 255, 255, 0.07) 50%,
+    rgba(255, 255, 255, 0.03) 75%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.6s infinite;
+}
+
+/* Hide number input spinners */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  -webkit-appearance: none;
+  margin: 0;
+}

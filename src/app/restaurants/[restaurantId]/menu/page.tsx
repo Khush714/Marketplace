@@ -30,7 +30,7 @@ export default async function RestaurantMenuPage({
   return (
     <main className="mx-auto max-w-4xl pb-16">
       {/* Hero */}
-      <div className="relative h-56 overflow-hidden bg-slate-200 sm:h-72 sm:rounded-b-3xl">
+      <div className="relative h-56 overflow-hidden bg-white/5 sm:h-72 sm:rounded-b-3xl">
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={r.imageUrl}
@@ -41,7 +41,7 @@ export default async function RestaurantMenuPage({
 
         <Link
           href={`/restaurants/${r.slug}`}
-          className="absolute left-4 top-4 grid h-9 w-9 place-items-center rounded-full bg-white/90 text-slate-800 shadow backdrop-blur transition hover:bg-white"
+          className="absolute left-4 top-4 grid h-11 w-11 place-items-center rounded-full bg-ink-900/90 text-white shadow backdrop-blur ring-1 ring-white/15 transition hover:bg-ink-800"
           aria-label="Back to restaurant"
         >
           ←
@@ -61,10 +61,10 @@ export default async function RestaurantMenuPage({
       <div className="px-4 pt-6 sm:px-6">
         {categories.length === 0 ? (
           <div className="py-16 text-center">
-            <p className="text-lg font-semibold text-slate-400">
+            <p className="text-lg font-semibold text-white/45">
               No menu items available
             </p>
-            <p className="mt-2 text-sm text-slate-400">
+            <p className="mt-2 text-sm text-white/40">
               This restaurant hasn&apos;t added any items yet.
             </p>
           </div>
@@ -86,7 +86,7 @@ export default async function RestaurantMenuPage({
         <div className="mt-8 text-center">
           <Link
             href={`/restaurants/${r.slug}`}
-            className="inline-block rounded-xl border border-slate-200 px-6 py-3 text-sm font-semibold text-slate-700 transition hover:bg-slate-50"
+            className="inline-block rounded-2xl border border-white/10 bg-white/5 px-6 py-3 text-sm font-semibold text-white/70 transition-colors hover:bg-white/10"
           >
             ← Back to {r.name}
           </Link>

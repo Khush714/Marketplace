@@ -12,8 +12,11 @@ export const dynamic = "force-dynamic";
 
 /**
  * POST /api/marketplace/orders/:id/cancel
- * Customer-initiated cancellation, allowed only while the order is `placed`.
- * PRESERVED (Phase 20); gated by MARKETPLACE_ORDERING_ENABLED.
+ * Customer-initiated cancellation, allowed only while the order is `accepted`
+ * (PHASE 9 contract: ACCEPTED → CANCELLED). While a order is still `placed`
+ * the restaurant either accepts it or rejects it — there is no customer-cancel
+ * edge before acceptance. PRESERVED (Phase 20); gated by
+ * MARKETPLACE_ORDERING_ENABLED.
  */
 export async function POST(
   _request: Request,
@@ -44,11 +47,11 @@ export async function POST(
       { status: 403 },
     );
   }
-  if (order.status !== "placed") {
+  if (order.status !== "accepted") {
     return Response.json(
       {
         error:
-          "Once the restaurant accepts an order it can no longer be cancelled here.",
+          "This order can only be cancelled after the restaurant accepts it.",
       },
       { status: 409 },
     );

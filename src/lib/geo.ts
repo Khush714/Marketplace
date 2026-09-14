@@ -22,8 +22,12 @@ export function parseLatLng(
   latRaw: string | null | undefined,
   lngRaw: string | null | undefined,
 ): LatLng | null {
+  // Absent/blank inputs mean "no coordinates", not 0,0 — Number(null) is 0
+  // and would happily persist a Gulf-of-Guinea pin for a null dropoff.
+  if (latRaw == null || lngRaw == null) return null;
   const lat = Number(latRaw);
   const lng = Number(lngRaw);
+  if (latRaw.trim() === "" || lngRaw.trim() === "") return null;
   if (!Number.isFinite(lat) || !Number.isFinite(lng)) return null;
   if (lat < -90 || lat > 90 || lng < -180 || lng > 180) return null;
   return { lat, lng };

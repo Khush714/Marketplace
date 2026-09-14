@@ -7,7 +7,7 @@ export const dynamic = "force-dynamic";
 /**
  * POST /api/marketplace/reviews
  * { restaurant, author, rating, comment, orderReference }
- * PHASE 14 — only eligible (completed, own, unreviewed) orders can be reviewed.
+ * PHASE 14 — only eligible (delivered, own, unreviewed) orders can be reviewed.
  */
 export async function POST(request: Request) {
   try {

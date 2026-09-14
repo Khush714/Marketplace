@@ -1,8 +1,9 @@
 "use client";
 
-import { legacyToCanonical, statusLabel } from "@/lib/order-lifecycle";
+import { legacyToCanonical, ORDER_MAINLINE, statusLabel } from "@/lib/order-lifecycle";
 import { timeOfDay } from "@/lib/format";
 import type { PublicOrder } from "@/lib/marketplace";
+import { CheckIcon } from "@/components/ui/icons";
 
 /**
  * PHASE 15 — order timeline from the API's append-only audit trail
@@ -14,19 +15,15 @@ import type { PublicOrder } from "@/lib/marketplace";
  *   ✓ Restaurant accepted  12:33 PM
  *   ✓ Preparing            12:35 PM
  *   ○ Ready
- *   ○ Completed
+ *   ○ Picked up
+ *   ○ Delivered
  *
  * The API's `label` and `at` timestamps are used verbatim — no timestamps are
  * ever manufactured here; steps with no corresponding event are shown as
- * pending (○) with no time.
+ * pending (○) with no time. PHASE 9 — the step list IS the lifecycle's
+ * ORDER_MAINLINE, so a contract change is reflected automatically.
  */
-const FORWARD_STEPS = [
-  "placed",
-  "accepted",
-  "preparing",
-  "ready",
-  "completed",
-] as const;
+const FORWARD_STEPS = ORDER_MAINLINE;
 
 export function OrderTimeline({
   events,
@@ -43,42 +40,11 @@ export function OrderTimeline({
   }
 
   const cancelled = byStatus.get("cancelled");
-
-  // Matches the spec layout: check + label on line one, the API timestamp on
-  // its own indented line beneath (pending steps show no time at all).
-  const DoneRow = ({
-    event,
-    tone,
-  }: {
-    event: PublicOrder["timeline"][number];
-    tone: "orange" | "rose";
-  }) => (
-    <li className="pb-4">
-      <div className="flex items-center gap-3">
-        <span
-          className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-bold text-white ${
-            tone === "rose" ? "bg-rose-500" : "bg-orange-500"
-          }`}
-        >
-          ✓
-        </span>
-        <span
-          className={`text-sm font-semibold ${
-            tone === "rose" ? "text-rose-700" : "text-slate-900"
-          }`}
-        >
-          {event.label}
-        </span>
-      </div>
-      <p className="mt-1 pl-9 text-xs tabular-nums text-slate-400">
-        {timeOfDay(event.at)}
-      </p>
-    </li>
-  );
+  const rejected = byStatus.get("rejected");
 
   return (
     <section className="mt-6 sm:mt-8">
-      <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-slate-400">
+      <h2 className="text-xs font-bold uppercase tracking-[0.2em] text-white/40">
         Order timeline
       </h2>
       <ol className="mt-4">
@@ -88,10 +54,10 @@ export function OrderTimeline({
             <DoneRow key={s} event={event} tone="orange" />
           ) : (
             <li key={s} className="flex items-center gap-3 pb-4">
-              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-slate-200 bg-white text-xs text-slate-400">
+              <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/15 bg-ink-850 text-xs text-white/40">
                 ○
               </span>
-              <span className="flex-1 text-sm font-semibold text-slate-400">
+              <span className="flex-1 text-sm font-semibold text-white/40">
                 {statusLabel(s)}
               </span>
             </li>
@@ -99,7 +65,40 @@ export function OrderTimeline({
         })}
 
         {cancelled && <DoneRow event={cancelled} tone="rose" />}
+        {rejected && <DoneRow event={rejected} tone="rose" />}
       </ol>
     </section>
+  );
+}
+
+function DoneRow({
+  event,
+  tone,
+}: {
+  event: PublicOrder["timeline"][number];
+  tone: "orange" | "rose";
+}) {
+  return (
+    <li className="pb-4">
+      <div className="flex items-center gap-3">
+        <span
+          className={`grid h-6 w-6 shrink-0 place-items-center rounded-full text-[11px] font-bold text-ink-950 ${
+            tone === "rose" ? "bg-rose-500" : "bg-ember-500"
+          }`}
+        >
+          <CheckIcon className="text-xs" />
+        </span>
+        <span
+          className={`text-sm font-semibold ${
+            tone === "rose" ? "text-rose-400" : "text-white"
+          }`}
+        >
+          {event.label}
+        </span>
+      </div>
+      <p className="mt-1 pl-9 text-xs tabular-nums text-white/40">
+        {timeOfDay(event.at)}
+      </p>
+    </li>
   );
 }

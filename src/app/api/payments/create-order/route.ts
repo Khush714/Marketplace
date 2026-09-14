@@ -47,6 +47,14 @@ export async function POST(request: NextRequest) {
       customerName: String(body.customerName ?? ""),
       customerPhone: String(body.customerPhone ?? ""),
       customerAddress: body.customerAddress,
+      dropoffLat:
+        body.dropoffLat == null || body.dropoffLat === ""
+          ? null
+          : Number(body.dropoffLat),
+      dropoffLng:
+        body.dropoffLng == null || body.dropoffLng === ""
+          ? null
+          : Number(body.dropoffLng),
       fulfillmentType: body.fulfillmentType === "pickup" ? "pickup" : "delivery",
       paymentMethod: "card",
       notes: typeof body.notes === "string" ? body.notes : "",
@@ -56,6 +64,10 @@ export async function POST(request: NextRequest) {
           : undefined,
       items: Array.isArray(body.items) ? body.items : [],
       reference: typeof body.reference === "string" ? body.reference : undefined,
+      scheduledFor:
+        typeof body.scheduledFor === "string" && body.scheduledFor
+          ? body.scheduledFor
+          : null,
     });
 
     if (!priced.ok) return errorJson(priced.error, priced.status);
@@ -91,7 +103,12 @@ export async function POST(request: NextRequest) {
           notes: body.notes ?? "",
           discountCode: body.discountCode ?? null,
           customerAddress: quote.customerAddress,
+          dropoffLat: quote.dropoff ? quote.dropoff.lat : null,
+          dropoffLng: quote.dropoff ? quote.dropoff.lng : null,
           fulfillmentType: quote.fulfillmentType,
+          scheduledFor: quote.scheduledFor
+            ? quote.scheduledFor.toISOString()
+            : null,
         }),
       })
       .onConflictDoUpdate({

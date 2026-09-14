@@ -1,14 +1,17 @@
 /**
- * PHASE 13 — a single consistent order lifecycle shared by the POS and the
- * marketplace. The marketplace ONLY renders what the POS says; it never invents
- * a parallel state machine.
+ * PHASE 9 — canonical order lifecycle. This file is the CONTRACT, both for the
+ * marketplace's own screens and for RestaurantAI when the POS finally connects.
+ * The UI and the transition endpoints must never re-implement these rules.
  *
- *   placed → accepted → preparing → ready → completed
- *   placed → cancelled
+ *   PLACED → ACCEPTED → PREPARING → READY → PICKED_UP → DELIVERED
+ *   PLACED → REJECTED
+ *   ACCEPTED → CANCELLED
  *
- * Transitions are enforced server-side. Historical order rows using the old
- * ad-hoc states (pending/confirmed/out_for_delivery/delivered) are mapped at
- * read time onto the canonical lifecycle so nothing is lost.
+ * Wire/DB keys are lowercase and stable; `CONTRACT_STATUS` exposes the
+ * uppercase contract notation for display (PLACED / PICKED UP / …). Historical
+ * ad-hoc rows (pending/confirmed/completed/out_for_delivery) are mapped at read
+ * time onto this lifecycle so nothing is lost. `completed` is now the legacy
+ * alias for `delivered` — writes must use the canonical key.
  */
 
 export type OrderLifecycleStatus =
@@ -16,16 +19,34 @@ export type OrderLifecycleStatus =
   | "accepted"
   | "preparing"
   | "ready"
-  | "completed"
-  | "cancelled";
+  | "picked_up"
+  | "delivered"
+  | "cancelled"
+  | "rejected";
 
+/** Every canonical state the marketplace/POS can hold (wire contract). */
 export const ORDER_STATUSES: OrderLifecycleStatus[] = [
   "placed",
   "accepted",
   "preparing",
   "ready",
-  "completed",
+  "picked_up",
+  "delivered",
   "cancelled",
+  "rejected",
+];
+
+/**
+ * The forward mainline. Rails, timelines and steppers consume THIS array so a
+ * lifecycle change only ever lands in one place.
+ */
+export const ORDER_MAINLINE: OrderLifecycleStatus[] = [
+  "placed",
+  "accepted",
+  "preparing",
+  "ready",
+  "picked_up",
+  "delivered",
 ];
 
 export const ORDER_LABELS: Record<OrderLifecycleStatus, string> = {
@@ -33,41 +54,49 @@ export const ORDER_LABELS: Record<OrderLifecycleStatus, string> = {
   accepted: "Restaurant accepted",
   preparing: "Preparing",
   ready: "Ready",
-  completed: "Completed",
+  picked_up: "Picked up",
+  delivered: "Delivered",
   cancelled: "Cancelled",
+  rejected: "Rejected",
 };
 
-/** Canonical read-path label (used by the customer app). */
+/**
+ * Uppercase contract keys — what the RestaurantAI spec calls PLACED, ACCEPTED,
+ * PICKED_UP etc. Status chips render these so the customer always sees the
+ * contract value while prose keeps the friendlier label.
+ */
+export const CONTRACT_STATUS: Record<OrderLifecycleStatus, string> = {
+  placed: "PLACED",
+  accepted: "ACCEPTED",
+  preparing: "PREPARING",
+  ready: "READY",
+  picked_up: "PICKED UP",
+  delivered: "DELIVERED",
+  cancelled: "CANCELLED",
+  rejected: "REJECTED",
+};
+
+/** True when the value is one of the canonical wire/DB keys. */
+export function isCanonicalStatus(status: string): boolean {
+  return (ORDER_STATUSES as string[]).includes(status);
+}
+
+/** Canonical read-path label (used by the customer app and POS queue). */
 export function statusLabel(status: string): string {
   const canonical = legacyToCanonical(status);
-  switch (canonical) {
-    case "placed":
-      return "Order placed";
-    case "accepted":
-      return "Restaurant accepted";
-    case "preparing":
-      return "Preparing";
-    case "ready":
-      return "Ready";
-    case "completed":
-      return "Completed";
-    case "cancelled":
-      return "Cancelled";
-    default:
-      return status;
-  }
+  return ORDER_LABELS[canonical] ?? status;
 }
 
 /** Whether the status is a "live" (non-terminal) state. */
 export function isTerminal(status: string): boolean {
   const s = legacyToCanonical(status);
-  return s === "completed" || s === "cancelled";
+  return s === "delivered" || s === "cancelled" || s === "rejected";
 }
 
 /**
  * Map legacy / ad-hoc statuses onto the canonical lifecycle. Keeps old rows
- * (pending, confirmed, out_for_delivery, delivered) meaningful after this
- * phase ships.
+ * (pending, confirmed, completed, out_for_delivery) meaningful after this
+ * phase ships. `completed` is a legacy alias for `delivered`.
  */
 export function legacyToCanonical(status: string): OrderLifecycleStatus {
   switch (status) {
@@ -81,37 +110,36 @@ export function legacyToCanonical(status: string): OrderLifecycleStatus {
       return "preparing";
     case "ready":
       return "ready";
-    case "completed":
+    case "picked_up":
+      return "picked_up";
     case "delivered":
+    case "completed":
     case "out_for_delivery":
-      return "completed";
+      return "delivered";
     case "cancelled":
       return "cancelled";
+    case "rejected":
+      return "rejected";
     default:
       return "placed";
   }
 }
 
-/** Forward (canonical) step used by the customer progress tracker. */
+/** Forward (canonical) step index used by the customer progress tracker. */
 export function stepIndex(status: string): number {
-  const flow: OrderLifecycleStatus[] = [
-    "placed",
-    "accepted",
-    "preparing",
-    "ready",
-    "completed",
-  ];
-  const idx = flow.indexOf(legacyToCanonical(status));
+  const idx = ORDER_MAINLINE.indexOf(legacyToCanonical(status));
   return idx === -1 ? 0 : idx;
 }
 
 const TRANSITIONS: Record<OrderLifecycleStatus, OrderLifecycleStatus[]> = {
-  placed: ["accepted", "cancelled"],
+  placed: ["accepted", "rejected"],
   accepted: ["preparing", "cancelled"],
-  preparing: ["ready", "cancelled"],
-  ready: ["completed", "cancelled"],
-  completed: [],
+  preparing: ["ready"],
+  ready: ["picked_up"],
+  picked_up: ["delivered"],
+  delivered: [],
   cancelled: [],
+  rejected: [],
 };
 
 export function nextStatuses(

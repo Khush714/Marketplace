@@ -11,7 +11,9 @@ const CANONICAL_ALIASES: Record<string, string[]> = {
   accepted: ["accepted", "confirmed"],
   preparing: ["preparing"],
   ready: ["ready"],
-  completed: ["completed", "delivered", "out_for_delivery"],
+  picked_up: ["picked_up"],
+  delivered: ["delivered", "completed", "out_for_delivery"],
+  rejected: ["rejected"],
   cancelled: ["cancelled"],
 };
 
@@ -54,6 +56,7 @@ export async function GET(request: Request) {
       customerName: orders.customerName,
       customerAddress: orders.customerAddress,
       notes: orders.notes,
+      scheduledFor: orders.scheduledFor,
       createdAt: orders.createdAt,
     })
     .from(orders)
@@ -94,6 +97,7 @@ export async function GET(request: Request) {
       },
       customer: { name: r.customerName, address: r.customerAddress },
       notes: r.notes,
+      scheduledFor: r.scheduledFor ? r.scheduledFor.toISOString() : null,
       placedAt: r.createdAt.toISOString(),
       items: (itemsByOrder.get(r.id) ?? []).map((i) => ({
         name: i.name,

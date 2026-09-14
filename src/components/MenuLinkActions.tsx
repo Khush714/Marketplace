@@ -18,11 +18,11 @@ export function MenuLinkActions({ url }: { url: string }) {
   const isExternal = /^https?:\/\//.test(url);
 
   return (
-    <div className="flex flex-wrap gap-2">
+    <div className="flex flex-col gap-2 sm:flex-row sm:flex-wrap">
       <a
         href={url}
         {...(isExternal ? { target: "_blank", rel: "noopener noreferrer" } : {})}
-        className="rounded-xl bg-orange-500 px-5 py-2.5 text-sm font-bold text-white hover:bg-orange-600"
+        className="rounded-2xl bg-ember-500 px-5 py-2.5 text-center text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
       >
         OPEN MENU
       </a>
@@ -30,7 +30,7 @@ export function MenuLinkActions({ url }: { url: string }) {
       <button
         type="button"
         onClick={copy}
-        className="rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+        className="rounded-2xl border border-white/10 bg-white/5 px-5 py-2.5 text-center text-sm font-semibold text-white/70 hover:bg-white/10"
       >
         {copied ? "COPIED" : "COPY MENU LINK"}
       </button>

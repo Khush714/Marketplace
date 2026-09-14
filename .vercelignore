@@ -1,0 +1,9 @@
+# Never upload local env / secrets or dev debris to Vercel.
+.env
+.env*
+!*.example
+
+# Local dev artifacts
+_tmp_*
+_next
+.pgdata

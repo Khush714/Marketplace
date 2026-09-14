@@ -1,8 +1,10 @@
 import { db } from "@/db";
-import { restaurants, marketplaceProfiles } from "@/db/schema";
+import { restaurants, marketplaceProfiles, restaurantIntegrations } from "@/db/schema";
 import { asc, eq } from "drizzle-orm";
 import { normalizeMenuUrl } from "@/lib/menu-url";
 import { requireAdmin } from "@/lib/admin-auth";
+import { restaurantId } from "@/lib/format";
+import { webhookSecret } from "@/lib/integrations";
 
 export const dynamic = "force-dynamic";
 
@@ -29,6 +31,7 @@ export async function GET() {
   const rows = await db
     .select({
       restaurantId: restaurants.id,
+      marketplaceId: restaurants.marketplaceId,
       profileId: marketplaceProfiles.id,
       name: restaurants.name,
       slug: restaurants.slug,
@@ -36,6 +39,8 @@ export async function GET() {
       description: restaurants.description,
       imageUrl: restaurants.imageUrl,
       address: restaurants.address,
+      phone: restaurants.phone,
+      openingHours: restaurants.openingHours,
       priceRange: restaurants.priceRange,
       isListed: marketplaceProfiles.isListed,
       marketplaceStatus: marketplaceProfiles.marketplaceStatus,
@@ -87,6 +92,12 @@ export async function POST(request: Request) {
     const description = body.description.trim().slice(0, 2000);
     const address = body.address.trim().slice(0, 240);
     const priceRange = body.priceRange.trim();
+    // PHASE 32 — optional identity fields (phone + opening-hours JSON).
+    const phone = typeof body.phone === "string" ? body.phone.trim().slice(0, 40) : "";
+    const openingHours =
+      typeof body.openingHours === "string" && body.openingHours.trim()
+        ? body.openingHours.trim().slice(0, 2000)
+        : "{}";
 
     if (!slug) {
       return Response.json({ error: "A valid slug is required (a-z, 0-9, dashes)" }, { status: 400 });
@@ -164,9 +175,12 @@ export async function POST(request: Request) {
         .values({
           name,
           slug,
+          marketplaceId: restaurantId(),
           cuisine,
           description,
           address,
+          phone,
+          openingHours,
           imageUrl,
           priceRange,
           isOpen: true,
@@ -189,6 +203,16 @@ export async function POST(request: Request) {
         etaMinutes: Number(etaMinutes),
         pickupEtaMinutes: Number(pickupEtaMinutes),
         commissionRate: "12.00",
+      });
+
+      // PHASE 33 — every restaurant, including self-enrolled ones, gets a
+      // connection record. RestaurantAI is the target provider; the POS is not
+      // actually connected yet (status stays disconnected).
+      await tx.insert(restaurantIntegrations).values({
+        restaurantId: restaurant.id,
+        provider: "restaurantai",
+        status: "disconnected",
+        webhookSecret: webhookSecret(),
       });
 
       return restaurant.id;

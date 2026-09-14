@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import { HeartIcon } from "./ui/icons";
 
 export function SaveRestaurantButton({ slug }: { slug: string }) {
   const router = useRouter();
@@ -50,15 +51,18 @@ export function SaveRestaurantButton({ slug }: { slug: string }) {
     <button
       onClick={toggle}
       disabled={busy}
-      className={`grid h-9 w-9 place-items-center rounded-full text-lg shadow backdrop-blur transition disabled:opacity-60 ${
+      className={`card-lift grid h-11 w-11 place-items-center rounded-full border backdrop-blur-md transition-colors disabled:opacity-60 ${
         saved
-          ? "bg-rose-500 text-white hover:bg-rose-600"
-          : "bg-white/90 text-slate-500 hover:text-rose-500"
+          ? "border-rose-500/30 bg-rose-500/20 text-rose-400"
+          : "border-white/10 bg-ink-950/60 text-white/70 hover:text-rose-400"
       }`}
       aria-label={saved ? "Remove from saved" : "Save restaurant"}
       title={saved ? "Saved" : "Save for later"}
     >
-      {saved ? "♥" : "♡"}
+      <HeartIcon
+        className={saved ? "text-lg" : "text-lg"}
+        style={saved ? { fill: "currentColor" } : undefined}
+      />
     </button>
   );
 }

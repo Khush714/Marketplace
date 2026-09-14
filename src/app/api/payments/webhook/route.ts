@@ -3,6 +3,7 @@ import { db } from "@/db";
 import { payments, orders } from "@/db/schema";
 import { eq } from "drizzle-orm";
 import { verifyRazorpayWebhookSignature } from "@/lib/razorpay";
+import { appendOrderEvent } from "@/lib/order-events";
 import { num } from "@/lib/format";
 
 export const dynamic = "force-dynamic";
@@ -81,10 +82,31 @@ async function onCaptured(entity: any) {
       .where(eq(payments.id, payment.id));
 
     if (payment.orderId) {
-      await db
-        .update(orders)
-        .set({ paymentStatus: "paid" })
-        .where(eq(orders.id, payment.orderId));
+      // PHASE 10 — only flip + audit when the order isn't already paid (the
+      // checkout verify route marks card orders paid at creation, so a later
+      // webhook is a no-op replay rather than a duplicate event).
+      const [cur] = await db
+        .select({ paymentStatus: orders.paymentStatus })
+        .from(orders)
+        .where(eq(orders.id, payment.orderId))
+        .limit(1);
+      if (cur && cur.paymentStatus !== "paid") {
+        await db
+          .update(orders)
+          .set({ paymentStatus: "paid" })
+          .where(eq(orders.id, payment.orderId));
+        await appendOrderEvent(db, {
+          orderId: payment.orderId,
+          type: "PAYMENT_CONFIRMED",
+          actor: "payment",
+          meta: {
+            method: "card",
+            razorpayPaymentId: String(entity.id),
+            amount: paidPaise / 100,
+          },
+          note: "Razorpay webhook payment.captured",
+        });
+      }
     }
   } else {
     await db
@@ -139,10 +161,25 @@ async function markFailed(paymentId: number, orderId: number | null, entity: any
   await db.update(payments).set(updates).where(eq(payments.id, paymentId));
 
   if (orderId) {
-    await db
-      .update(orders)
-      .set({ paymentStatus: "failed" })
-      .where(eq(orders.id, orderId));
+    const [cur] = await db
+      .select({ paymentStatus: orders.paymentStatus })
+      .from(orders)
+      .where(eq(orders.id, orderId))
+      .limit(1);
+    if (cur && cur.paymentStatus !== "failed") {
+      await db
+        .update(orders)
+        .set({ paymentStatus: "failed" })
+        .where(eq(orders.id, orderId));
+      // PHASE 10 — audit the failure next to the paid/milestone trail.
+      await appendOrderEvent(db, {
+        orderId,
+        type: "PAYMENT_FAILED",
+        actor: "payment",
+        meta: { method: "card", razorpayPaymentId: entity?.id ?? null },
+        note: updates.failureReason ?? "Razorpay webhook payment.failed",
+      });
+    }
   }
 }
 
@@ -178,5 +215,19 @@ async function onRefunded(entity: any, eventName: string) {
       .update(orders)
       .set({ paymentStatus: full ? "refunded" : "paid" })
       .where(eq(orders.id, payment.orderId));
+
+    // PHASE 10 — audit the refund alongside the confirmed payment.
+    await appendOrderEvent(db, {
+      orderId: payment.orderId,
+      type: full ? "PAYMENT_REFUNDED" : "PAYMENT_PARTIAL_REFUNDED",
+      actor: "payment",
+      meta: {
+        refundId: String(entity.id),
+        razorpayPaymentId: String(entity.payment_id),
+        amount: refundPaise / 100,
+        status,
+      },
+      note: eventName === "refund.created" ? "Refund created" : "Refund processed",
+    });
   }
 }

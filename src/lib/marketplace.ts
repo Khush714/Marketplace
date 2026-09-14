@@ -6,6 +6,7 @@ import {
   menuItems,
   menuItemModifierGroups,
   menuItemModifiers,
+  menus,
   discounts,
   savedRestaurants,
   reviews,
@@ -17,9 +18,16 @@ import {
 } from "@/db/schema";
 import { priceCart, type LineInput, type LineModifierSelection, type PricingResult } from "./pricing";
 import { summarizeStatus, statusLabel } from "./order-lifecycle";
+import { appendOrderEvent, listOrderEvents, type OrderEventView } from "./order-events";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
-import { num, orderReference, currency } from "./format";
-import { haversineKm } from "./geo";
+import { num, orderReference, currency, shortDateTime } from "./format";
+import { flushOrder } from "./push";
+import { publishOrderEvent } from "./realtime";
+import { haversineKm, parseLatLng, type LatLng } from "./geo";
+import { getDeliveryForOrder, type RiderFix } from "./delivery";
+import { createDeliveryOrderForOrderTx } from "./delivery";
+import { enqueueOutboundEvent } from "./webhook-outbox";
+import { marketplaceOrderingEnabled } from "./feature-flags";
 
 // ===========================================================================
 // PHASE 3 — CUSTOMER-SAFE CONTRACT
@@ -109,6 +117,23 @@ export function assertCustomerSafe(payload: unknown, path = "$"): void {
   }
 }
 
+/**
+ * PHASE 10 — the raw audit trail (written for POS debugging) may carry internal
+ * keys in `meta` (restaurantId, orderId, …). The customer page must never see
+ * those, so strip them at the boundary instead of leaking them into a payload.
+ */
+export function toPublicEventViews(
+  events: OrderEventView[],
+): OrderEventView[] {
+  return events.map((e) => {
+    const meta: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(e.meta)) {
+      if (!FORBIDDEN_KEYS.has(k)) meta[k] = v;
+    }
+    return { ...e, meta };
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Shared SQL fragments
 // ---------------------------------------------------------------------------
@@ -141,6 +166,8 @@ export type SortKey = "recommended" | "rating" | "popular" | "nearby" | "name";
 
 export type PublicRestaurant = {
   id: number;
+  /** PHASE 32 — permanent marketplace identity (e.g. "rst_01j8abc123"). */
+  marketplaceId: string;
   slug: string;
   name: string;
   cuisine: string;
@@ -150,8 +177,16 @@ export type PublicRestaurant = {
   tagline: string;
   imageUrl: string;
   logoUrl: string;
-  /** Restaurant POS ordering URL. Marketplace deep-links here — never places orders. */
+  /** Restaurant POS ordering URL. Marketplace deep-links here only in
+   * discovery-only mode; when `ordersInternal` is true the marketplace takes
+   * the order itself. */
   menuUrl: string;
+  /**
+   * True when in-marketplace ordering is reactivated (MARKETPLACE_ORDERING_ENABLED=1):
+   * the customer orders through the marketplace's own menu/checkout page instead
+   * of deep-linking to the restaurant's hosted URL.
+   */
+  ordersInternal: boolean;
   /** Owner-uploaded image of their existing POS menu QR code. */
   qrImageUrl: string;
   priceRange: string;
@@ -207,6 +242,14 @@ export type PublicModifierGroup = {
 
 export type PublicMenuItem = {
   id: number;
+  /** PHASE 34 — stable marketplace id ("item_…", e.g. "item_82931") the future
+   * RestaurantAI menu sync will reference instead of the serial id. */
+  menuItemId: string;
+  /** PHASE 35 — external RestaurantAI/POS id ("pos_item_829") this item is
+   * mapped to, if the restaurant has registered it. null = marketplace-only. */
+  externalId: string | null;
+  /** PHASE 34 — stable category id ("cat_…") this item belongs to, if any. */
+  categoryId: string | null;
   name: string;
   description: string;
   price: number;
@@ -220,7 +263,9 @@ export type PublicMenuItem = {
 
 export type PublicMenu = {
   restaurant: PublicRestaurant;
-  categories: { name: string; items: PublicMenuItem[] }[];
+  /** PHASE 19 — permanent marketplace id of the restaurant's active menu (e.g. "menu_01J8abc123"). */
+  menuId: string;
+  categories: { id: string; name: string; items: PublicMenuItem[] }[];
 };
 
 export type PublicReview = {
@@ -249,10 +294,21 @@ export type PublicOrder = {
   reference: string;
   status: string;
   rawStatus: string;
+  /** PHASE 8 — order source/channel (e.g. "marketplace"). Maps orders.channel. */
+  source: string;
   fulfillment: "delivery" | "pickup";
   payment: { method: string; status: string };
   customer: { name: string; address: string };
-  restaurant: { id: number; name: string; slug: string };
+  restaurant: {
+    id: number;
+    /** PHASE 32 — stable marketplace identity for the order's restaurant. */
+    marketplaceId: string;
+    name: string;
+    slug: string;
+    /** PHASE 30 — pickup pin for the rider map (null if unset). */
+    lat: number | null;
+    lng: number | null;
+  };
   totals: {
     subtotal: number;
     discount: number;
@@ -272,12 +328,34 @@ export type PublicOrder = {
   };
   /** PHASE 13 — append-only audit trail both screens render from. */
   timeline: { status: string; label: string; at: string; actor: string }[];
-  /** PHASE 14 — a review is only possible once the order is completed. */
+  /**
+   * PHASE 10 — unified audit trail (superset of `timeline`): lifecycle
+   * transitions AND domain milestones (payment, sent-to-restaurant, delivery).
+   * Chronological, oldest first; the debugging surface for POS integration.
+   */
+  events: OrderEventView[];
+  /**
+   * PHASE 29/30 — rider snapshot for delivery orders (null until assigned).
+   * `dropoff` is the coords captured at checkout (null for legacy/`pickup`);
+   * `rider` is the latest live position fix (null until the rider reports in).
+   */
+  delivery: {
+    status: string;
+    label: string;
+    step: number;
+    terminal: boolean;
+    partner: { id: number; name: string; vehicleType: string } | null;
+    dropoff: LatLng | null;
+    rider: RiderFix | null;
+  } | null;
+  /** PHASE 14 — a review is only possible once the order is delivered. */
   review: {
     eligible: boolean;
     reason: string | null;
     alreadyReviewed: boolean;
   };
+  /** PHASE 32 — future delivery window (ISO, null = ASAP/regular order). */
+  scheduledFor: string | null;
   placedAt: string;
 };
 
@@ -287,6 +365,7 @@ export type PublicOrder = {
 
 const publicRestaurantColumns = {
   id: restaurants.id,
+  marketplaceId: restaurants.marketplaceId,
   slug: restaurants.slug,
   name: restaurants.name,
   cuisine: restaurants.cuisine,
@@ -316,6 +395,7 @@ const publicRestaurantColumns = {
 
 type RawRestaurant = {
   id: number;
+  marketplaceId: string;
   slug: string;
   name: string;
   cuisine: string;
@@ -358,6 +438,7 @@ function toPublicRestaurant(
   const deliveryRadiusKm = num(r.deliveryRadiusKm) || 8;
   return {
     id: r.id,
+    marketplaceId: r.marketplaceId,
     slug: r.slug,
     name: r.name,
     cuisine: r.cuisine,
@@ -370,6 +451,7 @@ function toPublicRestaurant(
     imageUrl: r.imageUrl,
     logoUrl: r.logoUrl,
     menuUrl: r.menuUrl,
+    ordersInternal: marketplaceOrderingEnabled,
     qrImageUrl: r.qrImageUrl ?? "",
     priceRange: r.priceRange,
     address: r.address,
@@ -588,13 +670,15 @@ export async function getPublicMenu(idOrSlug: string): Promise<PublicMenu | null
   // POS is source of truth — every query is keyed by restaurant_id.
   const [cats, items, agg] = await Promise.all([
     db
-      .select({ id: categories.id, name: categories.name })
+      .select({ id: categories.id, marketplaceId: categories.marketplaceId, name: categories.name })
       .from(categories)
       .where(eq(categories.restaurantId, r.id))
       .orderBy(asc(categories.sortOrder), asc(categories.name)),
     db
       .select({
         id: menuItems.id,
+        marketplaceId: menuItems.marketplaceId,
+        externalId: menuItems.externalId,
         name: menuItems.name,
         description: menuItems.description,
         price: menuItems.price,
@@ -665,8 +749,12 @@ export async function getPublicMenu(idOrSlug: string): Promise<PublicMenu | null
   }
 
   const categoryName = new Map(cats.map((c) => [c.id, c.name]));
+  const categoryId = new Map(cats.map((c) => [c.id, c.marketplaceId]));
   const publicItems: PublicMenuItem[] = items.map((i) => ({
     id: i.id,
+    menuItemId: i.marketplaceId,
+    externalId: i.externalId ?? null,
+    categoryId: i.categoryId ? (categoryId.get(i.categoryId) ?? null) : null,
     name: i.name,
     description: i.description,
     price: num(i.price),
@@ -685,13 +773,25 @@ export async function getPublicMenu(idOrSlug: string): Promise<PublicMenu | null
     grouped.set(item.category, list);
   }
 
+  // PHASE 19 — resolve the restaurant's active menu stable id.
+  const [activeMenu] = await db
+    .select({ marketplaceId: menus.marketplaceId })
+    .from(menus)
+    .where(
+      and(eq(menus.restaurantId, r.id), eq(menus.isDefault, true)),
+    )
+    .limit(1);
+  const resolvedMenuId = activeMenu?.marketplaceId ?? "";
+
   return {
     restaurant: toPublicRestaurant(
       r,
       num(agg[0]?.rating),
       num(agg[0]?.reviewCount),
     ),
+    menuId: resolvedMenuId,
     categories: [...grouped.entries()].map(([name, list]) => ({
+      id: list[0]?.categoryId ?? "",
       name,
       items: list,
     })),
@@ -910,6 +1010,7 @@ export async function searchMarketplace(q: string) {
         slug: d.restaurantSlug,
         name: d.restaurantName,
         menuUrl: d.restaurantMenuUrl ?? "",
+        orderingInternal: marketplaceOrderingEnabled,
       },
     })),
   };
@@ -931,6 +1032,13 @@ export type PlaceOrderInput = {
   customerName: string;
   customerPhone: string;
   customerAddress?: string;
+  /**
+   * PHASE 30 — dropoff coordinates captured at checkout, so the customer's
+   * live rider track can render a real map. Optional (legacy orders are
+   * text-address only); validated when provided for delivery orders.
+   */
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
   fulfillmentType?: "delivery" | "pickup";
   paymentMethod?: "cash" | "card";
   notes?: string;
@@ -944,6 +1052,11 @@ export type PlaceOrderInput = {
    * against at payment-intent time. Validated to the MKT-xxxx pattern.
    */
   reference?: string;
+  /**
+   * PHASE 32 — scheduled delivery window (ISO). NULL/omitted = as soon as
+   * possible. Validated at quote time to be 5+ minutes out and within 14 days.
+   */
+  scheduledFor?: string | null;
 };
 
 export type LookupDiscountResult =
@@ -999,15 +1112,20 @@ export type PlaceOrderResult =
 // ---------------------------------------------------------------------------
 
 type MarketplaceQuote = {
-  restaurant: typeof restaurants.$inferSelect;
+  restaurant: Pick<
+    typeof restaurants.$inferSelect,
+    "id" | "name" | "slug" | "isOpen" | "taxRate" | "lat" | "lng"
+  >;
   profile: typeof marketplaceProfiles.$inferSelect;
   pricing: PricingResult;
   customerName: string;
   customerPhone: string;
   customerAddress: string;
+  dropoff: LatLng | null;
   fulfillmentType: "delivery" | "pickup";
   paymentMethod: "cash" | "card";
   reference: string;
+  scheduledFor: Date | null;
 };
 
 export type ComputeMarketplacePricingResult =
@@ -1030,6 +1148,52 @@ export async function computeMarketplacePricing(
     return { ok: false, status: 400, error: "Name and phone are required" };
   if (fulfillmentType === "delivery" && !customerAddress)
     return { ok: false, status: 400, error: "Delivery address is required" };
+
+  // PHASE 30 — optional dropoff fix for the live rider map. Only meaningful for
+  // delivery; reject obviously-invalid pairs when the caller bothers to send
+  // them so a bot can't poison the tracker with garbage coordinates.
+  const dropoff = parseLatLng(
+    input.dropoffLat == null ? null : String(input.dropoffLat),
+    input.dropoffLng == null ? null : String(input.dropoffLng),
+  );
+  if (
+    fulfillmentType === "delivery" &&
+    (input.dropoffLat != null || input.dropoffLng != null) &&
+    !dropoff
+  ) {
+    return {
+      ok: false,
+      status: 400,
+      error: "Delivery coordinates are invalid",
+    };
+  }
+
+  // PHASE 32 — scheduled delivery window. The checkout picker enforces a
+  // 5-minute buffer and a 14-day horizon in the UI; the server revalidates so
+  // a crafted request can't book an impossible window.
+  let scheduledFor: Date | null = null;
+  if (input.scheduledFor) {
+    const parsed = new Date(input.scheduledFor);
+    if (Number.isNaN(parsed.getTime())) {
+      return { ok: false, status: 400, error: "Scheduled time is invalid" };
+    }
+    const now = Date.now();
+    if (parsed.getTime() < now + 5 * 60_000) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Scheduled time must be at least 5 minutes from now",
+      };
+    }
+    if (parsed.getTime() > now + 14 * 24 * 60 * 60_000) {
+      return {
+        ok: false,
+        status: 400,
+        error: "Scheduled time can be at most 14 days from now",
+      };
+    }
+    scheduledFor = parsed;
+  }
 
   const clean: IncomingLine[] = (input.items ?? [])
     .map((i) => ({
@@ -1060,7 +1224,16 @@ export async function computeMarketplacePricing(
       : eq(restaurants.slug, input.restaurant);
 
   const [row] = await db
-    .select({ restaurant: restaurants, profile: marketplaceProfiles })
+    .select({
+      id: restaurants.id,
+      name: restaurants.name,
+      slug: restaurants.slug,
+      isOpen: restaurants.isOpen,
+      taxRate: restaurants.taxRate,
+      lat: restaurants.lat,
+      lng: restaurants.lng,
+      profile: marketplaceProfiles,
+    })
     .from(restaurants)
     .innerJoin(
       marketplaceProfiles,
@@ -1070,7 +1243,7 @@ export async function computeMarketplacePricing(
     .limit(1);
 
   if (!row) return { ok: false, status: 404, error: "Restaurant not found" };
-  const { restaurant, profile } = row;
+  const { profile, ...restaurant } = row;
 
   if (!profile.isListed || profile.marketplaceStatus !== "live")
     return { ok: false, status: 409, error: "This restaurant is not available on the marketplace" };
@@ -1218,9 +1391,11 @@ export async function computeMarketplacePricing(
       customerName,
       customerPhone,
       customerAddress,
+      dropoff: fulfillmentType === "delivery" ? dropoff : null,
       fulfillmentType,
       paymentMethod,
       reference,
+      scheduledFor,
     },
   };
 }
@@ -1237,9 +1412,11 @@ export async function placeOrder(
     customerName,
     customerPhone,
     customerAddress,
+    dropoff,
     fulfillmentType,
     paymentMethod,
     reference,
+    scheduledFor,
   } = priced.quote;
 
   const created = await db.transaction(async (tx) => {
@@ -1277,6 +1454,14 @@ export async function placeOrder(
         customerName,
         customerPhone,
         customerAddress: fulfillmentType === "pickup" ? "" : customerAddress,
+        dropoffLat:
+          fulfillmentType === "delivery" && dropoff
+            ? dropoff.lat.toFixed(6)
+            : null,
+        dropoffLng:
+          fulfillmentType === "delivery" && dropoff
+            ? dropoff.lng.toFixed(6)
+            : null,
         channel: "marketplace",
         fulfillmentType,
         status: "placed",
@@ -1289,6 +1474,7 @@ export async function placeOrder(
         deliveryFee: pricing.deliveryFee.toFixed(2),
         total: pricing.total.toFixed(2),
         notes: (input.notes ?? "").trim(),
+        scheduledFor: scheduledFor ?? null,
       })
       .returning();
 
@@ -1298,6 +1484,44 @@ export async function placeOrder(
       toStatus: "placed",
       actor: "system",
       note: "Order placed from marketplace",
+    });
+
+    // PHASE 10 — audit trail: placed, then the payment + restaurant handoff
+    // milestones. Card is captured up-front for the marketplace checkout, so
+    // PAYMENT_CONFIRMED is recorded at placement alongside the order.
+    await appendOrderEvent(tx, {
+      orderId: order.id,
+      type: "ORDER_PLACED",
+      actor: "system",
+      toStatus: "placed",
+      meta: {
+        restaurantId: restaurant.id,
+        restaurantName: restaurant.name,
+        fulfillment: fulfillmentType,
+        paymentMethod,
+        subtotal: pricing.subtotal,
+        tax: pricing.taxAmount,
+        discount: pricing.discountAmount,
+        deliveryFee: pricing.deliveryFee,
+        total: pricing.total,
+      },
+      note: "Order placed from marketplace",
+    });
+    if (paymentMethod === "card") {
+      await appendOrderEvent(tx, {
+        orderId: order.id,
+        type: "PAYMENT_CONFIRMED",
+        actor: "payment",
+        meta: { method: "card", amount: pricing.total, status: "paid" },
+        note: "Card payment captured up-front",
+      });
+    }
+    await appendOrderEvent(tx, {
+      orderId: order.id,
+      type: "ORDER_SENT_TO_RESTAURANT",
+      actor: "system",
+      meta: { restaurantId: restaurant.id },
+      note: "Visible in the restaurant POS queue",
     });
 
     await tx.insert(orderItems).values(
@@ -1321,6 +1545,19 @@ export async function placeOrder(
       channel: "push",
     });
 
+    // PHASE 32 — a scheduled (future-window) order surfaces its window as a
+    // dedicated notification so the customer knows it is booked, not live.
+    if (scheduledFor) {
+      await tx.insert(notifications).values({
+        customerId,
+        phone: customerPhone,
+        orderId: order.id,
+        kind: "order_scheduled",
+        message: `Your order ${reference} is scheduled for ${shortDateTime(scheduledFor)}.`,
+        channel: "push",
+      });
+    }
+
     // PHASE 21 — card payment sets a payment-successful notification too.
     if (paymentMethod === "card") {
       await tx.insert(notifications).values({
@@ -1333,7 +1570,39 @@ export async function placeOrder(
       });
     }
 
+    // PHASE 45 — a delivery order gets its delivery track at placement
+    // (status `pending`), so the customer tracker shows "Waiting for a
+    // driver" even before any rider is assigned. Idempotent on order_id;
+    // assigning a partner later just advances this same track.
+    if (fulfillmentType === "delivery") {
+      await createDeliveryOrderForOrderTx(tx, {
+        orderId: order.id,
+        restaurantId: restaurant.id,
+        deliveryFee: pricing.deliveryFee.toFixed(2),
+        dropoffLat: dropoff ? dropoff.lat.toFixed(6) : null,
+        dropoffLng: dropoff ? dropoff.lng.toFixed(6) : null,
+        scheduledFor: scheduledFor ?? null,
+        pickup: { lat: restaurant.lat, lng: restaurant.lng },
+        mode: "platform",
+      });
+    }
+
     return order;
+  });
+
+  // PHASE 24 — deliver the order-placed/payment push right after commit so the
+  // customer sees it without waiting for the sweep cron.
+  void flushOrder(created.id).catch((e) => {
+    console.error("push flush failed for order", created.id, e);
+  });
+
+  // PHASE 28 — real-time: notify any open trackers of the new order.
+  void publishOrderEvent(created.reference, "placed", "system");
+
+  // PHASE 36 — outbound delivery to a connected RestaurantAI/POS endpoint
+  // (order.created). Enqueue never sends; a worker dispatch delivers it.
+  void enqueueOutboundEvent(created.id, "order.created").catch((e) => {
+    console.error("outbox enqueue failed for order", created.id, e);
   });
 
   return {
@@ -1375,6 +1644,7 @@ export async function getPublicOrder(
       id: orders.id,
       reference: orders.reference,
       status: orders.status,
+      channel: orders.channel,
       fulfillmentType: orders.fulfillmentType,
       paymentMethod: orders.paymentMethod,
       paymentStatus: orders.paymentStatus,
@@ -1386,10 +1656,14 @@ export async function getPublicOrder(
       discountAmount: orders.discountAmount,
       deliveryFee: orders.deliveryFee,
       total: orders.total,
+      scheduledFor: orders.scheduledFor,
       createdAt: orders.createdAt,
       restaurantId: restaurants.id,
+      restaurantMarketplaceId: restaurants.marketplaceId,
       restaurantName: restaurants.name,
       restaurantSlug: restaurants.slug,
+      restaurantLat: restaurants.lat,
+      restaurantLng: restaurants.lng,
     })
     .from(orders)
     .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
@@ -1398,7 +1672,7 @@ export async function getPublicOrder(
 
   if (!row) return null;
 
-  const [items, events, existingReview] = await Promise.all([
+  const [items, events, audit, existingReview, delivery] = await Promise.all([
     db
       .select({
         name: orderItems.name,
@@ -1414,11 +1688,13 @@ export async function getPublicOrder(
       .from(orderStatusEvents)
       .where(eq(orderStatusEvents.orderId, row.id))
       .orderBy(asc(orderStatusEvents.createdAt)),
+    listOrderEvents(row.id),
     db
       .select({ id: reviews.id })
       .from(reviews)
       .where(eq(reviews.orderId, row.id))
       .limit(1),
+    getDeliveryForOrder(row.id),
   ]);
 
   const lifecycle = summarizeStatus(row.status);
@@ -1433,25 +1709,29 @@ export async function getPublicOrder(
     actor: e.actor,
   }));
 
-  const completed = lifecycle.status === "completed";
+  const delivered = lifecycle.status === "delivered";
   const alreadyReviewed = existingReview.length > 0;
-  let reviewEligible = completed && !alreadyReviewed;
+  let reviewEligible = delivered && !alreadyReviewed;
   let reviewReason: string | null = null;
   if (alreadyReviewed) reviewReason = "You already reviewed this order.";
-  else if (!completed) reviewReason = "Review after your order is completed.";
+  else if (!delivered) reviewReason = "Review after your order is delivered.";
 
   return {
     id: row.id,
     reference: row.reference,
     status: lifecycle.status,
     rawStatus: row.status,
+    source: row.channel,
     fulfillment: row.fulfillmentType === "pickup" ? "pickup" : "delivery",
     payment: { method: row.paymentMethod, status: row.paymentStatus },
     customer: { name: row.customerName, address: row.customerAddress },
     restaurant: {
       id: row.restaurantId,
+      marketplaceId: row.restaurantMarketplaceId,
       name: row.restaurantName,
       slug: row.restaurantSlug,
+      lat: row.restaurantLat == null ? null : num(row.restaurantLat),
+      lng: row.restaurantLng == null ? null : num(row.restaurantLng),
     },
     totals: {
       subtotal: num(row.subtotal),
@@ -1484,12 +1764,30 @@ export async function getPublicOrder(
       next: lifecycle.next,
     },
     timeline,
+    events: toPublicEventViews(
+      audit.length
+        ? audit
+        : [
+            {
+              type: "ORDER_PLACED",
+              label: "Order placed",
+              actor: "system",
+              from: null,
+              to: "placed",
+              meta: {},
+              note: "",
+              at: row.createdAt.toISOString(),
+            },
+          ],
+    ),
+    delivery,
     review: {
       eligible: reviewEligible,
       reason: reviewReason,
       alreadyReviewed,
     },
     placedAt: row.createdAt.toISOString(),
+    scheduledFor: row.scheduledFor ? row.scheduledFor.toISOString() : null,
   };
 }
 
@@ -1539,7 +1837,7 @@ export async function submitReview(
     return {
       ok: false,
       status: 400,
-      error: "Review only eligible on a completed order",
+      error: "Review only eligible on a delivered order",
     };
   }
 
@@ -1566,11 +1864,11 @@ export async function submitReview(
     };
   }
 
-  if (summarizeStatus(order.status).status !== "completed") {
+  if (summarizeStatus(order.status).status !== "delivered") {
     return {
       ok: false,
       status: 409,
-      error: "You can review once the order is completed.",
+      error: "You can review once the order is delivered.",
     };
   }
 

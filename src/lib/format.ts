@@ -33,6 +33,18 @@ export function timeOfDay(value: Date | string): string {
   });
 }
 
+/** PHASE 32 — compact weekday+date+time label for scheduled windows. */
+export function shortDateTime(value: Date | string): string {
+  const d = typeof value === "string" ? new Date(value) : value;
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 /** Relative staleness label (e.g. "moments ago") — for refresh warnings. */
 export function timeAgo(ms: number | null | undefined, now = Date.now()): string {
   if (ms === null || ms === undefined || ms <= 0) return "";
@@ -49,4 +61,53 @@ export function orderReference(): string {
   const stamp = Date.now().toString(36).toUpperCase().slice(-5);
   const rand = Math.random().toString(36).toUpperCase().slice(2, 10);
   return `MKT-${stamp}${rand}`;
+}
+
+/**
+ * Permanent marketplace restaurant id, e.g. "rst_01j8abc123xyz". Lowercase
+ * base-36 so it is URL-safe and unambiguous next to uppercase MKT-/DLV- ids.
+ */
+export function restaurantId(): string {
+  const stamp = Date.now().toString(36).slice(-8);
+  const rand = Math.random().toString(36).slice(2, 12);
+  return `rst_${stamp}${rand}`;
+}
+
+/**
+ * Permanent marketplace menu id, e.g. "menu_01j8abc123xyz". Same scheme as
+ * restaurantId() so the whole POS/marketplace identity graph shares one style.
+ */
+export function menuId(): string {
+  const stamp = Date.now().toString(36).slice(-8);
+  const rand = Math.random().toString(36).slice(2, 12);
+  return `menu_${stamp}${rand}`;
+}
+
+/**
+ * Permanent marketplace category id, e.g. "cat_01j8abc123xyz".
+ */
+export function categoryId(): string {
+  const stamp = Date.now().toString(36).slice(-8);
+  const rand = Math.random().toString(36).slice(2, 12);
+  return `cat_${stamp}${rand}`;
+}
+
+/**
+ * Permanent marketplace menu item id, e.g. "item_82931". This is the id the
+ * future RestaurantAI menu sync will use to reference a dish.
+ */
+export function menuItemId(): string {
+  const stamp = Date.now().toString(36).slice(-8);
+  const rand = Math.random().toString(36).slice(2, 12);
+  return `item_${stamp}${rand}`;
+}
+
+/**
+ * Short-lived connection code for POS authorization, e.g. "MKT-8F29-KD92".
+ * Four uppercase hex chars per segment, three segments separated by hyphens.
+ */
+export function connectionCode(): string {
+  const seg = () =>
+    Math.random().toString(16).toUpperCase().slice(2, 6);
+  return `MKT-${seg()}-${seg()}`;
 }

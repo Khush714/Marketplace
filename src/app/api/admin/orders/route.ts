@@ -8,9 +8,9 @@ import { requireAdmin } from "@/lib/admin-auth";
 export const dynamic = "force-dynamic";
 
 const BUCKETS: Record<string, string[]> = {
-  live: ["placed", "accepted", "preparing", "ready", "pending", "confirmed"],
+  live: ["placed", "accepted", "preparing", "ready", "picked_up", "pending", "confirmed"],
   completed: ["completed", "delivered"],
-  cancelled: ["cancelled"],
+  cancelled: ["cancelled", "rejected"],
 };
 
 /** GET /api/admin/orders?bucket=live|completed|cancelled */

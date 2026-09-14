@@ -24,9 +24,9 @@ import type { PublicOrder } from "@/lib/marketplace";
 type OrderType = "dine_in" | "delivery" | "pickup";
 
 const TYPE_STYLES: Record<OrderType, { accent: string; dot: string }> = {
-  dine_in: { accent: "text-indigo-600", dot: "bg-indigo-500" },
-  delivery: { accent: "text-sky-600", dot: "bg-sky-500" },
-  pickup: { accent: "text-orange-600", dot: "bg-orange-500" },
+  dine_in: { accent: "text-indigo-400", dot: "bg-indigo-400" },
+  delivery: { accent: "text-sky-400", dot: "bg-sky-400" },
+  pickup: { accent: "text-ember-400", dot: "bg-ember-400" },
 };
 
 export function OrderTypeInfo({ order }: { order: PublicOrder }) {
@@ -56,7 +56,7 @@ export function OrderTypeInfo({ order }: { order: PublicOrder }) {
   const style = TYPE_STYLES[type];
 
   return (
-    <section className="mt-4 rounded-2xl border border-slate-200 bg-white px-5 py-4 shadow-sm">
+    <section className="card-lift mt-4 rounded-3xl border border-white/8 bg-ink-850 px-5 py-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <div className="flex items-center gap-2">
         <span
           aria-hidden
@@ -68,7 +68,7 @@ export function OrderTypeInfo({ order }: { order: PublicOrder }) {
           {label}
         </p>
       </div>
-      <p className="mt-1 text-sm text-slate-600">{detail}</p>
+      <p className="mt-1 break-words text-sm text-white/55">{detail}</p>
     </section>
   );
 }

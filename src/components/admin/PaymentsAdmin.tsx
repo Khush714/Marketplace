@@ -25,12 +25,12 @@ type AdminPayment = {
 };
 
 const STATUS_STYLE: Record<string, string> = {
-  created: "bg-slate-100 text-slate-600",
-  authorized: "bg-blue-50 text-blue-700",
-  captured: "bg-emerald-50 text-emerald-700",
-  failed: "bg-rose-50 text-rose-700",
-  refunded: "bg-slate-200 text-slate-600",
-  partial_refunded: "bg-amber-50 text-amber-700",
+  created: "bg-white/5 text-white/60",
+  authorized: "bg-blue-500/10 text-blue-400",
+  captured: "bg-emerald-500/10 text-emerald-400",
+  failed: "bg-rose-500/10 text-rose-400",
+  refunded: "bg-white/10 text-white/60",
+  partial_refunded: "bg-amber-500/10 text-amber-400",
 };
 
 export function PaymentsAdmin() {
@@ -85,7 +85,7 @@ export function PaymentsAdmin() {
 
   return (
     <div>
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         <Stat label="Total" value={stats.total} />
         <Stat label="Captured" value={stats.captured} tone="emerald" />
         <Stat label="Refunded" value={stats.refunded} tone="amber" />
@@ -96,21 +96,21 @@ export function PaymentsAdmin() {
         <p
           className={`mt-4 rounded-xl px-4 py-3 text-sm ${
             message.startsWith("Refund failed")
-              ? "bg-rose-50 text-rose-600"
-              : "bg-emerald-50 text-emerald-700"
+              ? "border border-rose-500/25 bg-rose-500/10 text-rose-400"
+              : "border border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
           }`}
         >
           {message}
         </p>
       )}
 
-      <div className="mt-5 flex gap-1 rounded-full border border-slate-200 bg-white p-0.5 text-xs">
+      <div className="mt-5 flex gap-1 rounded-full border border-white/10 bg-white/5 p-0.5 text-xs">
         {["all", "captured", "refunded", "failed"].map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
-            className={`flex-1 truncate rounded-full px-3 py-1.5 font-semibold capitalize ${
-              filter === f ? "bg-slate-900 text-white" : "text-slate-500"
+            className={`flex-1 truncate rounded-full px-3 py-1.5 font-semibold capitalize transition-colors ${
+              filter === f ? "bg-ink-800 text-white" : "text-white/45 hover:text-white/65"
             }`}
           >
             {f}
@@ -119,56 +119,56 @@ export function PaymentsAdmin() {
       </div>
 
       <div className="mt-4 space-y-4">
-        {loading && <div className="h-32 animate-pulse rounded-2xl bg-slate-200" />}
+        {loading && <div className="h-32 animate-pulse rounded-2xl bg-white/5" />}
         {!loading && visible.length === 0 && (
-          <p className="rounded-2xl border border-dashed border-slate-300 bg-white p-8 text-center text-sm text-slate-500">
+          <p className="rounded-2xl border border-dashed border-white/10 bg-ink-850 p-8 text-center text-sm text-white/45">
             No payments in this state.
           </p>
         )}
         {visible.map((p) => (
           <article
             key={p.id}
-            className="rounded-2xl border border-slate-200 bg-white p-4"
+            className="rounded-2xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]"
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
-                <p className="font-semibold text-slate-900">
+                <p className="font-semibold text-white">
                   {p.order?.reference ?? "Intent"} · {p.restaurant.name ?? "—"}
                 </p>
-                <p className="mt-0.5 text-xs text-slate-500">
+                <p className="mt-0.5 text-xs text-white/45">
                   {p.order?.customerName ?? "No order yet"}
                   {" · "}
                   {shortDate(p.createdAt)}
                 </p>
-                <p className="mt-1 font-mono text-[11px] text-slate-400">
+                <p className="mt-1 font-mono text-[11px] text-white/35">
                   {p.razorpayOrderId}
                   {p.razorpayPaymentId ? ` / ${p.razorpayPaymentId}` : ""}
                 </p>
                 {p.failureReason && (
-                  <p className="mt-1 text-xs text-rose-500">{p.failureReason}</p>
+                  <p className="mt-1 text-xs text-rose-400">{p.failureReason}</p>
                 )}
                 {p.refundId && (
-                  <p className="mt-1 text-xs text-amber-600">
+                  <p className="mt-1 text-xs text-amber-400">
                     Refund {p.refundId} ({currency(p.refundAmount)})
                   </p>
                 )}
               </div>
-              <div className="flex items-center gap-3">
-                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLE[p.status] ?? "bg-slate-100 text-slate-600"}`}>
+              <div className="flex flex-wrap items-center gap-2">
+                <span className={`rounded-full px-2.5 py-1 text-xs font-semibold ${STATUS_STYLE[p.status] ?? "bg-white/5 text-white/60"}`}>
                   {p.status.replace("_", " ")}
                 </span>
-                <span className="text-lg font-bold tabular-nums text-slate-900">
+                <span className="text-lg font-bold tabular-nums text-white">
                   {currency(p.amount)}
                 </span>
               </div>
             </div>
 
             {p.status === "captured" && p.order && (
-              <div className="mt-3 border-t border-slate-100 pt-3">
+              <div className="mt-3 border-t border-white/6 pt-3">
                 <button
                   onClick={() => refund(p)}
                   disabled={refundingId === p.id}
-                  className="rounded-xl bg-slate-900 px-4 py-2 text-xs font-bold text-white transition hover:bg-slate-800 disabled:opacity-60"
+                  className="rounded-2xl bg-ember-500 px-4 py-2 text-xs font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] disabled:opacity-60"
                 >
                   {refundingId === p.id ? "Refunding…" : "Refund"}
                 </button>
@@ -192,15 +192,15 @@ function Stat({
 }) {
   const color =
     tone === "emerald"
-      ? "text-emerald-600"
+      ? "text-emerald-400"
       : tone === "amber"
-        ? "text-amber-600"
+        ? "text-amber-400"
         : tone === "rose"
-          ? "text-rose-600"
-          : "text-slate-900";
+          ? "text-rose-400"
+          : "text-white";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-4">
-      <p className="text-xs font-medium text-slate-500">{label}</p>
+    <div className="rounded-2xl border border-white/8 bg-ink-850 p-4">
+      <p className="text-xs font-medium text-white/40">{label}</p>
       <p className={`mt-1 text-2xl font-bold tabular-nums ${color}`}>{value}</p>
     </div>
   );

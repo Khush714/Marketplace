@@ -23,17 +23,17 @@ export default async function MarketplaceOnboardingIndex() {
   return (
     <main className="mx-auto max-w-5xl px-4 pb-16 sm:px-6">
       <div className="mt-8">
-        <p className="text-sm font-medium uppercase tracking-[0.14em] text-orange-500">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/40">
           Phase 4 · onboarding
         </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">
           Restaurant marketplace onboarding
         </h1>
-        <p className="mt-2 max-w-2xl text-slate-500">
+        <p className="mt-2 max-w-2xl text-white/45">
           Restaurants can publish themselves from the public{" "}
           <Link
             href="/list-your-restaurant"
-            className="text-orange-600 underline"
+            className="text-ember-400 hover:text-ember-300 hover:underline"
           >
             List your restaurant
           </Link>{" "}
@@ -45,13 +45,13 @@ export default async function MarketplaceOnboardingIndex() {
       <nav className="mt-6 flex flex-wrap gap-2">
         <Link
           href="/admin/pos"
-          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-orange-300 hover:text-orange-600"
+          className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:border-ember-500/40 hover:text-ember-400"
         >
           🖥️ POS bridge
         </Link>
         <Link
           href="/admin/reviews"
-          className="rounded-full border border-slate-200 bg-white px-4 py-2 text-sm font-semibold text-slate-700 transition hover:border-orange-300 hover:text-orange-600"
+          className="rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-semibold text-white/70 transition-colors hover:border-ember-500/40 hover:text-ember-400"
         >
           ⭐ Review moderation
         </Link>
@@ -59,14 +59,14 @@ export default async function MarketplaceOnboardingIndex() {
 
       {/* Pending review */}
       <section className="mt-8">
-        <h2 className="text-sm font-bold uppercase tracking-[0.12em] text-amber-600">
+        <h2 className="text-sm font-bold uppercase tracking-[0.12em] text-amber-400">
           Pending approval{" "}
-          <span className="ml-1 rounded-full bg-amber-100 px-2 py-0.5 text-xs text-amber-700">
+          <span className="ml-1 rounded-full bg-amber-500/10 px-2 py-0.5 text-xs text-amber-400">
             {pending.length}
           </span>
         </h2>
         {pending.length === 0 ? (
-          <p className="mt-3 rounded-2xl border border-dashed border-slate-300 bg-white p-6 text-center text-sm text-slate-400">
+          <p className="mt-3 rounded-2xl border border-dashed border-white/10 bg-ink-850 p-6 text-center text-sm text-white/35">
             No restaurants awaiting approval.
           </p>
         ) : (
@@ -88,7 +88,7 @@ export default async function MarketplaceOnboardingIndex() {
       </section>
 
       {/* All restaurants */}
-      <h2 className="mt-10 text-sm font-bold uppercase tracking-[0.12em] text-slate-500">
+      <h2 className="mt-10 text-sm font-bold uppercase tracking-[0.12em] text-white/40">
         All restaurants
       </h2>
       <div className="mt-3 grid gap-3 sm:grid-cols-2">
@@ -96,22 +96,22 @@ export default async function MarketplaceOnboardingIndex() {
           <Link
             key={l.restaurantId}
             href={`/admin/marketplace/${l.slug}`}
-            className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-5 shadow-sm transition hover:-translate-y-0.5 hover:shadow"
+            className="card-lift flex items-center justify-between rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] transition-all hover:border-ember-500/40"
           >
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="font-semibold text-slate-900">{l.name}</h3>
+                <h3 className="font-semibold text-white">{l.name}</h3>
                 {l.isListed && l.marketplaceStatus === "live" ? (
-                  <span className="rounded-full bg-emerald-100 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                  <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs font-semibold text-emerald-400">
                     live
                   </span>
                 ) : (
-                  <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs font-semibold text-slate-500">
+                  <span className="rounded-full bg-white/5 px-2 py-0.5 text-xs font-semibold text-white/45">
                     {l.marketplaceStatus.replace("_", " ")}
                   </span>
                 )}
               </div>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="mt-1 text-sm text-white/45">
                 {l.cuisine} ·{" "}
                 {l.acceptDelivery && l.acceptPickup
                   ? "delivery + pickup"
@@ -122,7 +122,7 @@ export default async function MarketplaceOnboardingIndex() {
                       : "no fulfilment"}
               </p>
             </div>
-            <span className="text-sm font-medium text-orange-600">Manage →</span>
+            <span className="text-sm font-semibold text-ember-400">Manage →</span>
           </Link>
         ))}
       </div>

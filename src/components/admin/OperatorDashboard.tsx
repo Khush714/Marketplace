@@ -114,13 +114,13 @@ export function OperatorDashboard() {
         </div>
       )}
 
-      <div className="mt-6 flex gap-1 rounded-full border border-slate-200 bg-white p-0.5 text-sm">
+      <div className="mt-6 flex gap-1 rounded-full border border-white/10 bg-white/5 p-0.5 text-sm">
         {(["restaurants", "reviews", "orders"] as Tab[]).map((t) => (
           <button
             key={t}
             onClick={() => setTab(t)}
-            className={`flex-1 rounded-full px-3 py-2 font-semibold capitalize ${
-              tab === t ? "bg-slate-900 text-white" : "text-slate-500"
+            className={`flex-1 rounded-full px-3 py-2 font-semibold capitalize transition-colors ${
+              tab === t ? "bg-ink-800 text-white" : "text-white/45 hover:text-white/65"
             }`}
           >
             {t}
@@ -135,10 +135,10 @@ export function OperatorDashboard() {
               <button
                 key={f}
                 onClick={() => setRestFilter(f)}
-                className={`rounded-full border px-3 py-1.5 text-xs font-semibold capitalize ${
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
                   restFilter === f
-                    ? "border-slate-900 bg-slate-900 text-white"
-                    : "border-slate-200 bg-white text-slate-600"
+                    ? "border-ember-500/40 bg-ember-500 text-ink-950"
+                    : "border-white/10 bg-white/5 text-white/60 hover:bg-white/10"
                 }`}
               >
                 {f}
@@ -149,17 +149,17 @@ export function OperatorDashboard() {
             {filtered.map((l) => (
               <article
                 key={l.restaurantId}
-                className="rounded-2xl border border-slate-200 bg-white p-4"
+                className="rounded-2xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]"
               >
                 <div className="flex flex-wrap items-start justify-between gap-2">
                   <div>
                     <Link
                       href={`/admin/marketplace/${l.slug}`}
-                      className="font-semibold text-slate-900 hover:text-orange-600"
+                      className="font-semibold text-white hover:text-ember-400"
                     >
                       {l.name}
                     </Link>
-                    <p className="text-xs text-slate-500">
+                    <p className="text-xs text-white/45">
                       {l.cuisine} · {l.marketplaceStatus.replace("_", " ")}
                       {l.isFeatured ? " · featured" : ""}
                     </p>
@@ -167,10 +167,10 @@ export function OperatorDashboard() {
                   <span
                     className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
                       l.isListed && l.marketplaceStatus === "live"
-                        ? "bg-emerald-50 text-emerald-700"
+                        ? "bg-emerald-500/10 text-emerald-400"
                         : l.marketplaceStatus === "suspended"
-                          ? "bg-rose-50 text-rose-600"
-                          : "bg-amber-50 text-amber-700"
+                          ? "bg-rose-500/10 text-rose-400"
+                          : "bg-amber-500/10 text-amber-400"
                     }`}
                   >
                     {l.isListed && l.marketplaceStatus === "live"
@@ -217,7 +217,7 @@ export function OperatorDashboard() {
               </article>
             ))}
             {filtered.length === 0 && (
-              <p className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+              <p className="rounded-2xl border border-dashed border-white/10 bg-ink-850 p-8 text-center text-sm text-white/45">
                 No restaurants in this bucket.
               </p>
             )}
@@ -228,32 +228,32 @@ export function OperatorDashboard() {
       {tab === "reviews" && (
         <section className="mt-5 space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="font-semibold text-slate-800">Reported reviews</h2>
+            <h2 className="font-semibold text-white/80">Reported reviews</h2>
             <Link
               href="/admin/reviews"
-              className="text-sm font-semibold text-orange-600 hover:underline"
+              className="text-sm font-semibold text-ember-400 hover:text-ember-300 hover:underline"
             >
               Full moderation →
             </Link>
           </div>
           {reports.length === 0 && (
-            <p className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+            <p className="rounded-2xl border border-dashed border-white/10 bg-ink-850 p-8 text-center text-sm text-white/45">
               No reports.
             </p>
           )}
           {reports.map((r) => (
             <article
               key={r.id}
-              className="rounded-2xl border border-amber-200 bg-amber-50/40 p-4"
+              className="rounded-2xl border border-amber-500/20 bg-amber-500/5 p-4"
             >
               <div className="flex justify-between gap-2 text-sm">
-                <span className="font-semibold">{r.review.restaurant.name}</span>
-                <span className="text-xs text-slate-400">{shortDate(r.createdAt)}</span>
+                <span className="font-semibold text-white">{r.review.restaurant.name}</span>
+                <span className="text-xs text-white/35">{shortDate(r.createdAt)}</span>
               </div>
-              <p className="mt-1 text-xs font-semibold uppercase text-amber-700">
+              <p className="mt-1 text-xs font-semibold uppercase text-amber-400">
                 {r.reason}
               </p>
-              <p className="mt-1 text-sm text-slate-700">
+              <p className="mt-1 text-sm text-white/70">
                 ★{r.review.rating} {r.review.author}: {r.review.comment}
               </p>
               <div className="mt-2 flex gap-2">
@@ -267,17 +267,17 @@ export function OperatorDashboard() {
                     setReports((prev) => prev.filter((x) => x.id !== r.id));
                     loadOverview();
                   }}
-                  className="rounded-lg bg-slate-900 px-3 py-1.5 text-xs font-semibold text-white"
+                  className="rounded-lg bg-ink-800 px-3 py-1.5 text-xs font-semibold text-white hover:bg-ink-700"
                 >
                   Hide review
                 </button>
-                <span className="rounded-lg bg-white px-3 py-1.5 text-xs text-slate-500">
+                <span className="rounded-lg bg-white/5 px-3 py-1.5 text-xs text-white/45">
                   Status: {r.review.moderationStatus}
                 </span>
               </div>
             </article>
           ))}
-          <p className="text-xs text-slate-400">
+          <p className="text-xs text-white/35">
             Restaurant responses are managed in full moderation.
           </p>
         </section>
@@ -290,10 +290,10 @@ export function OperatorDashboard() {
               <button
                 key={b}
                 onClick={() => setOrderBucket(b)}
-                className={`rounded-full border px-3 py-1.5 text-xs font-semibold capitalize ${
+                className={`rounded-full border px-3 py-1.5 text-xs font-semibold capitalize transition-colors ${
                   orderBucket === b
-                    ? "border-slate-900 bg-slate-900 text-white"
-                    : "border-slate-200 bg-white text-slate-600"
+                    ? "border-ember-500/40 bg-ember-500 text-ink-950"
+                    : "border-white/10 bg-white/5 text-white/60 hover:bg-white/10"
                 }`}
               >
                 {b === "live" ? "Live marketplace orders" : `${b} orders`}
@@ -305,22 +305,22 @@ export function OperatorDashboard() {
               <Link
                 key={o.reference}
                 href={`/orders/${o.reference}`}
-                className="flex items-center justify-between rounded-2xl border border-slate-200 bg-white p-4"
+                className="flex flex-wrap items-center justify-between gap-2 rounded-2xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]"
               >
-                <div>
-                  <p className="font-semibold text-slate-900">{o.restaurant.name}</p>
-                  <p className="text-xs text-slate-500">
+                <div className="min-w-0">
+                  <p className="font-semibold text-white">{o.restaurant.name}</p>
+                  <p className="text-xs text-white/45">
                     {o.reference} · {o.customerName} · {shortDate(o.placedAt)}
                   </p>
                 </div>
                 <div className="text-right">
-                  <p className="font-semibold tabular-nums">{currency(o.total)}</p>
-                  <p className="text-xs text-slate-500">{statusLabel(o.status)}</p>
+                  <p className="font-semibold tabular-nums text-white">{currency(o.total)}</p>
+                  <p className="text-xs text-white/45">{statusLabel(o.status)}</p>
                 </div>
               </Link>
             ))}
             {orders.length === 0 && (
-              <p className="rounded-2xl border border-dashed border-slate-300 p-8 text-center text-sm text-slate-500">
+              <p className="rounded-2xl border border-dashed border-white/10 bg-ink-850 p-8 text-center text-sm text-white/45">
                 No {orderBucket} orders.
               </p>
             )}
@@ -344,15 +344,15 @@ function Kpi({
 }) {
   const color =
     tone === "amber"
-      ? "text-amber-600"
+      ? "text-amber-400"
       : tone === "rose"
-        ? "text-rose-600"
-        : "text-slate-900";
+        ? "text-rose-400"
+        : "text-white";
   return (
-    <div className="rounded-2xl border border-slate-200 bg-white p-3">
-      <p className="text-xs text-slate-400">{label}</p>
+    <div className="rounded-2xl border border-white/8 bg-ink-850 p-3">
+      <p className="text-xs text-white/35">{label}</p>
       <p className={`text-xl font-bold ${color}`}>{value}</p>
-      {sub && <p className="text-[11px] text-slate-400">{sub}</p>}
+      {sub && <p className="text-[11px] text-white/35">{sub}</p>}
     </div>
   );
 }
@@ -370,7 +370,7 @@ function Act({
     <button
       onClick={onClick}
       disabled={disabled}
-      className="rounded-lg border border-slate-200 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:border-orange-300 hover:text-orange-600 disabled:opacity-50"
+      className="rounded-lg border border-white/10 bg-white/5 px-2.5 py-1 text-xs font-semibold text-white/70 transition-colors hover:border-ember-500/40 hover:text-ember-400 disabled:opacity-50"
     >
       {label}
     </button>

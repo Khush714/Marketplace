@@ -9,8 +9,9 @@ import { useState } from "react";
  * component only asks for confirmation and renders the result states.
  *
  * Phase 19 — the frontend never decides that cancellation is valid: it shows
- * the action inside the customer window (`status === placed`) and the backend
- * authoritatively accepts or rejects the POST.
+ * the action inside the customer window (`status === accepted`, the Phase 9
+ * ACCEPTED → CANCELLED edge) and the backend authoritatively accepts or
+ * rejects the POST.
  */
 export function OrderCancelButton({
   busy,
@@ -30,7 +31,7 @@ export function OrderCancelButton({
       // and the parent unmounts this button. A rejected POST rejects here.
       setConfirming(false);
     } catch {
-      // Server rejected (e.g. restaurant already accepted) — keep the dialog
+      // Server rejected (e.g. kitchen already preparing) — keep the dialog
       // open so `error` is visible and the customer can still Keep Order.
     }
   };
@@ -38,24 +39,24 @@ export function OrderCancelButton({
   return (
     <div className="mt-4">
       {error && (
-        <p className="mb-2 rounded-xl bg-rose-50 px-4 py-3 text-sm text-rose-600">
+        <p className="mb-2 rounded-3xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-400">
           {error}
         </p>
       )}
 
       {confirming ? (
-        <div className="rounded-2xl border border-rose-200 bg-rose-50/60 p-4">
-          <p className="text-sm font-semibold text-slate-900">Are you sure?</p>
-          <p className="mt-1 text-sm text-slate-600">
-            If the restaurant accepts first, the order can no longer be
-            cancelled from here.
+        <div className="card-lift rounded-3xl border border-rose-500/20 bg-rose-500/10 p-4">
+          <p className="text-sm font-semibold text-white">Are you sure?</p>
+          <p className="mt-1 text-sm text-white/55">
+            Once the kitchen starts preparing, the order can no longer be
+            cancelled.
           </p>
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="mt-3 flex flex-col gap-2 sm:flex-row">
             <button
               type="button"
               onClick={() => setConfirming(false)}
               disabled={busy}
-              className="rounded-xl border border-slate-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-60"
+              className="w-full rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm font-semibold text-white/70 transition-colors hover:bg-white/10 disabled:opacity-60 sm:w-auto"
             >
               Keep Order
             </button>
@@ -63,23 +64,23 @@ export function OrderCancelButton({
               type="button"
               onClick={() => void handleConfirm()}
               disabled={busy}
-              className="rounded-xl bg-rose-600 px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
+              className="w-full rounded-2xl bg-rose-500 px-4 py-2.5 text-sm font-semibold text-ink-950 transition-colors hover:bg-rose-400 disabled:opacity-60 sm:w-auto"
             >
               {busy ? "Cancelling…" : "Cancel Order"}
             </button>
           </div>
         </div>
       ) : (
-        <div className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-          <p className="text-sm text-slate-600">
-            Changed your mind? You can cancel while the restaurant is still
-            deciding.
+        <div className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+          <p className="text-sm text-white/55">
+            Changed your mind? You can cancel while the restaurant is
+            accepting but hasn&apos;t started preparing yet.
           </p>
           <button
             type="button"
             onClick={() => setConfirming(true)}
             disabled={busy}
-            className="mt-3 rounded-xl border border-rose-200 bg-white px-4 py-2.5 text-sm font-semibold text-rose-600 transition hover:bg-rose-50 disabled:opacity-60"
+            className="mt-3 w-full rounded-2xl border border-rose-500/25 bg-rose-500/10 px-4 py-2.5 text-sm font-semibold text-rose-400 transition-colors hover:bg-rose-500/20 disabled:opacity-60 sm:w-auto"
           >
             Cancel Order
           </button>

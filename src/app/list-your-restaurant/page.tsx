@@ -7,13 +7,13 @@ export default function ListYourRestaurantPage() {
   return (
     <main className="mx-auto max-w-3xl px-4 py-8 sm:px-6">
       <div className="text-center">
-        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-orange-500">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ember-400">
           List your restaurant
         </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight text-slate-900">
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">
           Get your restaurant on TABLZ
         </h1>
-        <p className="mx-auto mt-3 max-w-xl text-slate-500">
+        <p className="mx-auto mt-3 max-w-xl text-white/45">
           Add your restaurant to our local marketplace so customers can discover
           you and order online. Your submission is reviewed and approved by our
           team before it goes live.

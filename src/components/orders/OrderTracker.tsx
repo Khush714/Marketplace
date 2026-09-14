@@ -1,8 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { statusLabel } from "@/lib/order-lifecycle";
-import { shortDate, timeAgo } from "@/lib/format";
+import {
+  CONTRACT_STATUS,
+  legacyToCanonical,
+  ORDER_MAINLINE,
+  statusLabel,
+  type OrderLifecycleStatus,
+} from "@/lib/order-lifecycle";
+import { shortDate, shortDateTime, timeAgo } from "@/lib/format";
 import { useOrderTracking } from "@/hooks/useOrderTracking";
 import type { OrderTracking } from "@/hooks/useOrderTracking";
 import type { PublicOrder } from "@/lib/marketplace";
@@ -10,15 +16,21 @@ import { OrderCancelButton } from "./OrderCancelButton";
 import { OrderDetails } from "./OrderDetails";
 import { OrderTimeline } from "./OrderTimeline";
 import { OrderTypeInfo } from "./OrderTypeInfo";
+import { DeliveryTracker } from "./DeliveryTracker";
+import { RiderMap } from "./RiderMap";
 import { PaymentStatus } from "./PaymentStatus";
 import { OrderSkeleton } from "./OrderSkeleton";
+import { ArrowLeftIcon } from "@/components/ui/icons";
 
-const STEPS = ["placed", "accepted", "preparing", "ready", "completed"] as const;
+// PHASE 9 — the rail is driven by the lifecycle's own mainline, never a local
+// copy. Changing the contract in src/lib/order-lifecycle.ts re-renders here.
+const STEPS = ORDER_MAINLINE as unknown as OrderLifecycleStatus[];
 
 export function OrderTracker({ reference }: { reference: string }) {
   const {
     order,
     brand,
+    riderLocation,
     loading,
     refreshing,
     loadError,
@@ -38,23 +50,23 @@ export function OrderTracker({ reference }: { reference: string }) {
       <nav className="mt-6 sm:mt-8">
         <Link
           href="/"
-          className="text-sm text-slate-500 hover:text-orange-600 hover:underline"
+          className="inline-flex items-center gap-1.5 text-sm text-white/45 transition-colors hover:text-ember-400"
         >
-          ← Home
+          <ArrowLeftIcon className="text-base" /> Home
         </Link>
       </nav>
 
       {/* Desktop chrome — mobile keeps the reference inside the card. */}
-      <h1 className="mt-4 hidden text-center text-2xl font-bold tracking-tight text-slate-900 sm:block">
+      <h1 className="mt-4 hidden text-center text-2xl font-semibold tracking-tight text-white sm:block">
         Order Tracker
       </h1>
 
       {loading && !order && !loadError && <OrderSkeleton />}
 
       {orderingDisabled && !order && (
-        <div className="mt-6 rounded-2xl border border-amber-300 bg-amber-50 p-6">
-          <p className="font-semibold text-amber-800">Ordering is disabled</p>
-          <p className="mt-1 text-sm text-amber-700">
+        <div className="mt-6 rounded-3xl border border-amber-500/20 bg-amber-500/10 p-6">
+          <p className="font-semibold text-amber-400">Ordering is disabled</p>
+          <p className="mt-1 text-sm text-amber-400/70">
             Marketplace ordering is currently off — customers order directly
             from each restaurant through its own menu link, so tracking lives
             there too.
@@ -63,9 +75,9 @@ export function OrderTracker({ reference }: { reference: string }) {
       )}
 
       {notFound && !order && (
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 text-center">
-          <p className="font-semibold text-slate-900">Order not found</p>
-          <p className="mt-1 text-sm text-slate-500">
+        <div className="card-lift mt-6 rounded-3xl border border-white/8 bg-ink-850 p-6 text-center shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+          <p className="font-semibold text-white">Order not found</p>
+          <p className="mt-1 text-sm text-white/45">
             We couldn&apos;t find an order with that reference. Double-check
             the link — every order has a permanent URL like /orders/
             {reference}.
@@ -74,18 +86,18 @@ export function OrderTracker({ reference }: { reference: string }) {
       )}
 
       {loadError === "server" && !order && (
-        <div className="mt-6 rounded-2xl border border-rose-200 bg-rose-50 p-6 text-center">
-          <p className="font-semibold text-rose-700">
+        <div className="mt-6 rounded-3xl border border-rose-500/20 bg-rose-500/10 p-6 text-center">
+          <p className="font-semibold text-rose-400">
             We couldn&apos;t load your order
           </p>
-          <p className="mt-1 text-sm text-rose-600">
+          <p className="mt-1 text-sm text-rose-400/80">
             Something went wrong on our end. Please try again.
           </p>
           <button
             type="button"
             onClick={() => void retry()}
             disabled={loading}
-            className="mt-4 rounded-xl bg-rose-600 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-rose-700 disabled:opacity-60"
+            className="mt-4 rounded-2xl bg-rose-500 px-5 py-2.5 text-sm font-semibold text-ink-950 transition-colors hover:bg-rose-400 disabled:opacity-60"
           >
             Try again
           </button>
@@ -93,11 +105,11 @@ export function OrderTracker({ reference }: { reference: string }) {
       )}
 
       {loadError === "network" && !order && (
-        <div className="mt-6 rounded-2xl border border-slate-200 bg-white p-6 text-center">
-          <p className="font-semibold text-slate-900">
+        <div className="card-lift mt-6 rounded-3xl border border-white/8 bg-ink-850 p-6 text-center shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+          <p className="font-semibold text-white">
             We couldn&apos;t load your order
           </p>
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-white/45">
             There seems to be a network problem. Please check your connection
             and try again.
           </p>
@@ -105,7 +117,7 @@ export function OrderTracker({ reference }: { reference: string }) {
             type="button"
             onClick={() => void retry()}
             disabled={loading}
-            className="mt-4 rounded-xl bg-slate-900 px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-slate-800 disabled:opacity-60"
+            className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-white/10 disabled:opacity-60"
           >
             Try again
           </button>
@@ -123,6 +135,7 @@ export function OrderTracker({ reference }: { reference: string }) {
         <LiveTracker
           order={order}
           brand={brand}
+          riderLocation={riderLocation}
           cancelling={cancelling}
           cancelError={cancelError}
           onCancel={cancelOrder}
@@ -151,15 +164,15 @@ function RefreshWarning({
 }) {
   if (!visible) return null;
   return (
-    <div className="mt-6 flex items-start gap-3 rounded-xl border border-amber-300 bg-amber-50 px-4 py-3">
-      <span aria-hidden className="mt-0.5 text-sm text-amber-600">
+    <div className="mt-6 flex items-start gap-3 rounded-3xl border border-amber-500/20 bg-amber-500/10 px-4 py-3">
+      <span aria-hidden className="mt-0.5 text-sm text-amber-400">
         ⚠
       </span>
       <div className="min-w-0 flex-1">
-        <p className="text-sm font-semibold text-amber-900">
+        <p className="text-sm font-semibold text-amber-400">
           Couldn&apos;t refresh
         </p>
-        <p className="mt-0.5 text-xs text-amber-700">
+        <p className="mt-0.5 text-xs text-amber-400/70">
           Last updated {timeAgo(lastUpdatedAt) || "a moment ago"}
         </p>
       </div>
@@ -167,7 +180,7 @@ function RefreshWarning({
         type="button"
         onClick={() => void onRetry()}
         disabled={busy}
-        className="shrink-0 rounded-lg border border-amber-300 bg-white px-3 py-1.5 text-xs font-bold text-amber-800 transition hover:bg-amber-100 disabled:opacity-60"
+        className="shrink-0 rounded-xl border border-amber-500/25 bg-amber-500/15 px-3 py-1.5 text-xs font-bold text-amber-400 transition-colors hover:bg-amber-500/25 disabled:opacity-60"
       >
         {busy ? "Retrying…" : "Retry"}
       </button>
@@ -197,25 +210,35 @@ const STATUS_MESSAGES: Record<string, { title: string; detail: string }> = {
     title: "Your order is ready",
     detail: "It’s ready for pickup / delivery.",
   },
-  completed: {
-    title: "Order completed",
+  picked_up: {
+    title: "On the way",
+    detail: "Your order has been picked up and is heading to you.",
+  },
+  delivered: {
+    title: "Order delivered",
     detail: "Enjoy your meal!",
   },
   cancelled: {
     title: "Order cancelled",
     detail: "This order has been cancelled.",
   },
+  rejected: {
+    title: "Order not accepted",
+    detail: "The restaurant couldn’t take this order. Please try again.",
+  },
 };
 
 function LiveTracker({
   order,
   brand,
+  riderLocation,
   cancelling,
   cancelError,
   onCancel,
 }: {
   order: PublicOrder;
   brand: OrderTracking["brand"];
+  riderLocation: OrderTracking["riderLocation"];
   cancelling: boolean;
   cancelError: string | null;
   onCancel: () => Promise<void>;
@@ -223,7 +246,62 @@ function LiveTracker({
   const { restaurant, lifecycle, placedAt } = order;
   const name = brand?.name ?? restaurant.name;
   const logo = brand?.logoUrl;
-  const message = STATUS_MESSAGES[lifecycle.status] ?? STATUS_MESSAGES.placed;
+  let message = STATUS_MESSAGES[lifecycle.status] ?? STATUS_MESSAGES.placed;
+  // PHASE 29+45 — delivery rides the same lifecycle, but the rider leg
+  // deserves its own hero copy while live. Statuses flow through the
+  // canonical delivery lifecycle in src/lib/delivery-status.ts.
+  const delivery = order.delivery;
+  if (delivery && !lifecycle.terminal) {
+    const riderName = delivery.partner?.name ?? "Your rider";
+    if (delivery.status === "assigned") {
+      message = {
+        title: "Driver assigned",
+        detail: `${riderName} has been assigned. They're on the way to the restaurant.`,
+      };
+    } else if (delivery.status === "accepted") {
+      message = {
+        title: "Rider en route",
+        detail: `${riderName} is heading to the restaurant.`,
+      };
+    } else if (delivery.status === "at_restaurant") {
+      message = {
+        title: "Rider at the restaurant",
+        detail: `${riderName} is picking up your order.`,
+      };
+    } else if (delivery.status === "picked_up") {
+      message = {
+        title: "Order picked up",
+        detail: `${riderName} has your order.`,
+      };
+    } else if (delivery.status === "out_for_delivery") {
+      message = {
+        title: "On the way",
+        detail: `${riderName} is bringing your order to you.`,
+      };
+    } else if (delivery.status === "arriving") {
+      message = {
+        title: "Arriving soon",
+        detail: `${riderName} is almost at your door.`,
+      };
+    } else if (delivery.status === "delivered") {
+      message = {
+        title: "Order delivered",
+        detail: "Enjoy your meal!",
+      };
+    }
+  }
+
+  // PHASE 32 — a future scheduled window overrides the "LIVE now" messaging:
+  // the order is booked, not moving yet. Once the window passes the tracker
+  // resumes its normal live copy (and the rider can mark it delivered).
+  const scheduledAt = order.scheduledFor ? new Date(order.scheduledFor) : null;
+  const windowFuture = scheduledAt ? scheduledAt.getTime() > Date.now() : false;
+  if (windowFuture && scheduledAt) {
+    message = {
+      title: "Order scheduled",
+      detail: `Scheduled for ${shortDateTime(scheduledAt)} — we'll keep you posted.`,
+    };
+  }
 
   return (
     <div key={order.reference}>
@@ -234,67 +312,85 @@ function LiveTracker({
           <img
             src={logo}
             alt={name}
-            className="grid h-20 w-20 place-items-center rounded-2xl border border-slate-200 bg-white object-contain p-2 shadow-sm"
+            className="grid h-20 w-20 place-items-center rounded-3xl border border-white/10 bg-ink-850 object-contain p-2 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]"
           />
         ) : (
-          <span className="grid h-20 w-20 place-items-center rounded-2xl bg-orange-500 text-3xl font-bold text-white shadow-sm">
+          <span className="grid h-20 w-20 place-items-center rounded-3xl bg-ember-500 text-3xl font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)]">
             {name.charAt(0).toUpperCase()}
           </span>
         )}
 
         <Link
           href={`/restaurants/${restaurant.slug}`}
-          className="mt-4 text-lg font-bold tracking-tight text-slate-900 hover:text-orange-600"
+          className="mt-4 text-lg font-bold tracking-tight text-white transition-colors hover:text-ember-400"
         >
           {name}
         </Link>
 
         <div className="mt-1 flex items-center gap-2">
-          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-slate-400">
+          <p className="text-xs font-semibold uppercase tracking-[0.2em] text-white/40">
             Your order
           </p>
-          {!lifecycle.terminal && (
-            <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-600">
-              <span className="relative flex h-2 w-2">
-                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-                <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+          {!lifecycle.terminal &&
+            (windowFuture ? (
+              <span className="inline-flex items-center gap-1.5 text-[11px] font-bold text-sky-400">
+                <span className="h-2 w-2 rounded-full bg-sky-400" />
+                SCHEDULED
               </span>
-              LIVE
-            </span>
-          )}
+            ) : (
+              <span className="flex items-center gap-1.5 text-[11px] font-bold text-emerald-400">
+                <span className="relative flex h-2 w-2">
+                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                LIVE
+              </span>
+            ))}
         </div>
-        <p className="mt-1 font-mono text-sm font-semibold text-slate-500">
+        <p className="mt-1 font-mono text-sm font-semibold text-white/50">
           #{order.reference}
         </p>
-        <p className="mt-1 text-xs text-slate-400">{shortDate(placedAt)}</p>
+        <p className="mt-1 text-xs text-white/35">{shortDate(placedAt)}</p>
       </header>
 
+      {/* ── Scheduled window banner (PHASE 32) ───────────────────────── */}
+      {scheduledAt && windowFuture && (
+        <section className="card-lift mt-6 rounded-3xl border border-sky-400/20 bg-sky-400/10 px-5 py-4 text-center shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] sm:mt-8">
+          <p className="text-[10px] font-bold uppercase tracking-[0.15em] text-sky-400">
+            Scheduled delivery window
+          </p>
+          <p className="mt-1 text-lg font-semibold tracking-tight text-white">
+            {shortDateTime(scheduledAt)}
+          </p>
+        </section>
+      )}
+
       {/* ── Status hero card ─────────────────────────────────────────── */}
-<section
-        className={`mt-6 rounded-3xl p-6 text-center shadow-sm transition-colors duration-500 sm:mt-8 sm:p-8 ${
-          lifecycle.status === "cancelled"
-            ? "bg-rose-50"
-            : lifecycle.status === "completed"
-              ? "bg-emerald-50"
-              : "bg-gradient-to-br from-orange-50 to-amber-50"
+      <section
+        className={`card-lift mt-6 rounded-3xl p-6 text-center shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] transition-colors duration-500 sm:mt-8 sm:p-8 ${
+          lifecycle.status === "cancelled" || lifecycle.status === "rejected"
+            ? "border border-rose-500/20 bg-rose-500/10"
+            : lifecycle.status === "delivered"
+              ? "border border-emerald-400/20 bg-emerald-400/10"
+              : "border border-white/8 bg-gradient-to-br from-ember-500/20 via-ink-850 to-ink-900"
         }`}
       >
         <p
-          className={`mx-auto w-fit rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.15em] transition-colors duration-500 ${
-            lifecycle.status === "cancelled"
-              ? "bg-rose-200/60 text-rose-700"
-              : lifecycle.status === "completed"
-                ? "bg-emerald-200/60 text-emerald-700"
-                : "bg-orange-200/60 text-orange-700"
+          className={`mx-auto w-fit rounded-full border px-3 py-1 text-[10px] font-bold uppercase tracking-[0.15em] transition-colors duration-500 ${
+            lifecycle.status === "cancelled" || lifecycle.status === "rejected"
+              ? "border-rose-500/25 bg-rose-500/20 text-rose-400"
+              : lifecycle.status === "delivered"
+                ? "border-emerald-400/25 bg-emerald-400/20 text-emerald-400"
+                : "border-ember-500/25 bg-ember-500/15 text-ember-400"
           }`}
         >
-          {lifecycle.label}
+          {CONTRACT_STATUS[legacyToCanonical(lifecycle.status)]}
         </p>
-        <p className="mt-3 text-2xl font-bold tracking-tight text-slate-900 transition-all duration-500 sm:text-3xl">
+        <p className="mt-3 text-2xl font-semibold tracking-tight text-white transition-all duration-500 sm:text-3xl">
           {message.title}
         </p>
         {message.detail && (
-          <p className="mt-2 text-sm text-slate-600 sm:text-base">{message.detail}</p>
+          <p className="mt-2 text-sm text-white/55 sm:text-base">{message.detail}</p>
         )}
       </section>
 
@@ -308,14 +404,15 @@ function LiveTracker({
 
       {/* ── Vertical status detail (desktop only — mobile keeps the rail
               as the primary status read) ─────────────────────────────── */}
-      <div className="mt-8 hidden rounded-2xl border border-slate-200 bg-white p-5 sm:block sm:p-6">
+      <div className="card-lift mt-8 hidden rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] sm:block sm:p-6">
         <VerticalStepTracker step={lifecycle.step} />
       </div>
 
-      {/* Cancellation window — Phase 19: only while `status === placed`.
-          The value comes from the API's lifecycle summary (the backend owns
-          the rule); the POST itself is still validated server-side. */}
-      {lifecycle.status === "placed" && (
+      {/* Cancellation window — PHASE 9: only while `status === accepted`
+          (contract edge ACCEPTED → CANCELLED). The value comes from the API's
+          lifecycle summary (the backend owns the rule); the POST itself is
+          still validated server-side. */}
+      {lifecycle.status === "accepted" && (
         <OrderCancelButton
           busy={cancelling}
           error={cancelError}
@@ -324,6 +421,24 @@ function LiveTracker({
       )}
 
       <OrderTimeline events={order.timeline} />
+
+      <OrderTypeInfo order={order} />
+
+      {order.fulfillment === "delivery" && order.delivery && (
+        <div key={`dlv-${order.delivery.status}-${order.delivery.step}`}>
+          {order.delivery.dropoff && (
+            <div className="mb-4">
+              <RiderMap
+                restaurant={order.restaurant}
+                dropoff={order.delivery.dropoff}
+                rider={riderLocation}
+                vehicleType={order.delivery.partner?.vehicleType}
+              />
+            </div>
+          )}
+          <DeliveryTracker delivery={order.delivery} />
+        </div>
+      )}
 
       <OrderDetails order={order} />
 
@@ -352,10 +467,10 @@ function ProgressRail({ step }: { step: number }) {
               <span
                 className={`relative grid h-6 w-6 shrink-0 place-items-center rounded-full text-[10px] font-bold transition-all duration-300 ${
                   done
-                    ? "bg-orange-500 text-white"
+                    ? "bg-ember-500 text-ink-950"
                     : current
-                      ? "bg-orange-100 text-orange-600 ring-2 ring-orange-500"
-                      : "border border-slate-200 bg-white text-slate-400"
+                      ? "bg-ember-500/15 text-ember-400 ring-2 ring-ember-500"
+                      : "border border-white/15 bg-ink-850 text-white/40"
                 }`}
               >
                 {done ? "✓" : current ? "●" : "○"}
@@ -363,7 +478,7 @@ function ProgressRail({ step }: { step: number }) {
               {i < STEPS.length - 1 && (
                 <span
                   className={`mx-1 h-0.5 min-w-0 flex-1 rounded transition-colors duration-300 ${
-                    done ? "bg-orange-500" : "bg-slate-200"
+                    done ? "bg-ember-500" : "bg-white/10"
                   }`}
                 />
               )}
@@ -379,7 +494,7 @@ function ProgressRail({ step }: { step: number }) {
             <span
               key={s}
               className={`flex-1 text-center text-[10px] font-semibold leading-tight last:flex-none ${
-                done || current ? "text-slate-900" : "text-slate-400"
+                done || current ? "text-white" : "text-white/40"
               }`}
             >
               {statusLabel(s)}
@@ -421,7 +536,7 @@ function VerticalStepTracker({ step }: { step: number }) {
               <span
                 aria-hidden
                 className={`absolute left-[13px] top-7 h-full w-0.5 ${
-                  done ? "bg-orange-500" : "bg-slate-200"
+                  done ? "bg-ember-500" : "bg-white/10"
                 }`}
               />
             )}
@@ -430,10 +545,10 @@ function VerticalStepTracker({ step }: { step: number }) {
             <span
               className={`relative z-10 grid h-7 w-7 shrink-0 place-items-center rounded-full text-xs font-bold ${
                 done
-                  ? "bg-orange-500 text-white"
+                  ? "bg-ember-500 text-ink-950"
                   : current
-                    ? "bg-orange-100 text-orange-600 ring-2 ring-orange-500"
-                    : "border border-slate-200 bg-white text-slate-400"
+                    ? "bg-ember-500/15 text-ember-400 ring-2 ring-ember-500"
+                    : "border border-white/15 bg-ink-850 text-white/40"
               }`}
             >
               {done ? "✓" : current ? "●" : "○"}
@@ -442,7 +557,7 @@ function VerticalStepTracker({ step }: { step: number }) {
             {/* Label */}
             <span
               className={`pt-1 text-sm font-semibold leading-tight ${
-                done || current ? "text-slate-900" : "text-slate-400"
+                done || current ? "text-white" : "text-white/40"
               }`}
             >
               {statusLabel(s)}

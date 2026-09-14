@@ -9,10 +9,10 @@ import { currency } from "@/lib/format";
 const STATUSES = ["draft", "pending_review", "live", "suspended"] as const;
 
 const statusStyle: Record<string, string> = {
-  draft: "bg-slate-100 text-slate-600",
-  pending_review: "bg-amber-100 text-amber-700",
-  live: "bg-emerald-100 text-emerald-700",
-  suspended: "bg-rose-100 text-rose-700",
+  draft: "bg-white/5 text-white/60",
+  pending_review: "bg-amber-500/10 text-amber-400",
+  live: "bg-emerald-500/10 text-emerald-400",
+  suspended: "bg-rose-500/10 text-rose-400",
 };
 
 export function ListingsAdmin({ listings }: { listings: ListingRow[] }) {
@@ -40,31 +40,31 @@ export function ListingsAdmin({ listings }: { listings: ListingRow[] }) {
         return (
           <div
             key={l.restaurantId}
-            className={`rounded-2xl border bg-white p-5 shadow-sm transition ${
+            className={`rounded-2xl border bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] transition ${
               busy === l.slug ? "opacity-60" : ""
-            } ${live ? "border-emerald-200" : "border-slate-200"}`}
+            } ${live ? "border-emerald-500/25" : "border-white/8"}`}
           >
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="flex flex-wrap items-center gap-2">
-                  <h3 className="font-semibold text-slate-900">{l.name}</h3>
+                  <h3 className="font-semibold text-white">{l.name}</h3>
                   <span
                     className={`rounded-full px-2.5 py-0.5 text-xs font-semibold ${statusStyle[l.marketplaceStatus]}`}
                   >
                     {l.marketplaceStatus.replace("_", " ")}
                   </span>
                   {l.isFeatured && (
-                    <span className="rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-semibold text-orange-700">
+                    <span className="rounded-full bg-ember-500/10 px-2.5 py-0.5 text-xs font-semibold text-ember-400">
                       featured
                     </span>
                   )}
                   {l.hasOverride && (
-                    <span className="rounded-full bg-sky-100 px-2.5 py-0.5 text-xs font-semibold text-sky-700">
+                    <span className="rounded-full bg-sky-500/10 px-2.5 py-0.5 text-xs font-semibold text-sky-400">
                       overrides POS
                     </span>
                   )}
                 </div>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-white/45">
                   {l.cuisine} · {currency(l.deliveryFee)} delivery · min{" "}
                   {currency(l.minOrder)} · {l.etaMinutes} min ·{" "}
                   {l.commissionRate}% commission
@@ -73,12 +73,12 @@ export function ListingsAdmin({ listings }: { listings: ListingRow[] }) {
               {live ? (
                 <Link
                   href={`/restaurant/${l.slug}`}
-                  className="rounded-full border border-slate-300 px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100"
+                  className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/70 transition-colors hover:bg-white/10"
                 >
                   View storefront →
                 </Link>
               ) : (
-                <span className="rounded-full bg-slate-100 px-3 py-1.5 text-xs text-slate-500">
+                <span className="rounded-full bg-white/5 px-3 py-1.5 text-xs text-white/45">
                   Hidden from storefront
                 </span>
               )}
@@ -118,7 +118,7 @@ export function ListingsAdmin({ listings }: { listings: ListingRow[] }) {
                 onChange={(e) =>
                   patch(l.slug, { marketplaceStatus: e.target.value })
                 }
-                className="ml-auto rounded-full border border-slate-200 px-3 py-1.5 text-xs font-medium text-slate-700 outline-none focus:border-orange-400"
+                className="rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-medium text-white/70 outline-none transition-colors focus:border-ember-500/50 sm:ml-auto [&>option]:bg-ink-900"
               >
                 {STATUSES.map((s) => (
                   <option key={s} value={s}>
@@ -148,12 +148,12 @@ function Toggle({
       onClick={onClick}
       className={`flex items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition ${
         on
-          ? "border-emerald-300 bg-emerald-50 text-emerald-700"
-          : "border-slate-200 bg-white text-slate-400"
+          ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
+          : "border-white/10 bg-white/5 text-white/35"
       }`}
     >
       <span
-        className={`h-2 w-2 rounded-full ${on ? "bg-emerald-500" : "bg-slate-300"}`}
+        className={`h-2 w-2 rounded-full ${on ? "bg-emerald-500" : "bg-white/15"}`}
       />
       {label}
     </button>

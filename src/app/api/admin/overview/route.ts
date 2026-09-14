@@ -31,9 +31,9 @@ export async function GET() {
       ),
     db
       .select({
-        live: sql<number>`count(*) filter (where ${orders.status} in ('placed','accepted','preparing','ready'))`,
-        completed: sql<number>`count(*) filter (where ${orders.status} = 'completed')`,
-        cancelled: sql<number>`count(*) filter (where ${orders.status} = 'cancelled')`,
+        live: sql<number>`count(*) filter (where ${orders.status} in ('placed','accepted','preparing','ready','picked_up'))`,
+        completed: sql<number>`count(*) filter (where ${orders.status} in ('completed','delivered'))`,
+        cancelled: sql<number>`count(*) filter (where ${orders.status} in ('cancelled','rejected'))`,
       })
       .from(orders),
     db

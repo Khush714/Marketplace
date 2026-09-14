@@ -23,7 +23,17 @@ export async function GET(
   }
   const { slug } = await params;
   const [row] = await db
-    .select({ restaurant: restaurants, profile: marketplaceProfiles })
+    .select({
+      id: restaurants.id,
+      slug: restaurants.slug,
+      name: restaurants.name,
+      description: restaurants.description,
+      cuisine: restaurants.cuisine,
+      priceRange: restaurants.priceRange,
+      imageUrl: restaurants.imageUrl,
+      address: restaurants.address,
+      profile: marketplaceProfiles,
+    })
     .from(restaurants)
     .innerJoin(
       marketplaceProfiles,
@@ -34,7 +44,7 @@ export async function GET(
 
   if (!row) return Response.json({ error: "Restaurant not found" }, { status: 404 });
 
-  const { restaurant: r, profile: p } = row;
+  const { profile: p, ...r } = row;
   const stats = await marketplaceStats(r.id);
   return Response.json({
     restaurant: {

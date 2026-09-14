@@ -13,7 +13,7 @@ export function Stars({
         const filled = i <= Math.floor(rounded);
         const half = !filled && i - 0.5 === rounded;
         return (
-          <span key={i} className={filled || half ? "text-amber-400" : "text-slate-300"}>
+          <span key={i} className={filled || half ? "text-ember-400" : "text-white/15"}>
             {half ? "◐" : "★"}
           </span>
         );

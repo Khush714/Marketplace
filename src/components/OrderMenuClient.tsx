@@ -9,6 +9,7 @@ import {
   type RecentOrder,
 } from "@/lib/recent-orders";
 import { RazorpayCheckoutButton } from "./RazorpayCheckoutButton";
+import { ArrowLeftIcon, ChevronRightIcon, MinusIcon, PlusIcon, XIcon } from "./ui/icons";
 
 type MenuItem = {
   id: number;
@@ -64,6 +65,29 @@ type RestaurantInfo = {
 
 type View = "menu" | "checkout" | "confirmation";
 
+const inputCls =
+  "mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8";
+
+/** PHASE 32 — scheduling windows. Server enforces the same bounds. */
+const SCHEDULE_BUFFER_MS = 5 * 60_000;
+const SCHEDULE_HORIZON_MS = 14 * 24 * 60 * 60_000;
+
+function toLocalInput(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function scheduleLabel(value: string | Date): string {
+  const d = typeof value === "string" ? new Date(value) : value;
+  return d.toLocaleString("en-US", {
+    weekday: "short",
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
 export function OrderMenuClient({
   categories,
   restaurant,
@@ -83,11 +107,20 @@ export function OrderMenuClient({
   const [customerName, setCustomerName] = useState("");
   const [customerPhone, setCustomerPhone] = useState("");
   const [customerAddress, setCustomerAddress] = useState("");
+  // PHASE 30 — live rider tracking: capture dropoff coords at checkout so the
+  // tracker can render a real map (and the rider app a navigation destination).
+  const [dropoffCoords, setDropoffCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [locating, setLocating] = useState(false);
   const [fulfillmentType, setFulfillmentType] = useState<
     "delivery" | "pickup"
   >("delivery");
   const [paymentMethod, setPaymentMethod] = useState<"cash" | "card">("cash");
   const [notes, setNotes] = useState("");
+  // PHASE 32 — scheduled delivery window. ASAP by default; "later" opens a
+  // datetime-local picker bounded to +5 min … +14 days from "now".
+  const [scheduleLater, setScheduleLater] = useState(false);
+  const [scheduledForValue, setScheduledForValue] = useState("");
+  const [confirmedScheduled, setConfirmedScheduled] = useState<Date | null>(null);
 
   const [submitting, setSubmitting] = useState(false);
   const [orderError, setOrderError] = useState<string | null>(null);
@@ -96,11 +129,17 @@ export function OrderMenuClient({
 
   // PHASE — recent orders persisted to localStorage so history survives
   // navigating away and back to this page (state alone is lost on remount).
-  const [recentOrders, setRecentOrders] = useState<RecentOrder[]>([]);
+  const [recentOrders, setRecentOrders] = useState<RecentOrder[]>(() =>
+    readRecentOrders(),
+  );
 
+  // Hide the app-level footer tab bar while an ordering overlay is open so
+  // its buttons can never be covered on mobile. Cleanup removes the class.
   useEffect(() => {
-    setRecentOrders(readRecentOrders());
-  }, []);
+    const active = cartOpen || selectedItem !== null || view === "checkout";
+    document.body.classList.toggle("ordering-overlay-open", active);
+    return () => document.body.classList.remove("ordering-overlay-open");
+  }, [cartOpen, selectedItem, view]);
 
   function saveOrder(
     reference: string,
@@ -206,7 +245,6 @@ export function OrderMenuClient({
     setSelectedItem(null);
     setItemModifiers({});
     setItemQty(1);
-    setCartOpen(true);
   }
 
   function updateCartQty(index: number, delta: number) {
@@ -220,6 +258,31 @@ export function OrderMenuClient({
 
   function removeCartItem(index: number) {
     setCart((prev) => prev.filter((_, i) => i !== index));
+  }
+
+  function useMyLocation() {
+    if (!("geolocation" in navigator)) {
+      setOrderError("Location isn't supported by this browser.");
+      return;
+    }
+    setLocating(true);
+    setOrderError(null);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setDropoffCoords({
+          lat: Number(pos.coords.latitude.toFixed(6)),
+          lng: Number(pos.coords.longitude.toFixed(6)),
+        });
+        setLocating(false);
+      },
+      () => {
+        setLocating(false);
+        setOrderError(
+          "Couldn't get your location. Enable location access to auto-fill the dropoff map pin.",
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000 },
+    );
   }
 
   async function submitOrder() {
@@ -237,9 +300,38 @@ export function OrderMenuClient({
       return;
     }
 
+    // PHASE 32 — resolve + validate the scheduled window client-side. The
+    // server revalidates (bounds shift between render and submit), so this is
+    // a fast-fail convenience, not the authority.
+    let scheduledIso: string | null = null;
+    if (scheduleLater) {
+      if (!scheduledForValue) {
+        setOrderError("Choose a delivery time, or pick ASAP.");
+        return;
+      }
+      const sched = new Date(scheduledForValue);
+      const now = Date.now();
+      if (Number.isNaN(sched.getTime())) {
+        setOrderError("That delivery time doesn't look right.");
+        return;
+      }
+      if (sched.getTime() < now + SCHEDULE_BUFFER_MS) {
+        setOrderError("Choose a time at least 5 minutes from now.");
+        return;
+      }
+      if (sched.getTime() > now + SCHEDULE_HORIZON_MS) {
+        setOrderError("Choose a time within the next 14 days.");
+        return;
+      }
+      scheduledIso = sched.toISOString();
+      setConfirmedScheduled(sched);
+    } else {
+      setConfirmedScheduled(null);
+    }
+
     setSubmitting(true);
     try {
-      const res = await fetch("/api/orders", {
+      const res = await fetch("/api/marketplace/orders", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -247,9 +339,12 @@ export function OrderMenuClient({
           customerName: customerName.trim(),
           customerPhone: customerPhone.trim(),
           customerAddress: customerAddress.trim(),
+          dropoffLat: fulfillmentType === "delivery" ? dropoffCoords?.lat ?? null : null,
+          dropoffLng: fulfillmentType === "delivery" ? dropoffCoords?.lng ?? null : null,
           fulfillmentType,
           paymentMethod,
           notes: notes.trim(),
+          scheduledFor: scheduledIso,
           items: cart.map((c) => ({
             menuItemId: c.menuItemId,
             quantity: c.quantity,
@@ -293,24 +388,34 @@ export function OrderMenuClient({
   if (view === "confirmation" && orderRef) {
     return (
       <div className="flex flex-col items-center py-16 text-center">
-        <div className="mb-4 grid h-16 w-16 place-items-center rounded-full bg-emerald-100 text-3xl">
+        <div className="mb-4 grid h-16 w-16 place-items-center rounded-full border border-emerald-400/25 bg-emerald-400/10 text-2xl text-emerald-400">
           ✓
         </div>
-        <h2 className="text-xl font-bold text-slate-900">Order placed!</h2>
-        <p className="mt-2 text-sm text-slate-500">
+        <h2 className="text-xl font-semibold tracking-tight text-white">
+          {confirmedScheduled ? "Order scheduled!" : "Order placed!"}
+        </h2>
+        <p className="mt-2 text-sm text-white/50">
           Your order reference is{" "}
-          <span className="font-mono font-bold text-slate-900">{orderRef}</span>
+          <span className="font-mono font-bold text-ember-400">{orderRef}</span>
         </p>
+        {confirmedScheduled && (
+          <p className="mt-1 text-sm text-white/50">
+            Scheduled for{" "}
+            <span className="font-bold text-sky-400">
+              {scheduleLabel(confirmedScheduled)}
+            </span>
+          </p>
+        )}
         {orderTotal !== null && (
-          <p className="mt-1 text-sm text-slate-500">
+          <p className="mt-1 text-sm text-white/50">
             Total: {currency(orderTotal)}
           </p>
         )}
         <a
           href={`/orders/${orderRef}`}
-          className="mt-6 rounded-xl bg-orange-500 px-6 py-3 text-sm font-bold text-white hover:bg-orange-600"
+          className="mt-6 inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-ember-500 px-6 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
         >
-          Track order
+          Track order <ChevronRightIcon className="text-base" />
         </a>
         <button
           type="button"
@@ -318,8 +423,11 @@ export function OrderMenuClient({
             setView("menu");
             setOrderRef(null);
             setOrderTotal(null);
+            setScheduleLater(false);
+            setScheduledForValue("");
+            setConfirmedScheduled(null);
           }}
-          className="mt-3 text-sm font-semibold text-slate-500 hover:text-slate-700"
+          className="mt-3 text-sm font-semibold text-white/45 transition-colors hover:text-white/80"
         >
           Back to menu
         </button>
@@ -333,8 +441,9 @@ export function OrderMenuClient({
       {cartCount > 0 && view === "menu" && (
         <button
           type="button"
+          key={cartCount}
           onClick={() => setCartOpen(true)}
-          className="fixed bottom-6 left-1/2 z-40 -translate-x-1/2 rounded-2xl bg-orange-500 px-6 py-3.5 text-sm font-bold text-white shadow-lg hover:bg-orange-600"
+          className="fixed bottom-24 left-1/2 z-[80] -translate-x-1/2 animate-cart-pop rounded-2xl bg-ember-500 px-6 py-3.5 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.4)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] md:bottom-6"
         >
           View cart ({cartCount}) — {currency(pricing.total)}
         </button>
@@ -342,17 +451,17 @@ export function OrderMenuClient({
 
       {/* ─── Item detail drawer ─── */}
       {selectedItem && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
-          <div className="w-full max-w-lg rounded-t-3xl bg-white p-6 shadow-xl sm:rounded-3xl">
-            <div className="flex items-start justify-between">
-              <div>
-                <h3 className="text-lg font-bold text-slate-900">
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60">
+          <div className="card-lift max-h-sheet flex w-full max-w-lg flex-col rounded-3xl border border-white/8 bg-ink-850 shadow-2xl sm:my-4">
+            <div className="flex items-start justify-between px-6 pb-4 pt-6">
+              <div className="min-w-0">
+                <h3 className="text-lg font-bold text-white">
                   {selectedItem.name}
                 </h3>
-                <p className="mt-1 text-sm text-slate-500">
+                <p className="mt-1 text-sm text-white/45">
                   {selectedItem.description}
                 </p>
-                <p className="mt-2 font-semibold text-slate-900">
+                <p className="mt-2 font-semibold text-ember-400">
                   {currency(selectedItem.price)}
                 </p>
               </div>
@@ -363,89 +472,91 @@ export function OrderMenuClient({
                   setItemModifiers({});
                   setItemQty(1);
                 }}
-                className="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                className="grid h-11 w-11 shrink-0 place-items-center rounded-full border border-white/10 bg-white/5 text-white/70 transition-colors hover:bg-white/10"
               >
-                ✕
+                <XIcon className="text-base" />
               </button>
             </div>
 
-            {selectedItem.modifierGroups.map((group) => (
-              <div key={group.id} className="mt-5">
-                <p className="text-sm font-bold text-slate-900">
-                  {group.name}
-                  {group.minSelect > 0 && (
-                    <span className="ml-1 text-xs font-normal text-slate-400">
-                      (choose at least {group.minSelect})
-                    </span>
-                  )}
-                </p>
-                <div className="mt-2 space-y-2">
-                  {group.modifiers
-                    .filter((m) => m.available)
-                    .map((mod) => {
-                      const checked =
-                        (itemModifiers[group.id] ?? []).includes(mod.id);
-                      return (
-                        <label
-                          key={mod.id}
-                          className={`flex cursor-pointer items-center justify-between rounded-xl border px-4 py-3 text-sm transition ${
-                            checked
-                              ? "border-orange-400 bg-orange-50"
-                              : "border-slate-200 bg-white hover:bg-slate-50"
-                          }`}
-                        >
-                          <div className="flex items-center gap-3">
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() =>
-                                toggleModifier(
-                                  group.id,
-                                  mod.id,
-                                  group.maxSelect,
-                                )
-                              }
-                              className="h-4 w-4 accent-orange-500"
-                            />
-                            <span className="text-slate-700">{mod.name}</span>
-                          </div>
-                          {mod.priceDelta !== 0 && (
-                            <span className="text-xs text-slate-400">
-                              {mod.priceDelta > 0 ? "+" : ""}
-                              {currency(mod.priceDelta)}
-                            </span>
-                          )}
-                        </label>
-                      );
-                    })}
+            <div className="flex-1 overflow-y-auto px-6 pb-2">
+              {selectedItem.modifierGroups.map((group) => (
+                <div key={group.id} className="mt-5">
+                  <p className="text-sm font-bold text-white">
+                    {group.name}
+                    {group.minSelect > 0 && (
+                      <span className="ml-1 text-xs font-normal text-white/40">
+                        (choose at least {group.minSelect})
+                      </span>
+                    )}
+                  </p>
+                  <div className="mt-2 space-y-2">
+                    {group.modifiers
+                      .filter((m) => m.available)
+                      .map((mod) => {
+                        const checked =
+                          (itemModifiers[group.id] ?? []).includes(mod.id);
+                        return (
+                          <label
+                            key={mod.id}
+                            className={`flex cursor-pointer items-center justify-between rounded-2xl border px-4 py-3 text-sm transition-colors ${
+                              checked
+                                ? "border-ember-500/50 bg-ember-500/10"
+                                : "border-white/8 bg-white/5 hover:bg-white/10"
+                            }`}
+                          >
+                            <div className="flex items-center gap-3">
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  toggleModifier(
+                                    group.id,
+                                    mod.id,
+                                    group.maxSelect,
+                                  )
+                                }
+                                className="h-4 w-4 accent-ember-500"
+                              />
+                              <span className="text-white/80">{mod.name}</span>
+                            </div>
+                            {mod.priceDelta !== 0 && (
+                              <span className="text-xs text-white/40">
+                                {mod.priceDelta > 0 ? "+" : ""}
+                                {currency(mod.priceDelta)}
+                              </span>
+                            )}
+                          </label>
+                        );
+                      })}
+                  </div>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
 
-            <div className="mt-6 flex items-center gap-4">
-              <div className="flex items-center rounded-xl border border-slate-200">
+            <div className="flex shrink-0 items-center gap-4 border-t border-white/6 bg-ink-850 px-6 py-4">
+              <div className="flex items-center rounded-2xl border border-white/10 bg-white/5">
                 <button
                   type="button"
                   onClick={() => setItemQty((q) => Math.max(1, q - 1))}
-                  className="grid h-10 w-10 place-items-center text-lg font-bold text-slate-500 hover:bg-slate-50"
+                  className="grid h-11 w-11 place-items-center text-white/70 transition-colors hover:text-white"
                 >
-                  −
+                  <MinusIcon />
                 </button>
-                <span className="w-10 text-center text-sm font-bold text-slate-900">
+                <span className="w-10 text-center text-sm font-bold text-white">
                   {itemQty}
                 </span>
                 <button
                   type="button"
                   onClick={() => setItemQty((q) => q + 1)}
-                  className="grid h-10 w-10 place-items-center text-lg font-bold text-slate-500 hover:bg-slate-50"
+                  className="grid h-11 w-11 place-items-center text-white/70 transition-colors hover:text-white"
                 >
-                  +
+                  <PlusIcon />
                 </button>
               </div>
               <button
                 type="button"
                 onClick={addToCart}
-                className="flex-1 rounded-xl bg-orange-500 py-3 text-sm font-bold text-white hover:bg-orange-600"
+                className="min-w-0 flex-1 truncate rounded-2xl bg-ember-500 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
               >
                 Add to cart — {currency(
                   (selectedItem.price +
@@ -468,21 +579,21 @@ export function OrderMenuClient({
 
       {/* ─── Cart drawer ─── */}
       {cartOpen && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/40 sm:items-center">
-          <div className="flex max-h-[90vh] w-full max-w-lg flex-col rounded-t-3xl bg-white shadow-xl sm:rounded-3xl">
-            <div className="flex items-center justify-between border-b border-slate-100 px-6 py-4">
-              <h3 className="text-lg font-bold text-slate-900">Your cart</h3>
+        <div className="fixed inset-0 z-[80] flex items-center justify-center bg-black/60">
+          <div className="max-h-sheet-tight flex w-full max-w-lg flex-col rounded-3xl border border-white/8 bg-ink-850 shadow-2xl sm:my-4">
+            <div className="flex items-center justify-between border-b border-white/6 px-6 py-4">
+              <h3 className="text-lg font-bold text-white">Your cart</h3>
               <button
                 type="button"
                 onClick={() => setCartOpen(false)}
-                className="grid h-8 w-8 place-items-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                className="grid h-11 w-11 place-items-center rounded-full border border-white/10 bg-white/5 text-white/70 transition-colors hover:bg-white/10"
               >
-                ✕
+                <XIcon className="text-base" />
               </button>
             </div>
 
             {cart.length === 0 ? (
-              <div className="flex-1 py-12 text-center text-sm text-slate-400">
+              <div className="flex-1 py-12 text-center text-sm text-white/40">
                 Your cart is empty
               </div>
             ) : (
@@ -491,14 +602,14 @@ export function OrderMenuClient({
                   {cart.map((item, i) => (
                     <div
                       key={i}
-                      className="flex items-start justify-between border-b border-slate-50 py-3"
+                      className="flex items-start justify-between border-b border-white/5 py-3"
                     >
                       <div className="min-w-0 flex-1">
-                        <p className="text-sm font-semibold text-slate-900">
+                        <p className="text-sm font-semibold text-white">
                           {item.name}
                         </p>
                         {item.selectedModifiers.length > 0 && (
-                          <p className="mt-0.5 text-xs text-slate-400">
+                          <p className="mt-0.5 text-xs text-white/40">
                             {item.selectedModifiers
                               .map((m) => m.modifierName)
                               .join(", ")}
@@ -508,30 +619,30 @@ export function OrderMenuClient({
                           <button
                             type="button"
                             onClick={() => updateCartQty(i, -1)}
-                            className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50"
+                            className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-white/70 transition-colors hover:bg-white/10"
                           >
-                            −
+                            <MinusIcon className="text-sm" />
                           </button>
-                          <span className="w-6 text-center text-xs font-bold text-slate-900">
+                          <span className="w-8 text-center text-sm font-bold text-white">
                             {item.quantity}
                           </span>
                           <button
                             type="button"
                             onClick={() => updateCartQty(i, 1)}
-                            className="grid h-7 w-7 place-items-center rounded-lg border border-slate-200 text-xs font-bold text-slate-500 hover:bg-slate-50"
+                            className="grid h-10 w-10 place-items-center rounded-lg border border-white/10 text-white/70 transition-colors hover:bg-white/10"
                           >
-                            +
+                            <PlusIcon className="text-sm" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => removeCartItem(i)}
-                            className="ml-2 text-xs text-red-400 hover:text-red-600"
-                          >
-                            Remove
-                          </button>
+<button
+  type="button"
+  onClick={() => removeCartItem(i)}
+  className="ml-2 rounded-lg px-3 py-2.5 text-xs font-medium text-red-400 transition-colors hover:bg-red-500/10 hover:text-red-300"
+>
+  Remove
+</button>
                         </div>
                       </div>
-                      <p className="ml-4 text-sm font-semibold text-slate-900">
+                      <p className="ml-4 text-sm font-semibold text-white/90">
                         {currency(
                           (item.basePrice +
                             item.selectedModifiers.reduce(
@@ -545,14 +656,14 @@ export function OrderMenuClient({
                   ))}
                 </div>
 
-                <div className="border-t border-slate-100 px-6 py-4">
-                  <div className="space-y-1 text-sm text-slate-600">
+                <div className="border-t border-white/6 px-6 py-4">
+                  <div className="space-y-1 text-sm text-white/60">
                     <div className="flex justify-between">
                       <span>Subtotal</span>
                       <span>{currency(pricing.subtotal)}</span>
                     </div>
                     {pricing.discountAmount > 0 && (
-                      <div className="flex justify-between text-emerald-600">
+                      <div className="flex justify-between text-emerald-400">
                         <span>Discount</span>
                         <span>−{currency(pricing.discountAmount)}</span>
                       </div>
@@ -567,7 +678,7 @@ export function OrderMenuClient({
                         <span>{currency(pricing.deliveryFee)}</span>
                       </div>
                     )}
-                    <div className="flex justify-between border-t border-slate-100 pt-1 text-base font-bold text-slate-900">
+                    <div className="flex justify-between border-t border-white/6 pt-1 text-base font-bold text-white">
                       <span>Total</span>
                       <span>{currency(pricing.total)}</span>
                     </div>
@@ -579,7 +690,7 @@ export function OrderMenuClient({
                       setCartOpen(false);
                       setView("checkout");
                     }}
-                    className="mt-4 w-full rounded-xl bg-orange-500 py-3 text-sm font-bold text-white hover:bg-orange-600"
+                    className="mt-4 w-full rounded-2xl bg-ember-500 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
                   >
                     Checkout
                   </button>
@@ -592,23 +703,23 @@ export function OrderMenuClient({
 
       {/* ─── Checkout form ─── */}
       {view === "checkout" && (
-        <div className="fixed inset-0 z-50 overflow-y-auto bg-white">
+        <div className="fixed inset-0 z-[80] overflow-y-auto bg-ink-950">
           <div className="mx-auto max-w-lg px-6 py-8">
             <div className="flex items-center gap-4">
               <button
                 type="button"
                 onClick={() => setView("menu")}
-                className="grid h-9 w-9 place-items-center rounded-full bg-slate-100 text-slate-500 hover:bg-slate-200"
+                className="grid h-11 w-11 place-items-center rounded-full border border-white/10 bg-white/5 text-white/70 transition-colors hover:bg-white/10"
               >
-                ←
+                <ArrowLeftIcon className="text-base" />
               </button>
-              <h2 className="text-lg font-bold text-slate-900">Checkout</h2>
+              <h2 className="text-lg font-bold text-white">Checkout</h2>
             </div>
 
             <div className="mt-6 space-y-4">
               {/* Fulfillment */}
               <div>
-                <label className="text-sm font-bold text-slate-900">
+                <label className="text-sm font-bold text-white">
                   Order type
                 </label>
                 <div className="mt-2 flex gap-2">
@@ -616,10 +727,10 @@ export function OrderMenuClient({
                     <button
                       type="button"
                       onClick={() => setFulfillmentType("delivery")}
-                      className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                      className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
                         fulfillmentType === "delivery"
-                          ? "border-orange-400 bg-orange-50 text-orange-700"
-                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                          ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                          : "border-white/10 text-white/60 hover:bg-white/5"
                       }`}
                     >
                       Delivery
@@ -629,10 +740,10 @@ export function OrderMenuClient({
                     <button
                       type="button"
                       onClick={() => setFulfillmentType("pickup")}
-                      className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                      className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
                         fulfillmentType === "pickup"
-                          ? "border-orange-400 bg-orange-50 text-orange-700"
-                          : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                          ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                          : "border-white/10 text-white/60 hover:bg-white/5"
                       }`}
                     >
                       Pickup
@@ -643,17 +754,17 @@ export function OrderMenuClient({
 
               {/* Payment */}
               <div>
-                <label className="text-sm font-bold text-slate-900">
+                <label className="text-sm font-bold text-white">
                   Payment
                 </label>
                 <div className="mt-2 flex gap-2">
                   <button
                     type="button"
                     onClick={() => setPaymentMethod("cash")}
-                    className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                    className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
                       paymentMethod === "cash"
-                        ? "border-orange-400 bg-orange-50 text-orange-700"
-                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                        ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                        : "border-white/10 text-white/60 hover:bg-white/5"
                     }`}
                   >
                     Cash
@@ -661,17 +772,17 @@ export function OrderMenuClient({
                   <button
                     type="button"
                     onClick={() => setPaymentMethod("card")}
-                    className={`flex-1 rounded-xl border px-4 py-2.5 text-sm font-semibold transition ${
+                    className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
                       paymentMethod === "card"
-                        ? "border-orange-400 bg-orange-50 text-orange-700"
-                        : "border-slate-200 text-slate-600 hover:bg-slate-50"
+                        ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                        : "border-white/10 text-white/60 hover:bg-white/5"
                     }`}
                   >
                     Pay online
                   </button>
                 </div>
                 {paymentMethod === "card" && (
-                  <p className="mt-1.5 text-xs text-slate-400">
+                  <p className="mt-1.5 text-xs text-white/40">
                     Cards, UPI, netbanking & wallets via Razorpay.
                   </p>
                 )}
@@ -679,7 +790,7 @@ export function OrderMenuClient({
 
               {/* Name */}
               <div>
-                <label className="text-sm font-bold text-slate-900">
+                <label className="text-sm font-bold text-white">
                   Your name
                 </label>
                 <input
@@ -687,13 +798,13 @@ export function OrderMenuClient({
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
                   placeholder="Jane Smith"
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                  className={inputCls}
                 />
               </div>
 
               {/* Phone */}
               <div>
-                <label className="text-sm font-bold text-slate-900">
+                <label className="text-sm font-bold text-white">
                   Phone
                 </label>
                 <input
@@ -701,29 +812,101 @@ export function OrderMenuClient({
                   value={customerPhone}
                   onChange={(e) => setCustomerPhone(e.target.value)}
                   placeholder="(555) 123-4567"
-                  className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                  className={inputCls}
                 />
               </div>
 
               {/* Address */}
               {fulfillmentType === "delivery" && (
                 <div>
-                  <label className="text-sm font-bold text-slate-900">
-                    Delivery address
-                  </label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-sm font-bold text-white">
+                      Delivery address
+                    </label>
+                    <button
+                      type="button"
+                      onClick={useMyLocation}
+                      disabled={locating}
+                      className="inline-flex items-center gap-1 text-xs font-bold text-ember-400 transition-colors hover:text-ember-300 disabled:opacity-50"
+                    >
+                      {locating ? "Locating…" : "Use my location"}
+                    </button>
+                  </div>
                   <input
                     type="text"
                     value={customerAddress}
                     onChange={(e) => setCustomerAddress(e.target.value)}
                     placeholder="123 Main St, Apt 4B"
-                    className="mt-1 w-full rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                    className={inputCls}
                   />
+                  {dropoffCoords && (
+                    <p className="mt-1 flex items-center gap-1.5 text-[11px] text-emerald-400">
+                      <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" />
+                      Dropoff pin saved ({dropoffCoords.lat}, {dropoffCoords.lng})
+                    </p>
+                  )}
                 </div>
               )}
 
+              {/* When — PHASE 32 scheduling */}
+              <div>
+                <label className="text-sm font-bold text-white">
+                  When&nbsp;·&nbsp;
+                  <span className="font-normal text-white/45">
+                    {scheduleLater
+                      ? scheduledForValue
+                        ? scheduleLabel(scheduledForValue)
+                        : "pick a time"
+                      : "as soon as possible"}
+                  </span>
+                </label>
+                <div className="mt-2 flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setScheduleLater(false)}
+                    className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
+                      !scheduleLater
+                        ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                        : "border-white/10 text-white/60 hover:bg-white/5"
+                    }`}
+                  >
+                    ASAP
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setScheduleLater(true)}
+                    className={`flex-1 rounded-2xl border px-4 py-2.5 text-sm font-semibold transition-colors ${
+                      scheduleLater
+                        ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+                        : "border-white/10 text-white/60 hover:bg-white/5"
+                    }`}
+                  >
+                    Schedule for later
+                  </button>
+                </div>
+                {scheduleLater && (
+                  <input
+                    type="datetime-local"
+                    value={scheduledForValue}
+                    onChange={(e) => setScheduledForValue(e.target.value)}
+                    min={toLocalInput(new Date(Date.now() + SCHEDULE_BUFFER_MS))}
+                    max={toLocalInput(new Date(Date.now() + SCHEDULE_HORIZON_MS))}
+                    step={900}
+                    className={inputCls}
+                  />
+                )}
+                {scheduleLater && scheduledForValue && (
+                  <p className="mt-1.5 flex items-center gap-1.5 text-[11px] text-sky-400">
+                    <span className="h-1.5 w-1.5 rounded-full bg-sky-400" />
+                    Scheduled {scheduleLabel(scheduledForValue)} — the rider
+                    can&apos;t deliver before this window.
+                  </p>
+                )}
+              </div>
+
               {/* Notes */}
               <div>
-                <label className="text-sm font-bold text-slate-900">
+                <label className="text-sm font-bold text-white">
                   Notes (optional)
                 </label>
                 <textarea
@@ -731,15 +914,15 @@ export function OrderMenuClient({
                   onChange={(e) => setNotes(e.target.value)}
                   placeholder="Allergies, special requests..."
                   rows={2}
-                  className="mt-1 w-full resize-none rounded-xl border border-slate-200 px-4 py-2.5 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                  className={`${inputCls} resize-none`}
                 />
               </div>
             </div>
 
             {/* Order summary */}
-            <div className="mt-6 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-              <p className="text-sm font-bold text-slate-900">Order summary</p>
-              <div className="mt-3 space-y-1.5 text-sm text-slate-600">
+            <div className="card-lift mt-6 rounded-3xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+              <p className="text-sm font-bold text-white">Order summary</p>
+              <div className="mt-3 space-y-1.5 text-sm text-white/60">
                 {cart.map((item, i) => (
                   <div key={i} className="flex justify-between">
                     <span className="min-w-0 flex-1 truncate">
@@ -757,13 +940,13 @@ export function OrderMenuClient({
                     </span>
                   </div>
                 ))}
-                <div className="border-t border-slate-200 pt-1.5">
+                <div className="border-t border-white/6 pt-1.5">
                   <div className="flex justify-between">
                     <span>Subtotal</span>
                     <span>{currency(pricing.subtotal)}</span>
                   </div>
                   {pricing.discountAmount > 0 && (
-                    <div className="flex justify-between text-emerald-600">
+                    <div className="flex justify-between text-emerald-400">
                       <span>Discount</span>
                       <span>−{currency(pricing.discountAmount)}</span>
                     </div>
@@ -778,7 +961,7 @@ export function OrderMenuClient({
                       <span>{currency(pricing.deliveryFee)}</span>
                     </div>
                   )}
-                  <div className="flex justify-between border-t border-slate-200 pt-1.5 text-base font-bold text-slate-900">
+                  <div className="flex justify-between border-t border-white/6 pt-1.5 text-base font-bold text-white">
                     <span>Total</span>
                     <span>{currency(pricing.total)}</span>
                   </div>
@@ -787,23 +970,23 @@ export function OrderMenuClient({
             </div>
 
             {orderError && (
-              <p className="mt-4 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-600">
+              <p className="mt-4 rounded-2xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
                 {orderError}
               </p>
             )}
 
             {pricing.total < restaurant.minOrder && restaurant.minOrder > 0 && (
-              <p className="mt-3 rounded-xl bg-amber-50 px-4 py-3 text-sm text-amber-700">
+              <p className="mt-3 rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm text-amber-400">
                 Minimum order is {currency(restaurant.minOrder)}. Add{" "}
                 {currency(restaurant.minOrder - pricing.total)} more.
               </p>
             )}
 
-            <div className="mt-6 flex gap-3">
+            <div className="mt-6 flex flex-col gap-3 sm:flex-row">
               <button
                 type="button"
                 onClick={() => setView("menu")}
-                className="rounded-xl border border-slate-200 px-5 py-3 text-sm font-semibold text-slate-600 hover:bg-slate-50"
+                className="rounded-2xl border border-white/10 bg-white/5 px-5 py-3 text-sm font-semibold text-white/70 transition-colors hover:bg-white/10"
               >
                 Back
               </button>
@@ -812,9 +995,13 @@ export function OrderMenuClient({
                   type="button"
                   onClick={submitOrder}
                   disabled={submitting}
-                  className="flex-1 rounded-xl bg-orange-500 py-3 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50"
+                  className="flex-1 rounded-2xl bg-ember-500 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] disabled:opacity-50"
                 >
-                  {submitting ? "Placing order..." : "Place order"}
+                  {submitting
+                    ? "Placing order..."
+                    : scheduleLater
+                      ? "Schedule order"
+                      : "Place order"}
                 </button>
               ) : (
                 <div className="flex-1">
@@ -824,12 +1011,30 @@ export function OrderMenuClient({
                     customerName={customerName.trim()}
                     customerPhone={customerPhone.trim()}
                     customerAddress={customerAddress.trim()}
+                    dropoffLat={
+                      fulfillmentType === "delivery"
+                        ? dropoffCoords?.lat ?? null
+                        : null
+                    }
+                    dropoffLng={
+                      fulfillmentType === "delivery"
+                        ? dropoffCoords?.lng ?? null
+                        : null
+                    }
                     fulfillmentType={fulfillmentType}
                     notes={notes.trim()}
-                    items={cartForPayment}
-                    onSuccess={(result) =>
-                      confirmOrder(result.reference, result.total)
+                    scheduledFor={
+                      scheduleLater && scheduledForValue
+                        ? new Date(scheduledForValue).toISOString()
+                        : null
                     }
+                    items={cartForPayment}
+                    onSuccess={(result) => {
+                      if (scheduleLater && scheduledForValue) {
+                        setConfirmedScheduled(new Date(scheduledForValue));
+                      }
+                      confirmOrder(result.reference, result.total);
+                    }}
                   />
                 </div>
               )}
@@ -840,8 +1045,8 @@ export function OrderMenuClient({
 
       {/* ─── Recent orders ─── */}
       {view === "menu" && thisRestaurantOrders.length > 0 && (
-        <section className="mb-10 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
-          <h2 className="text-sm font-bold uppercase tracking-[0.12em] text-slate-500">
+        <section className="card-lift mb-10 rounded-3xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
+          <h2 className="text-sm font-bold uppercase tracking-[0.12em] text-white/40">
             Your orders from {restaurant.name}
           </h2>
           <div className="mt-3 space-y-2">
@@ -849,13 +1054,13 @@ export function OrderMenuClient({
               <a
                 key={o.reference}
                 href={`/orders/${encodeURIComponent(o.reference)}`}
-                className="flex items-center justify-between rounded-xl border border-slate-100 bg-slate-50 px-4 py-3 transition hover:border-orange-200 hover:bg-orange-50"
+                className="flex items-center justify-between rounded-2xl border border-white/6 bg-white/5 px-4 py-3 transition-colors hover:border-ember-500/30 hover:bg-ember-500/5"
               >
                 <div>
-                  <p className="font-mono text-sm font-bold text-slate-900">
+                  <p className="font-mono text-sm font-bold text-white">
                     {o.reference}
                   </p>
-                  <p className="mt-0.5 text-xs text-slate-400">
+                  <p className="mt-0.5 text-xs text-white/40">
                     {new Date(o.placedAt).toLocaleString("en-US", {
                       month: "short",
                       day: "numeric",
@@ -865,10 +1070,10 @@ export function OrderMenuClient({
                   </p>
                 </div>
                 <div className="flex items-center gap-3">
-                  <span className="text-sm font-semibold text-slate-700">
+                  <span className="text-sm font-semibold text-white/80">
                     {currency(o.total)}
                   </span>
-                  <span className="rounded-lg bg-orange-500 px-3 py-1.5 text-xs font-bold text-white">
+                  <span className="rounded-xl bg-ember-500 px-3 py-1.5 text-xs font-bold text-ink-950">
                     Track
                   </span>
                 </div>
@@ -882,7 +1087,7 @@ export function OrderMenuClient({
       {view === "menu" &&
         categories.map((cat) => (
           <section key={cat.name} className="mb-10">
-            <h2 className="sticky top-0 z-10 -mx-4 border-b border-slate-100 bg-white/95 px-4 py-3 text-lg font-bold tracking-tight text-slate-900 backdrop-blur sm:-mx-6 sm:px-6">
+            <h2 className="sticky top-16 z-10 -mx-4 border-b border-white/6 bg-ink-950/95 px-4 py-3 text-lg font-bold tracking-tight text-white backdrop-blur sm:-mx-6 sm:px-6">
               {cat.name}
             </h2>
 
@@ -897,39 +1102,39 @@ export function OrderMenuClient({
                     setItemModifiers({});
                     setItemQty(1);
                   }}
-                  className={`flex w-full gap-4 rounded-xl border border-slate-100 bg-white p-4 text-left shadow-sm transition hover:shadow-md ${
+                  className={`card-lift flex w-full gap-4 rounded-3xl border border-white/8 bg-ink-850 p-4 text-left shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] transition-colors hover:border-white/15 ${
                     !item.available ? "cursor-not-allowed opacity-50" : ""
                   }`}
                 >
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
-                      <h3 className="font-semibold text-slate-900">
+                      <h3 className="font-semibold text-white">
                         {item.name}
                       </h3>
                       {item.popular && (
-                        <span className="shrink-0 rounded-full bg-orange-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-orange-600">
+                        <span className="shrink-0 rounded-full border border-ember-500/25 bg-ember-500/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-ember-400">
                           Popular
                         </span>
                       )}
                       {item.vegetarian && (
-                        <span className="shrink-0 rounded-full bg-green-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-green-600">
+                        <span className="shrink-0 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-emerald-400">
                           Veg
                         </span>
                       )}
                     </div>
 
                     {item.description && (
-                      <p className="mt-1 line-clamp-2 text-sm text-slate-500">
+                      <p className="mt-1 line-clamp-2 text-sm text-white/45">
                         {item.description}
                       </p>
                     )}
 
                     <div className="mt-2 flex items-center gap-3">
-                      <p className="text-sm font-semibold text-slate-900">
+                      <p className="text-sm font-semibold text-white/90">
                         {currency(item.price)}
                       </p>
                       {item.available && (
-                        <span className="rounded-lg bg-orange-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-white">
+                        <span className="rounded-xl bg-ember-500 px-3 py-1 text-[10px] font-bold uppercase tracking-wide text-ink-950">
                           Add
                         </span>
                       )}
@@ -943,7 +1148,7 @@ export function OrderMenuClient({
                   </div>
 
                   {item.imageUrl && (
-                    <div className="h-24 w-24 shrink-0 overflow-hidden rounded-lg bg-slate-100">
+                    <div className="h-24 w-24 shrink-0 overflow-hidden rounded-2xl border border-white/8 bg-ink-900">
                       {/* eslint-disable-next-line @next/next/no-img-element */}
                       <img
                         src={item.imageUrl}

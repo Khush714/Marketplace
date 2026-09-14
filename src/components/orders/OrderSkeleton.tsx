@@ -1,15 +1,15 @@
 const Bar = ({ className = "" }: { className?: string }) => (
-  <div className={`animate-pulse rounded-full bg-slate-200 ${className}`} />
+  <div className={`shimmer rounded-full ${className}`} />
 );
 
 const Circle = ({ className = "" }: { className?: string }) => (
-  <div className={`animate-pulse rounded-full bg-slate-200 ${className}`} />
+  <div className={`shimmer rounded-full ${className}`} />
 );
 
 function RestaurantSkeleton() {
   return (
     <section className="flex flex-col items-center text-center">
-      <Circle className="h-16 w-16 border-4 border-white shadow-md" />
+      <Circle className="h-16 w-16 border-4 border-ink-950 shadow-md" />
       <Bar className="mt-3 h-4 w-36" />
       <div className="mt-2 flex items-center gap-2">
         <Bar className="h-3 w-24" />
@@ -21,7 +21,7 @@ function RestaurantSkeleton() {
 
 function StatusHeroSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <div className="text-center">
         <Bar className="mx-auto h-7 w-40" />
         <Bar className="mx-auto mt-2 h-4 w-64 max-w-full" />
@@ -36,7 +36,7 @@ function StatusHeroSkeleton() {
 
 function ProgressRailSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-4 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <div className="flex items-center justify-between px-2">
         {Array.from({ length: 5 }).map((_, i) => (
           <div key={i} className="flex flex-col items-center gap-1.5">
@@ -51,7 +51,7 @@ function ProgressRailSkeleton() {
 
 function StepperSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       {Array.from({ length: 5 }).map((_, i) => (
         <div key={i} className="flex items-start gap-3 py-3">
           <Circle className="mt-0.5 h-5 w-5 shrink-0" />
@@ -67,7 +67,7 @@ function StepperSkeleton() {
 
 function TimelineSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <Bar className="mb-4 h-3.5 w-28" />
       {Array.from({ length: 4 }).map((_, i) => (
         <div key={i} className="flex items-start gap-3 py-2">
@@ -84,7 +84,7 @@ function TimelineSkeleton() {
 
 function DetailsSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <div className="flex items-center justify-between">
         <Bar className="h-3.5 w-20" />
         <Bar className="h-3 w-24" />
@@ -94,7 +94,7 @@ function DetailsSkeleton() {
         <Bar className="h-4 w-36" />
         <Bar className="h-4 w-40" />
       </div>
-      <div className="my-4 border-t border-slate-100" />
+      <div className="my-4 border-t border-white/6" />
       <div className="space-y-2">
         <div className="flex justify-between">
           <Bar className="h-3 w-16" />
@@ -115,7 +115,7 @@ function DetailsSkeleton() {
 
 function PaymentSkeleton() {
   return (
-    <section className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+    <section className="card-lift rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       <div className="flex items-center gap-3">
         <Circle className="h-9 w-9" />
         <div className="flex-1">

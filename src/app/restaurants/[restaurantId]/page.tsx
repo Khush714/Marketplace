@@ -14,6 +14,7 @@ import { MenuLinkActions } from "@/components/MenuLinkActions";
 import { currency } from "@/lib/format";
 import { resolveMenuLink } from "@/lib/menu-url";
 import { getCurrentAdmin } from "@/lib/admin-auth";
+import { marketplaceOrderingEnabled } from "@/lib/feature-flags";
 
 export const dynamic = "force-dynamic";
 
@@ -58,35 +59,43 @@ export default async function RestaurantOverview({
       <div className="px-4 sm:px-6">
         {/* Owner-only management bar — invisible to normal customers. */}
         {owner && owner.role !== "support" && (
-          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3">
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/8 bg-ink-850 px-4 py-3">
             <div>
-              <p className="text-sm font-bold text-slate-800">Owner view</p>
-              <p className="text-xs text-slate-500">
+              <p className="text-sm font-bold text-white">Owner view</p>
+              <p className="text-xs text-white/45">
                 You can see and edit the ordering link, menu QR and listing
                 settings for {r.name}.
               </p>
             </div>
-            <Link
-              href={`/admin/marketplace/${r.slug}`}
-              className="shrink-0 rounded-xl bg-slate-900 px-4 py-2.5 text-xs font-semibold text-white transition hover:bg-slate-800"
-            >
-              Manage menu &amp; QR →
-            </Link>
+            <div className="flex flex-wrap gap-2">
+              <Link
+                href={`/admin/marketplace/${r.slug}`}
+                className="rounded-2xl bg-ember-500 px-4 py-2.5 text-xs font-semibold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
+              >
+                Manage listing &amp; QR →
+              </Link>
+              <Link
+                href={`/admin/marketplace/${r.slug}/menu`}
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2.5 text-xs font-semibold text-white/70 transition-colors hover:bg-white/10"
+              >
+                Edit menu items →
+              </Link>
+            </div>
           </div>
         )}
 
         {/* About — per spec */}
         <section id="about" className="mt-8 scroll-mt-24">
-          <h2 className="text-lg font-bold tracking-tight text-slate-900">
+          <h2 className="text-lg font-bold tracking-tight text-white">
             About
           </h2>
-          <p className="mt-2 leading-relaxed text-slate-600">
+          <p className="mt-2 leading-relaxed text-white/55">
             {r.description || "—"}
           </p>
           {r.tagline && (
-            <p className="mt-2 text-sm italic text-slate-500">“{r.tagline}”</p>
+            <p className="mt-2 text-sm italic text-white/45">&ldquo;{r.tagline}&rdquo;</p>
           )}
-          <div className="mt-4 space-y-2 text-sm text-slate-500">
+          <div className="mt-4 space-y-2 text-sm text-white/45">
             {r.address && <p>📍 {r.address}</p>}
             <p>
               {r.priceRange} • {r.cuisines.join(" • ")} •{" "}
@@ -118,8 +127,8 @@ export default async function RestaurantOverview({
             Stable marketplace link + QR. The marketplace never takes the
             order; this hands the customer to the restaurant's own system.
            ───────────────────────────────────────────────────────────── */}
-        <section id="order" className="mt-12 scroll-mt-24 border-t border-slate-200 pt-10">
-          <h2 className="text-center text-sm font-bold uppercase tracking-[0.12em] text-slate-900 sm:text-base">
+        <section id="order" className="mt-12 scroll-mt-24 border-t border-white/6 pt-10">
+          <h2 className="text-center text-sm font-bold uppercase tracking-[0.12em] text-white sm:text-base">
             Order directly from {r.name}
           </h2>
 
@@ -137,10 +146,10 @@ export default async function RestaurantOverview({
                 />
               </div>
 
-              <p className="mt-6 break-all text-center font-mono text-xs text-slate-400">
+              <p className="mt-6 break-all text-center font-mono text-xs text-white/40">
                 {menuLink}
               </p>
-              <p className="mt-2 text-center text-xs text-slate-400">
+              <p className="mt-2 text-center text-xs text-white/40">
                 {menuLink.startsWith("/")
                   ? `This link is permanent. If ${r.name} changes its ordering system, the link and printed QR codes keep working.`
                   : `This opens ${r.name}'s own ordering page in a new tab.`}
@@ -148,14 +157,14 @@ export default async function RestaurantOverview({
             </>
           ) : (
             <div className="mt-5 text-center">
-              <span className="inline-flex rounded-xl bg-slate-100 px-6 py-2.5 text-sm font-bold tracking-wide text-slate-400">
+              <span className="inline-flex rounded-2xl bg-white/5 px-6 py-2.5 text-sm font-bold tracking-wide text-white/40">
                 {!r.isOpen
                   ? "CLOSED"
                   : !r.accepts.onlineOrders
                     ? "ORDERING UNAVAILABLE"
                     : "MENU LINK NOT SET"}
               </span>
-              <p className="mt-2 text-xs text-slate-400">
+              <p className="mt-2 text-xs text-white/40">
                 {r.isOpen && r.accepts.onlineOrders
                   ? "This restaurant hasn't published its ordering link yet."
                   : "Online ordering is currently unavailable at this restaurant."}

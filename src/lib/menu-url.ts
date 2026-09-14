@@ -57,11 +57,23 @@ export function isRemoteMenuUrl(value: string): boolean {
 }
 
 /**
- * The customer-facing menu link: the restaurant's own hosted menu/ordering
- * URL when one is actually published, otherwise the marketplace's stable
- * internal menu page for the slug.
+ * The customer-facing menu link.
+ *
+ * Two product modes are supported:
+ *   • Ordering reactivated (`preferInternal`): every customer is sent to the
+ *     in-marketplace menu/checkout page (`/restaurants/{slug}/menu`), which
+ *     runs the preserved ordering pipeline. The external POS URL is ignored for
+ *     navigation (still managed) — the marketplace takes the order.
+ *   • Discovery-only (external): when the restaurant publishes a real remote
+ *     URL, ORDER ONLINE deep-links to it; otherwise we fall back to the
+ *     marketplace's stable internal menu page for the slug.
  */
-export function resolveMenuLink(menuUrl: string, slug: string): string {
+export function resolveMenuLink(
+  menuUrl: string,
+  slug: string,
+  opts: { preferInternal?: boolean } = {},
+): string {
+  if (opts.preferInternal) return `/restaurants/${slug}/menu`;
   if (isRemoteMenuUrl(menuUrl)) return menuUrl;
   return `/restaurants/${slug}/menu`;
 }

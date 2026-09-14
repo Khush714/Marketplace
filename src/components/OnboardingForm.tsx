@@ -105,7 +105,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
       const res = await fetch("/api/admin/media", { method: "POST", body });
       const data = await res.json();
       if (!res.ok) {
-        setMessage({ kind: "err", text: data.error ?? "Upload failed" });
+        setMessage({ kind: "err", text: data.error ?? "QR upload failed" });
       } else {
         set("qrImageUrl", data.url as string);
       }
@@ -146,46 +146,46 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
 
   return (
     <div className="mx-auto max-w-2xl">
-      <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+      <div className="rounded-3xl border border-white/8 bg-ink-850 p-6 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] sm:p-8">
         <div className="flex items-start justify-between gap-4">
-          <div>
-            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-orange-500">
+          <div className="min-w-0">
+            <p className="text-xs font-semibold uppercase tracking-[0.14em] text-ember-400">
               Restaurant admin
             </p>
-            <h1 className="mt-1 text-2xl font-bold tracking-tight">
+            <h1 className="mt-1 truncate text-2xl font-bold tracking-tight text-white">
               {form.name}
             </h1>
-            <p className="mt-1 text-sm text-slate-500">{form.address}</p>
+            <p className="mt-1 truncate text-sm text-white/45">{form.address}</p>
           </div>
           <span
-            className={`shrink-0 rounded-full px-3 py-1 text-xs font-semibold ${
+            className={`shrink-0 rounded-full border px-2.5 py-1 text-xs font-semibold ${
               form.isListed
-                ? "bg-emerald-100 text-emerald-700"
-                : "bg-slate-100 text-slate-500"
+                ? "border-emerald-500/25 bg-emerald-500/10 text-emerald-400"
+                : "border-white/10 bg-white/5 text-white/45"
             }`}
           >
             {form.isListed ? "Listed" : "Not listed"}
           </span>
         </div>
 
-        <div className="mt-6 rounded-2xl bg-slate-50 p-5">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <div className="mt-6 rounded-2xl bg-white/5 p-5">
+          <h2 className="text-sm font-semibold uppercase tracking-wide text-white/45">
             Marketplace
           </h2>
 
           {/* List my restaurant */}
-          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-slate-200 bg-white p-4 transition hover:border-orange-300">
+          <label className="mt-4 flex cursor-pointer items-start gap-3 rounded-xl border border-white/10 bg-white/5 p-4 transition hover:border-ember-500/50">
             <input
               type="checkbox"
               checked={form.isListed}
               onChange={(e) => set("isListed", e.target.checked)}
-              className="mt-0.5 h-5 w-5 accent-orange-500"
+              className="mt-0.5 h-5 w-5 accent-ember-500"
             />
             <span>
-              <span className="block font-medium text-slate-900">
+              <span className="block font-medium text-white">
                 List my restaurant
               </span>
-              <span className="mt-0.5 block text-sm text-slate-500">
+              <span className="mt-0.5 block text-sm text-white/45">
                 When enabled your restaurant becomes eligible for the consumer
                 platform and can receive online orders.
               </span>
@@ -199,7 +199,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
               onChange={(e) => set("description", e.target.value)}
               rows={3}
               maxLength={2000}
-              className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+              className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
             />
           </Field>
 
@@ -209,7 +209,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
               <select
                 value={form.cuisine}
                 onChange={(e) => set("cuisine", e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-400"
+                className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 bg-ink-900 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8 [&>option]:bg-ink-900"
               >
                 {cuisines.map((c) => (
                   <option key={c} value={c}>
@@ -224,7 +224,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
               <select
                 value={form.priceRange}
                 onChange={(e) => set("priceRange", e.target.value)}
-                className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-400"
+                className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 bg-ink-900 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8 [&>option]:bg-ink-900"
               >
                 {PRICE_RANGES.map((p) => (
                   <option key={p} value={p}>
@@ -238,7 +238,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
           {/* Image upload */}
           <Field label="Restaurant image" className="mt-4">
             <div className="mt-1 flex items-center gap-3">
-              <div className="h-20 w-28 shrink-0 overflow-hidden rounded-lg bg-slate-200">
+              <div className="h-20 w-28 shrink-0 overflow-hidden rounded-xl bg-white/5">
                 {form.imageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -263,11 +263,11 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
                   type="button"
                   onClick={() => fileRef.current?.click()}
                   disabled={uploading}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 disabled:opacity-60"
                 >
                   {uploading ? "Uploading…" : "Upload"}
                 </button>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-white/30">
                   JPEG, PNG or WebP · max 4 MB
                 </p>
               </div>
@@ -277,7 +277,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
           {/* QR code image upload */}
           <Field label="Menu QR code image (optional)" className="mt-4">
             <div className="mt-1 flex items-center gap-3">
-              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-slate-200">
+              <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-white/5">
                 {form.qrImageUrl ? (
                   // eslint-disable-next-line @next/next/no-img-element
                   <img
@@ -302,11 +302,11 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
                   type="button"
                   onClick={() => qrFileRef.current?.click()}
                   disabled={uploadingQr}
-                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                  className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 disabled:opacity-60"
                 >
                   {uploadingQr ? "Uploading…" : "Upload QR"}
                 </button>
-                <p className="mt-1 text-xs text-slate-400">
+                <p className="mt-1 text-xs text-white/30">
                   Upload your existing menu QR code from your POS system. It
                   will appear on your public listing so customers can scan it
                   to open your menu.
@@ -316,8 +316,8 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
           </Field>
 
           {/* ── ONLINE ORDERING ─────────────────────────────────────── */}
-          <div className="mt-6 border-t border-slate-200 pt-5">
-            <h2 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+          <div className="mt-6 border-t border-white/6 pt-5">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-white/45">
               Online ordering
             </h2>
 
@@ -328,9 +328,9 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
                 onChange={(e) => set("menuUrl", e.target.value)}
                 placeholder="https://your-pos-domain.com/menu/your-restaurant"
                 maxLength={2048}
-                className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
               />
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-white/30">
                 Customers will be sent to this restaurant&apos;s existing menu and
                 ordering system. We never take the order ourselves.
               </p>
@@ -361,7 +361,7 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
           <button
             type="button"
             onClick={() => setAdvanced((v) => !v)}
-            className="mt-4 text-sm font-medium text-orange-600 hover:underline"
+            className="mt-4 py-2 text-sm font-medium text-ember-400 hover:text-ember-300 hover:underline"
           >
             {advanced ? "Hide" : "Show"} delivery & pricing settings
           </button>
@@ -397,25 +397,25 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
                   value={form.tagline}
                   onChange={(e) => set("tagline", e.target.value)}
                   maxLength={200}
-                  className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                  className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
                 />
               </Field>
             </div>
           )}
 
           {/* SAVE */}
-          <div className="mt-6 flex items-center gap-3">
+          <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:items-center">
             <button
               onClick={save}
               disabled={saving}
-              className="rounded-xl bg-orange-500 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-orange-600 disabled:opacity-60"
+              className="w-full rounded-2xl bg-ember-500 px-6 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] disabled:opacity-60 sm:w-auto"
             >
               {saving ? "Saving…" : "SAVE"}
             </button>
             {form.isListed && (
               <Link
                 href={`/restaurant/${form.slug}`}
-                className="text-sm font-medium text-slate-600 hover:underline"
+                className="text-sm font-medium text-ember-400 hover:text-ember-300 hover:underline"
               >
                 View on storefront →
               </Link>
@@ -424,10 +424,10 @@ export function OnboardingForm({ initial }: { initial: OnboardingState }) {
 
           {message && (
             <p
-              className={`mt-3 rounded-lg px-3 py-2 text-sm ${
+              className={`mt-3 rounded-xl border px-3 py-2 text-sm ${
                 message.kind === "ok"
-                  ? "bg-emerald-50 text-emerald-700"
-                  : "bg-rose-50 text-rose-600"
+                  ? "border-emerald-500/20 bg-emerald-500/10 text-emerald-400"
+                  : "border-rose-500/20 bg-rose-500/10 text-rose-400"
               }`}
             >
               {message.text}
@@ -450,7 +450,7 @@ function Field({
 }) {
   return (
     <div className={className}>
-      <label className="text-xs font-medium text-slate-500">{label}</label>
+      <label className="text-xs font-medium text-white/45">{label}</label>
       {children}
     </div>
   );
@@ -466,14 +466,14 @@ function Check({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+    <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-orange-500"
+        className="h-4 w-4 accent-ember-500"
       />
-      <span className="text-sm text-slate-700">{label}</span>
+      <span className="text-sm text-white/70">{label}</span>
     </label>
   );
 }
@@ -492,7 +492,7 @@ function NumberInput({
       step="0.01"
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+      className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
     />
   );
 }

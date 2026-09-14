@@ -39,19 +39,19 @@ export default async function PosPage({
       <nav className="mt-8">
         <Link
           href="/admin/pos"
-          className="text-sm text-slate-500 hover:text-orange-600 hover:underline"
+          className="text-sm text-white/45 hover:text-ember-400 hover:underline"
         >
           ← POS bridge
         </Link>
       </nav>
 
       <div className="mt-3 flex items-center gap-3">
-        <h1 className="text-2xl font-bold tracking-tight">{r.name}</h1>
-        <span className="rounded-full bg-orange-50 px-3 py-1 text-xs font-semibold text-orange-600">
+        <h1 className="text-2xl font-bold tracking-tight text-white">{r.name}</h1>
+        <span className="rounded-full border border-white/10 bg-white/5 px-3 py-1 text-xs font-semibold text-white/70">
           POS queue
         </span>
       </div>
-      <p className="mt-1 text-sm text-slate-500">
+      <p className="mt-1 text-sm text-white/45">
         Marketplace orders appear here in real time. Accepting advances the
         order through the same lifecycle the customer sees.
       </p>

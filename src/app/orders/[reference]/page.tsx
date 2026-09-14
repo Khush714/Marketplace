@@ -30,7 +30,7 @@ export default async function OrderTrackingPage({
   const normalized = reference.trim().toUpperCase();
 
   return (
-    <main className="min-h-screen bg-white px-4 pb-20 sm:px-6">
+    <main className="min-h-screen px-4 pb-20 sm:px-6">
       <OrderTracker reference={normalized} />
     </main>
   );

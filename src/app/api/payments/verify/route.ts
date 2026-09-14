@@ -96,6 +96,14 @@ export async function POST(request: NextRequest) {
       customerPhone: String(meta.customerPhone ?? ""),
       customerAddress:
         typeof meta.customerAddress === "string" ? meta.customerAddress : "",
+      dropoffLat:
+        meta.dropoffLat == null || meta.dropoffLat === ""
+          ? null
+          : Number(meta.dropoffLat),
+      dropoffLng:
+        meta.dropoffLng == null || meta.dropoffLng === ""
+          ? null
+          : Number(meta.dropoffLng),
       fulfillmentType:
         meta.fulfillmentType === "pickup" ? "pickup" : "delivery",
       paymentMethod: "card",
@@ -106,6 +114,10 @@ export async function POST(request: NextRequest) {
           : undefined,
       items: Array.isArray(meta.cart) ? meta.cart : [],
       reference,
+      scheduledFor:
+        typeof meta.scheduledFor === "string" && meta.scheduledFor
+          ? meta.scheduledFor
+          : null,
     });
 
     if (!placed.ok) return errorJson(placed.error, placed.status);

@@ -84,6 +84,20 @@ export async function POST(request: Request) {
           ? body.discountCode
           : undefined,
       items: Array.isArray(body.items) ? body.items : [],
+      // PHASE 30 — dropoff fix captured at checkout feeds the rider map
+      // destination; without these, placeOrder never sees them.
+      dropoffLat:
+        body.dropoffLat == null || body.dropoffLat === ""
+          ? null
+          : Number(body.dropoffLat),
+      dropoffLng:
+        body.dropoffLng == null || body.dropoffLng === ""
+          ? null
+          : Number(body.dropoffLng),
+      scheduledFor:
+        typeof body.scheduledFor === "string" && body.scheduledFor
+          ? body.scheduledFor
+          : null,
     });
 
     if (!result.ok) return errorJson(result.error, result.status);

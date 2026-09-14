@@ -2,13 +2,15 @@ import { db } from "@/db";
 import {
   restaurants,
   marketplaceProfiles,
+  restaurantIntegrations,
   categories,
   menuItems,
   reviews,
   orders,
   orderItems,
+  webhookEvents,
 } from "@/db/schema";
-import { and, asc, desc, eq, ilike, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
 import { num } from "./format";
 
 // `description` / `imageUrl` live on the POS restaurant record. The marketplace
@@ -265,6 +267,9 @@ export type OrderView = {
   subtotal: number;
   deliveryFee: number;
   total: number;
+  posDeliveryStatus: string;
+  posDeliveryAttempts: number;
+  posLastDeliveryError: string;
   createdAt: string;
   items: { name: string; quantity: number; unitPrice: number }[];
 };
@@ -283,6 +288,9 @@ const orderColumns = {
   subtotal: orders.subtotal,
   deliveryFee: orders.deliveryFee,
   total: orders.total,
+  posDeliveryStatus: orders.posDeliveryStatus,
+  posDeliveryAttempts: orders.posDeliveryAttempts,
+  posLastDeliveryError: orders.posLastDeliveryError,
   createdAt: orders.createdAt,
 };
 
@@ -401,5 +409,251 @@ export async function getAllListings(): Promise<ListingRow[]> {
     deliveryFee: num(r.deliveryFee),
     minOrder: num(r.minOrder),
     commissionRate: num(r.commissionRate),
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// Phase 3 — Admin restaurant management
+// ---------------------------------------------------------------------------
+
+export type AdminRestaurantRow = {
+  id: number;
+  name: string;
+  slug: string;
+  marketplaceId: string;
+  cuisine: string;
+  address: string;
+  phone: string;
+  openingHours: string;
+  imageUrl: string;
+  logoUrl: string;
+  deliveryRadiusKm: number;
+  isOpen: boolean;
+  isListed: boolean;
+  marketplaceStatus: string;
+  integrationProvider: string;
+  integrationStatus: string;
+  createdAt: Date;
+};
+
+/** All restaurants for the admin management page, with integration status. */
+export async function getAllRestaurants(): Promise<AdminRestaurantRow[]> {
+  const rows = await db
+    .select({
+      id: restaurants.id,
+      name: restaurants.name,
+      slug: restaurants.slug,
+      marketplaceId: restaurants.marketplaceId,
+      cuisine: restaurants.cuisine,
+      address: restaurants.address,
+      phone: restaurants.phone,
+      openingHours: restaurants.openingHours,
+      imageUrl: restaurants.imageUrl,
+      logoUrl: marketplaceProfiles.logoUrl,
+      deliveryRadiusKm: restaurants.deliveryRadiusKm,
+      isOpen: restaurants.isOpen,
+      isListed: marketplaceProfiles.isListed,
+      marketplaceStatus: marketplaceProfiles.marketplaceStatus,
+      integrationProvider: restaurantIntegrations.provider,
+      integrationStatus: restaurantIntegrations.status,
+      createdAt: restaurants.createdAt,
+    })
+    .from(restaurants)
+    .innerJoin(
+      marketplaceProfiles,
+      eq(marketplaceProfiles.restaurantId, restaurants.id),
+    )
+    .leftJoin(
+      restaurantIntegrations,
+      eq(restaurantIntegrations.restaurantId, restaurants.id),
+    )
+    .orderBy(asc(restaurants.name));
+
+  return rows.map((r) => ({
+    ...r,
+    deliveryRadiusKm: num(r.deliveryRadiusKm),
+    integrationProvider: r.integrationProvider ?? "manual",
+    integrationStatus: r.integrationStatus ?? "disconnected",
+  }));
+}
+
+// ---------------------------------------------------------------------------
+// PHASE 16 — POS delivery status (failure handling)
+// ---------------------------------------------------------------------------
+
+export type OrderDeliveryView = {
+  orderId: number;
+  reference: string;
+  restaurantName: string;
+  restaurantMarketplaceId: string;
+  status: string;
+  posDeliveryStatus: string;
+  posDeliveryAttempts: number;
+  posLastDeliveryError: string;
+  posDeliveredAt: string | null;
+  integrationProvider: string;
+  integrationStatus: string;
+  createdAt: string;
+  webhookEvents: {
+    id: number;
+    eventType: string;
+    status: string;
+    attempts: number;
+    maxAttempts: number;
+    lastError: string;
+    lastHttpStatus: number | null;
+    nextAttemptAt: string | null;
+    deliveredAt: string | null;
+  }[];
+};
+
+export async function getOrderDeliveryStatus(
+  reference: string,
+): Promise<OrderDeliveryView | null> {
+  const [row] = await db
+    .select({
+      orderId: orders.id,
+      reference: orders.reference,
+      restaurantName: restaurants.name,
+      restaurantMarketplaceId: restaurants.marketplaceId,
+      status: orders.status,
+      posDeliveryStatus: orders.posDeliveryStatus,
+      posDeliveryAttempts: orders.posDeliveryAttempts,
+      posLastDeliveryError: orders.posLastDeliveryError,
+      posDeliveredAt: orders.posDeliveredAt,
+      integrationProvider: restaurantIntegrations.provider,
+      integrationStatus: restaurantIntegrations.status,
+      createdAt: orders.createdAt,
+    })
+    .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
+    .leftJoin(
+      restaurantIntegrations,
+      eq(restaurantIntegrations.restaurantId, orders.restaurantId),
+    )
+    .where(eq(orders.reference, reference))
+    .limit(1);
+
+  if (!row) return null;
+
+  const events = await db
+    .select({
+      id: webhookEvents.id,
+      eventType: webhookEvents.eventType,
+      status: webhookEvents.status,
+      attempts: webhookEvents.attempts,
+      maxAttempts: webhookEvents.maxAttempts,
+      lastError: webhookEvents.lastError,
+      lastHttpStatus: webhookEvents.lastHttpStatus,
+      nextAttemptAt: webhookEvents.nextAttemptAt,
+      deliveredAt: webhookEvents.deliveredAt,
+    })
+    .from(webhookEvents)
+    .where(eq(webhookEvents.orderId, row.orderId))
+    .orderBy(desc(webhookEvents.createdAt));
+
+  return {
+    ...row,
+    posDeliveredAt: row.posDeliveredAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+    integrationProvider: row.integrationProvider ?? "manual",
+    integrationStatus: row.integrationStatus ?? "disconnected",
+    webhookEvents: events.map((e) => ({
+      ...e,
+      nextAttemptAt: e.nextAttemptAt?.toISOString() ?? null,
+      deliveredAt: e.deliveredAt?.toISOString() ?? null,
+    })),
+  };
+}
+
+/**
+ * PHASE 16 — list recent orders with their POS delivery status, integration
+ * state, and (batched) webhook delivery log. Drives the admin delivery queue.
+ */
+export async function getOrderDeliveryList(
+  limit = 40,
+  statuses?: string[],
+): Promise<OrderDeliveryView[]> {
+  const conditions = statuses && statuses.length > 0
+    ? inArray(orders.posDeliveryStatus, statuses)
+    : undefined;
+
+  const rows = await db
+    .select({
+      orderId: orders.id,
+      reference: orders.reference,
+      restaurantName: restaurants.name,
+      restaurantMarketplaceId: restaurants.marketplaceId,
+      status: orders.status,
+      posDeliveryStatus: orders.posDeliveryStatus,
+      posDeliveryAttempts: orders.posDeliveryAttempts,
+      posLastDeliveryError: orders.posLastDeliveryError,
+      posDeliveredAt: orders.posDeliveredAt,
+      integrationProvider: restaurantIntegrations.provider,
+      integrationStatus: restaurantIntegrations.status,
+      createdAt: orders.createdAt,
+    })
+    .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
+    .leftJoin(
+      restaurantIntegrations,
+      eq(restaurantIntegrations.restaurantId, orders.restaurantId),
+    )
+    .where(conditions)
+    .orderBy(desc(orders.createdAt))
+    .limit(limit);
+
+  const orderIds = rows.map((r) => r.orderId);
+  let events: {
+    id: number;
+    orderId: number | null;
+    eventType: string;
+    status: string;
+    attempts: number;
+    maxAttempts: number;
+    lastError: string;
+    lastHttpStatus: number | null;
+    nextAttemptAt: Date | null;
+    deliveredAt: Date | null;
+  }[] = [];
+  if (orderIds.length > 0) {
+    events = await db
+      .select({
+        id: webhookEvents.id,
+        orderId: webhookEvents.orderId,
+        eventType: webhookEvents.eventType,
+        status: webhookEvents.status,
+        attempts: webhookEvents.attempts,
+        maxAttempts: webhookEvents.maxAttempts,
+        lastError: webhookEvents.lastError,
+        lastHttpStatus: webhookEvents.lastHttpStatus,
+        nextAttemptAt: webhookEvents.nextAttemptAt,
+        deliveredAt: webhookEvents.deliveredAt,
+      })
+      .from(webhookEvents)
+      .where(
+        and(inArray(webhookEvents.orderId, orderIds), eq(webhookEvents.direction, "outbound")),
+      )
+      .orderBy(desc(webhookEvents.createdAt));
+  }
+
+  const byOrder = new Map<number, typeof events>();
+  for (const e of events) {
+    const list = byOrder.get(e.orderId ?? 0) ?? [];
+    list.push(e);
+    byOrder.set(e.orderId ?? 0, list);
+  }
+
+  return rows.map((r) => ({
+    ...r,
+    posDeliveredAt: r.posDeliveredAt?.toISOString() ?? null,
+    createdAt: r.createdAt.toISOString(),
+    integrationProvider: r.integrationProvider ?? "manual",
+    integrationStatus: r.integrationStatus ?? "disconnected",
+    webhookEvents: (byOrder.get(r.orderId) ?? []).map((e) => ({
+      ...e,
+      nextAttemptAt: e.nextAttemptAt?.toISOString() ?? null,
+      deliveredAt: e.deliveredAt?.toISOString() ?? null,
+    })),
   }));
 }

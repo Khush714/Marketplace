@@ -12,15 +12,15 @@ export default async function ListingsPage() {
   return (
     <main className="mx-auto max-w-5xl px-4 pb-16 sm:px-6">
       <div className="mt-8">
-        <p className="text-sm font-medium uppercase tracking-[0.14em] text-orange-500">
+        <p className="text-xs font-semibold uppercase tracking-[0.14em] text-white/40">
           Phase 2 · marketplace profiles
         </p>
-        <h1 className="mt-2 text-3xl font-bold tracking-tight">
+        <h1 className="mt-2 text-3xl font-bold tracking-tight text-white">
           Listing control
         </h1>
-        <p className="mt-2 max-w-2xl text-slate-500">
+        <p className="mt-2 max-w-2xl text-white/45">
           Every restaurant below exists in the POS. The{" "}
-          <code className="rounded bg-slate-100 px-1.5 py-0.5 text-xs">
+          <code className="rounded bg-white/10 px-1.5 py-0.5 text-xs text-white/80">
             restaurant_marketplace_profiles
           </code>{" "}
           row decides whether it is visible on the storefront and how it can be
@@ -28,18 +28,18 @@ export default async function ListingsPage() {
         </p>
         <div className="mt-4 flex gap-6 text-sm">
           <span>
-            <strong className="text-lg">{listings.length}</strong>{" "}
-            <span className="text-slate-500">in POS</span>
+            <strong className="text-lg text-white">{listings.length}</strong>{" "}
+            <span className="text-white/45">in POS</span>
           </span>
           <span>
-            <strong className="text-lg text-emerald-600">{live}</strong>{" "}
-            <span className="text-slate-500">live on marketplace</span>
+            <strong className="text-lg text-emerald-400">{live}</strong>{" "}
+            <span className="text-white/45">live on marketplace</span>
           </span>
           <span>
-            <strong className="text-lg text-amber-600">
+            <strong className="text-lg text-amber-400">
               {listings.length - live}
             </strong>{" "}
-            <span className="text-slate-500">hidden</span>
+            <span className="text-white/45">hidden</span>
           </span>
         </div>
       </div>

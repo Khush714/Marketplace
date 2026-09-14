@@ -149,23 +149,23 @@ export function EnrollmentForm() {
 
   if (submitted) {
     return (
-      <div className="rounded-3xl border border-emerald-200 bg-emerald-50 p-8 text-center shadow-sm">
-        <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-emerald-500 text-3xl text-white">
+      <div className="rounded-3xl border border-emerald-500/20 bg-emerald-500/10 p-8 text-center shadow-sm">
+        <div className="mx-auto grid h-16 w-16 place-items-center rounded-full bg-ink-950 ring-1 ring-emerald-500/25 text-3xl text-emerald-400">
           ✓
         </div>
-        <h2 className="mt-4 text-2xl font-bold text-emerald-800">
+        <h2 className="mt-4 text-2xl font-bold text-emerald-400">
           Submission received!
         </h2>
-        <p className="mx-auto mt-3 max-w-md text-emerald-700">
+        <p className="mx-auto mt-3 max-w-md text-emerald-300/80">
           Thank you. Your restaurant is now{" "}
           <strong>pending review</strong>. Once our team approves it, it{" "}
           will appear on the marketplace for customers to discover and order
           from.
         </p>
-        <div className="mt-6 flex justify-center gap-3">
+        <div className="mt-6 flex flex-col gap-3 sm:flex-row sm:justify-center">
           <Link
             href="/"
-            className="rounded-xl bg-emerald-600 px-6 py-2.5 text-sm font-semibold text-white transition hover:bg-emerald-700"
+            className="rounded-2xl bg-ember-500 px-6 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
           >
             Back to home
           </Link>
@@ -175,7 +175,7 @@ export function EnrollmentForm() {
               setForm(INITIAL);
               setSlugOverride(false);
             }}
-            className="rounded-xl border border-emerald-300 px-6 py-2.5 text-sm font-semibold text-emerald-700 transition hover:bg-emerald-100"
+            className="rounded-2xl border border-white/10 bg-white/5 px-6 py-3 text-sm font-bold text-white/70 transition hover:bg-white/10"
           >
             List another restaurant
           </button>
@@ -185,7 +185,7 @@ export function EnrollmentForm() {
   }
 
   return (
-    <div className="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm sm:p-8">
+    <div className="rounded-3xl border border-white/8 bg-ink-850 p-6 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset] sm:p-8">
       <div className="space-y-5">
         {/* Name + slug */}
         <div>
@@ -199,7 +199,7 @@ export function EnrollmentForm() {
           <div className="mt-3">
             <Field label="Marketplace link (slug) *">
               <div className="flex items-center gap-2">
-                <span className="text-sm text-slate-400">/</span>
+                <span className="text-sm text-white/35">/</span>
                 <Input
                   value={String(form.slug)}
                   onChange={(v) => {
@@ -210,7 +210,7 @@ export function EnrollmentForm() {
                 />
               </div>
             </Field>
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 text-xs text-white/35">
               Short, lowercase, no spaces — auto-generated from the name.
             </p>
           </div>
@@ -251,14 +251,14 @@ export function EnrollmentForm() {
             rows={3}
             maxLength={2000}
             placeholder="A short description of your restaurant and what makes it special."
-            className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+            className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
           />
         </Field>
 
         {/* Image */}
         <Field label="Restaurant image *">
           <div className="mt-1 flex items-center gap-3">
-            <div className="h-20 w-28 shrink-0 overflow-hidden rounded-lg bg-slate-200">
+            <div className="h-20 w-28 shrink-0 overflow-hidden rounded-xl bg-white/5">
               {form.imageUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -283,11 +283,11 @@ export function EnrollmentForm() {
                 type="button"
                 onClick={() => fileRef.current?.click()}
                 disabled={uploading}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 disabled:opacity-60"
               >
                 {uploading ? "Uploading…" : "Upload image"}
               </button>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-white/30">
                 JPEG, PNG or WebP · max 4 MB
               </p>
             </div>
@@ -297,7 +297,7 @@ export function EnrollmentForm() {
         {/* QR code image */}
         <Field label="Menu QR code image (optional)">
           <div className="mt-1 flex items-center gap-3">
-            <div className="h-20 w-20 shrink-0 overflow-hidden rounded-lg bg-slate-200">
+            <div className="h-20 w-20 shrink-0 overflow-hidden rounded-xl bg-white/5">
               {form.qrImageUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
@@ -322,11 +322,11 @@ export function EnrollmentForm() {
                 type="button"
                 onClick={() => qrFileRef.current?.click()}
                 disabled={uploadingQr}
-                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-medium text-slate-700 transition hover:bg-slate-100 disabled:opacity-60"
+                className="rounded-2xl border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 disabled:opacity-60"
               >
                 {uploadingQr ? "Uploading…" : "Upload QR"}
               </button>
-              <p className="mt-1 text-xs text-slate-400">
+              <p className="mt-1 text-xs text-white/30">
                 Upload your existing menu QR code from your POS system. It will
                 appear on your public listing so customers can scan it to open
                 your menu.
@@ -336,8 +336,8 @@ export function EnrollmentForm() {
         </Field>
 
         {/* Online ordering */}
-        <div className="border-t border-slate-200 pt-5">
-          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-500">
+        <div className="border-t border-white/6 pt-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-white/45">
             Online ordering
           </h3>
 
@@ -349,7 +349,7 @@ export function EnrollmentForm() {
                 placeholder="https://your-pos-domain.com/menu"
               />
             </Field>
-            <p className="mt-1 text-xs text-slate-400">
+            <p className="mt-1 text-xs text-white/35">
               Customers will be sent to your existing menu/ordering page. Not
               required to submit — you can add it later.
             </p>
@@ -380,7 +380,7 @@ export function EnrollmentForm() {
         <button
           type="button"
           onClick={() => setAdvanced((v) => !v)}
-          className="text-sm font-medium text-orange-600 hover:underline"
+          className="py-2 text-sm font-medium text-ember-400 hover:text-ember-300 hover:underline"
         >
           {advanced ? "Hide" : "Show"} delivery & pricing settings (optional)
         </button>
@@ -410,7 +410,7 @@ export function EnrollmentForm() {
         )}
 
         {error && (
-          <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-600">
+          <p className="rounded-xl border border-rose-500/20 bg-rose-500/10 px-3 py-2 text-sm text-rose-400">
             {error}
           </p>
         )}
@@ -418,11 +418,11 @@ export function EnrollmentForm() {
         <button
           onClick={submit}
           disabled={saving}
-          className="w-full rounded-xl bg-orange-500 py-3.5 text-sm font-bold tracking-wide text-white transition hover:bg-orange-600 disabled:opacity-60"
+          className="w-full rounded-2xl bg-ember-500 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] disabled:opacity-60"
         >
           {saving ? "Submitting…" : "Submit for review"}
         </button>
-        <p className="text-center text-xs text-slate-400">
+        <p className="text-center text-xs text-white/35">
           Your restaurant will only appear on the marketplace once approved by
           our team.
         </p>
@@ -449,7 +449,7 @@ function Field({
 }) {
   return (
     <div className={className}>
-      <label className="text-xs font-medium text-slate-500">{label}</label>
+      <label className="text-xs font-medium text-white/45">{label}</label>
       {children}
     </div>
   );
@@ -472,7 +472,7 @@ function Input({
       onChange={(e) => onChange(e.target.value)}
       placeholder={placeholder}
       maxLength={maxLength}
-      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+      className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
     />
   );
 }
@@ -490,7 +490,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="mt-1 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm outline-none focus:border-orange-400"
+      className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 bg-ink-900 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8 [&>option]:bg-ink-900"
     >
       {options.map((o) => (
         <option key={o} value={o}>
@@ -511,14 +511,14 @@ function Check({
   onChange: (v: boolean) => void;
 }) {
   return (
-    <label className="flex cursor-pointer items-center gap-2.5 rounded-lg border border-slate-200 bg-white px-3 py-2.5">
+    <label className="flex cursor-pointer items-center gap-2.5 rounded-xl border border-white/10 bg-white/5 px-3 py-2.5">
       <input
         type="checkbox"
         checked={checked}
         onChange={(e) => onChange(e.target.checked)}
-        className="h-4 w-4 accent-orange-500"
+        className="h-4 w-4 accent-ember-500"
       />
-      <span className="text-sm text-slate-700">{label}</span>
+      <span className="text-sm text-white/70">{label}</span>
     </label>
   );
 }
@@ -537,7 +537,7 @@ function NumberInput({
       step="0.01"
       value={value}
       onChange={(e) => onChange(Number(e.target.value))}
-      className="mt-1 w-full rounded-lg border border-slate-200 px-3 py-2 text-sm outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+      className="mt-1 w-full rounded-xl border border-white/10 bg-white/5 px-3 py-2.5 text-sm text-white placeholder-white/30 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
     />
   );
 }

@@ -15,6 +15,50 @@
       "when": 1788244470000,
       "tag": "0001_phase24_payments",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1788244469000,
+      "tag": "0002_phase24_push",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1788336000000,
+      "tag": "0003_phase29_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1788422400000,
+      "tag": "0004_phase30_rider_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1788508800000,
+      "tag": "0005_phase31_integrations",
+      "breakpoints": true
+    },
+{
+      "idx": 5,
+      "version": "7",
+      "when": 1788508800000,
+      "tag": "0005_phase31_integrations",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1788595200000,
+      "tag": "0006_phase32_restaurant_identity",
+      "breakpoints": true
     }
+  ]
+}
   ]
 }

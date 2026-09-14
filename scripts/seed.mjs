@@ -294,9 +294,9 @@ async function main() {
     if (rows[0]) continue;
 
     const ins = await q(
-      `INSERT INTO restaurants (name, slug, cuisine, description, address, image_url, price_range, is_open, tax_rate, lat, lng, delivery_radius_km)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,true,0.08,$8,$9,$10) RETURNING id`,
-      [r.name, r.slug, r.cuisine, r.description, `${r.name} address`, r.image, r.priceRange, r.lat, r.lng, r.radius],
+      `INSERT INTO restaurants (name, slug, marketplace_id, cuisine, description, address, image_url, price_range, is_open, tax_rate, lat, lng, delivery_radius_km, phone, opening_hours)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,true,0.08,$9,$10,$11,'', '{}') RETURNING id`,
+      [r.name, r.slug, `rst_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`, r.cuisine, r.description, `${r.name} address`, r.image, r.priceRange, r.lat, r.lng, r.radius],
     );
     const rid = ins.rows[0].id;
 

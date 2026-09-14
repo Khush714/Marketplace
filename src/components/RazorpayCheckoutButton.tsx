@@ -26,9 +26,12 @@ type RazorpayCheckoutButtonProps = {
   customerName: string;
   customerPhone: string;
   customerAddress?: string;
+  dropoffLat?: number | null;
+  dropoffLng?: number | null;
   fulfillmentType: "delivery" | "pickup";
   notes?: string;
   discountCode?: string;
+  scheduledFor?: string | null;
   items: PayItem[];
   onSuccess: (result: { reference: string; total: number }) => void;
   label?: string;
@@ -49,9 +52,12 @@ export function RazorpayCheckoutButton({
   customerName,
   customerPhone,
   customerAddress = "",
+  dropoffLat,
+  dropoffLng,
   fulfillmentType,
   notes,
   discountCode,
+  scheduledFor,
   items,
   onSuccess,
   label = "Pay online",
@@ -101,9 +107,12 @@ export function RazorpayCheckoutButton({
           customerName,
           customerPhone,
           customerAddress,
+          dropoffLat: dropoffLat ?? null,
+          dropoffLng: dropoffLng ?? null,
           fulfillmentType,
           notes,
           discountCode,
+          scheduledFor: scheduledFor ?? null,
           items,
         }),
       });
@@ -169,7 +178,7 @@ export function RazorpayCheckoutButton({
           name: customerName,
           contact: customerPhone,
         },
-        theme: { color: "#f97316" },
+        theme: { color: "#ff7a1a" },
         modal: {
           ondismiss: () => {
             setProcessing(false);
@@ -199,9 +208,12 @@ export function RazorpayCheckoutButton({
     customerName,
     customerPhone,
     customerAddress,
+    dropoffLat,
+    dropoffLng,
     fulfillmentType,
     notes,
     discountCode,
+    scheduledFor,
     items,
     loadCheckoutScript,
     onSuccess,
@@ -213,7 +225,7 @@ export function RazorpayCheckoutButton({
         type="button"
         onClick={startCheckout}
         disabled={processing || verifying}
-        className="w-full rounded-xl bg-orange-500 py-3 text-sm font-bold text-white hover:bg-orange-600 disabled:opacity-50"
+        className="w-full rounded-2xl bg-ember-500 py-3 text-sm font-bold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98] disabled:opacity-50"
       >
         {verifying
           ? "Confirming payment..."
@@ -222,12 +234,12 @@ export function RazorpayCheckoutButton({
             : `${label} · ${currency(amountInr)}`}
       </button>
       {errorText && (
-        <p className="mt-2 rounded-lg bg-red-50 px-3 py-2 text-xs text-red-600">
+        <p className="mt-2 rounded-2xl border border-red-500/20 bg-red-500/10 px-3 py-2 text-xs text-red-400">
           {errorText}
           <button
             type="button"
             onClick={() => setErrorText(null)}
-            className="ml-2 font-bold underline"
+            className="ml-2 font-bold text-red-300 underline"
           >
             Dismiss
           </button>

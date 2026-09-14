@@ -3,6 +3,7 @@ import { orders } from "@/db/schema";
 import { and, eq } from "drizzle-orm";
 import { restaurantForPosKey } from "@/lib/pos";
 import { transitionOrder } from "@/lib/order-actions";
+import { isCanonicalStatus } from "@/lib/order-lifecycle";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +40,9 @@ export async function POST(
     return Response.json({ error: "Order not found" }, { status: 404 });
   }
 
-  if (!["accepted", "preparing", "ready", "completed", "cancelled"].includes(toStatus)) {
+  // PHASE 9 — only canonical contract statuses are writable; transitionOrder
+  // enforces the edges (placed→rejected, accepted→cancelled, …).
+  if (!isCanonicalStatus(toStatus)) {
     return Response.json({ error: "Invalid target status" }, { status: 400 });
   }
 

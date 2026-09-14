@@ -1,7 +1,7 @@
 import { db } from "@/db";
 import { notifications, orders, restaurants } from "@/db/schema";
 import { eq } from "drizzle-orm";
-import { num } from "./format";
+import { currency, shortDateTime } from "./format";
 
 /**
  * PHASE 21 — notifications outbox.
@@ -16,6 +16,9 @@ export type NotificationKind =
   | "order_accepted"
   | "order_ready"
   | "order_completed"
+  | "order_delivered"
+  | "order_rejected"
+  | "order_scheduled"
   | "payment_successful";
 
 export async function notify(opts: {
@@ -33,6 +36,7 @@ export async function notify(opts: {
         reference: orders.reference,
         restaurantName: restaurants.name,
         total: orders.total,
+        scheduledFor: orders.scheduledFor,
       })
       .from(orders)
       .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
@@ -45,7 +49,12 @@ export async function notify(opts: {
       order_accepted: `${row.restaurantName} accepted your order ${row.reference}.`,
       order_ready: `${row.restaurantName} says your order ${row.reference} is ready.`,
       order_completed: `Your ${row.restaurantName} order ${row.reference} is complete. Enjoy!`,
-      payment_successful: `Payment of $${num(row.total).toFixed(2)} for order ${row.reference} was successful.`,
+      order_delivered: `Your ${row.restaurantName} order ${row.reference} is delivered. Enjoy!`,
+      order_rejected: `${row.restaurantName} couldn't take your order ${row.reference}. Please try again.`,
+      order_scheduled: row.scheduledFor
+        ? `Your order ${row.reference} is scheduled for ${shortDateTime(row.scheduledFor)}.`
+        : `Your order ${row.reference} is scheduled.`,
+      payment_successful: `Payment of ${currency(row.total)} for order ${row.reference} was successful.`,
     };
 
     await db.insert(notifications).values({

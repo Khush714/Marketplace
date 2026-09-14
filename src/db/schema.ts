@@ -9,7 +9,9 @@ import {
   timestamp,
   index,
   unique,
+  uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 // ---------------------------------------------------------------------------
 // POS CORE (baseline, Phase 0)
@@ -23,9 +25,17 @@ export const restaurants = pgTable(
     id: serial("id").primaryKey(),
     name: varchar("name", { length: 160 }).notNull(),
     slug: varchar("slug", { length: 180 }).notNull().unique(),
+    // PHASE 32 — permanent marketplace identity (e.g. "rst_01J8abc123").
+    // Stable across DB restores and the token external systems (POS, webhooks)
+    // use to reference a restaurant instead of the serial id.
+    marketplaceId: varchar("marketplace_id", { length: 24 }).notNull(),
     cuisine: varchar("cuisine", { length: 80 }).notNull(),
     description: text("description").notNull().default(""),
     address: varchar("address", { length: 240 }).notNull().default(""),
+    // PHASE 32 — restaurant phone (public identity record) + opening hours
+    // (JSON: ISO day key → open/close windows, e.g. {"mon":[{"open":"10:00","close":"22:00"}]}).
+    phone: varchar("phone", { length: 40 }).notNull().default(""),
+    openingHours: text("opening_hours").notNull().default("{}"),
     imageUrl: text("image_url").notNull().default(""),
     priceRange: varchar("price_range", { length: 8 }).notNull().default("$$"),
     isOpen: boolean("is_open").notNull().default(true),
@@ -44,7 +54,10 @@ export const restaurants = pgTable(
       .notNull()
       .defaultNow(),
   },
-  (t) => [index("restaurants_cuisine_idx").on(t.cuisine)],
+  (t) => [
+    index("restaurants_cuisine_idx").on(t.cuisine),
+    unique("restaurants_marketplace_id_key").on(t.marketplaceId),
+  ],
 );
 
 export const categories = pgTable(
@@ -54,10 +67,80 @@ export const categories = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
+    // PHASE 34 — optional ownership pointer to the (default) menu container.
+    // NULL keeps the pre-existing restaurant_id model working untouched.
+    menuId: integer("menu_id").references(() => menus.id, {
+      onDelete: "set null",
+    }),
+    // PHASE 34 — permanent marketplace identity (e.g. "cat_01J8abc123"),
+    // mirroring restaurants.marketplace_id so future POS sync can reference
+    // categories without exposing the serial id.
+    marketplaceId: varchar("marketplace_id", { length: 24 }).notNull(),
+    // PHASE 35 — external POS/chain category id (e.g. "pos_cat_41") published
+    // by RestaurantAI. Uniqueness per restaurant is enforced by
+    // categories_external_key.
+    externalId: varchar("external_id", { length: 80 }),
     name: varchar("name", { length: 120 }).notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
   },
-  (t) => [index("categories_restaurant_idx").on(t.restaurantId)],
+  (t) => [
+    index("categories_restaurant_idx").on(t.restaurantId),
+    index("categories_menu_idx").on(t.menuId),
+    index("categories_external_idx").on(t.externalId),
+    unique("categories_marketplace_id_key").on(t.marketplaceId),
+    uniqueIndex("categories_external_key")
+      .on(t.restaurantId, t.externalId)
+      .where(sql`length(btrim(${t.externalId})) > 0`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// PHASE 31 — MENUS (integration container).
+//
+// The POS's physical catalog stays authoritative in `categories` + `menu_items`.
+// `menus` is the marketplace-side container that will map to a POS/chain menu
+// later via `external_id`. Every restaurant gets one default menu; menu_items
+// may optionally point at it through menu_id, but NULL keeps the pre-existing
+// restaurant_id model working untouched.
+// ---------------------------------------------------------------------------
+
+export const menus = pgTable(
+  "menus",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    // PHASE 34 — permanent marketplace identity (e.g. "menu_01J8abc123"),
+    // mirroring restaurants.marketplace_id so future POS sync can reference
+    // this menu without exposing the serial id.
+    marketplaceId: varchar("marketplace_id", { length: 24 }).notNull(),
+    name: varchar("name", { length: 120 }).notNull().default("Menu"),
+    status: varchar("status", { length: 16 }).notNull().default("active"), // active | archived
+    isDefault: boolean("is_default").notNull().default(true),
+    source: varchar("source", { length: 16 })
+      .notNull()
+      .default("manual"), // manual | pos | external
+    externalId: varchar("external_id", { length: 80 }),
+    currency: varchar("currency", { length: 8 }).notNull().default("INR"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("menus_restaurant_idx").on(t.restaurantId),
+    index("menus_external_idx").on(t.externalId),
+    unique("menus_marketplace_id_key").on(t.marketplaceId),
+    uniqueIndex("menus_external_key")
+      .on(t.restaurantId, t.externalId)
+      .where(sql`length(btrim(${t.externalId})) > 0`),
+    uniqueIndex("menus_default_idx")
+      .on(t.restaurantId)
+      .where(sql`${t.isDefault} = true`),
+  ],
 );
 
 export const menuItems = pgTable(
@@ -70,6 +153,18 @@ export const menuItems = pgTable(
     categoryId: integer("category_id").references(() => categories.id, {
       onDelete: "set null",
     }),
+    // PHASE 31 — optional ownership pointer so a menus row (the POS/chain menu
+    // integration container) can own items. NULL preserves the existing
+    // restaurant_id fallback, so nothing below this phase changes behavior.
+    menuId: integer("menu_id").references(() => menus.id, {
+      onDelete: "set null",
+    }),
+    // PHASE 31 — external POS/chain menu-item id for future menu sync mapping.
+    externalId: varchar("external_id", { length: 80 }),
+    // PHASE 34 — permanent marketplace identity (e.g. "item_82931"), mirroring
+    // restaurants.marketplace_id so future POS sync can reference a dish
+    // without exposing the serial id.
+    marketplaceId: varchar("marketplace_id", { length: 24 }).notNull(),
     name: varchar("name", { length: 160 }).notNull(),
     description: text("description").notNull().default(""),
     price: numeric("price", { precision: 10, scale: 2 }).notNull(),
@@ -78,7 +173,15 @@ export const menuItems = pgTable(
     isPopular: boolean("is_popular").notNull().default(false),
     isVegetarian: boolean("is_vegetarian").notNull().default(false),
   },
-  (t) => [index("menu_items_restaurant_idx").on(t.restaurantId)],
+  (t) => [
+    index("menu_items_restaurant_idx").on(t.restaurantId),
+    index("menu_items_menu_idx").on(t.menuId),
+    index("menu_items_external_idx").on(t.externalId),
+    unique("menu_items_marketplace_id_key").on(t.marketplaceId),
+    uniqueIndex("menu_items_external_key")
+      .on(t.restaurantId, t.externalId)
+      .where(sql`length(btrim(${t.externalId})) > 0`),
+  ],
 );
 
 export const customers = pgTable(
@@ -196,6 +299,46 @@ export const marketplaceProfiles = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// PHASE 31 — RESTAURANT LOCATIONS (physical-address directory).
+//
+// `restaurants` stays the POS record (name, address, coords). This satellite
+// lists every physical location the marketplace can serve from. The primary
+// row is materialized from the restaurant's own address/coords once on insert
+// (a projection, not a second authoritative copy). `external_id` maps to a POS
+// location id when a connection is plugged in later.
+// ---------------------------------------------------------------------------
+
+export const restaurantLocations = pgTable(
+  "restaurant_locations",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 80 }).notNull().default("Primary"),
+    address: varchar("address", { length: 240 }).notNull().default(""),
+    lat: numeric("lat", { precision: 9, scale: 6 }),
+    lng: numeric("lng", { precision: 9, scale: 6 }),
+    phone: varchar("phone", { length: 40 }).notNull().default(""),
+    isPrimary: boolean("is_primary").notNull().default(false),
+    externalId: varchar("external_id", { length: 80 }),
+    notes: text("notes").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("restaurant_locations_restaurant_idx").on(t.restaurantId),
+    uniqueIndex("restaurant_locations_primary_idx")
+      .on(t.restaurantId)
+      .where(sql`${t.isPrimary} = true`),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // ORDERS — POS-owned, EXTENDED for the marketplace channel.
 // Phase 2 adds a real customer_id FK (stop duplicating the POS customer
 // directory as loose text) and a fulfilment type.
@@ -217,6 +360,9 @@ export const orders = pgTable(
     customerAddress: varchar("customer_address", { length: 260 })
       .notNull()
       .default(""),
+    // PHASE 30 — dropoff coordinates captured at checkout (live rider tracking).
+    dropoffLat: numeric("dropoff_lat", { precision: 9, scale: 6 }),
+    dropoffLng: numeric("dropoff_lng", { precision: 9, scale: 6 }),
     channel: varchar("channel", { length: 24 }).notNull().default("marketplace"),
     fulfillmentType: varchar("fulfillment_type", { length: 16 })
       .notNull()
@@ -242,12 +388,32 @@ export const orders = pgTable(
       .default("0"),
     total: numeric("total", { precision: 10, scale: 2 }).notNull(),
     notes: text("notes").notNull().default(""),
-    // POS lifecycle timestamps (Phase 13). The marketplace reflects these.
+    // POS lifecycle timestamps (Phase 13 + Phase 9 contract). The marketplace
+    // reflects these.
     statusUpdatedAt: timestamp("status_updated_at", { withTimezone: true }),
     acceptedAt: timestamp("accepted_at", { withTimezone: true }),
     completedAt: timestamp("completed_at", { withTimezone: true }),
     readyAt: timestamp("ready_at", { withTimezone: true }),
     cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    // PHASE 9 — contract timestamps for the states that replaced `completed`
+    // (ready → picked_up → delivered) and the PLACED → REJECTED edge.
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
+    pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    // PHASE 32 — scheduled delivery window chosen at checkout. NULL = ASAP.
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
+    // PHASE 16 — POS delivery tracking. When an order is placed from the
+    // marketplace, the outbox queues it for the restaurant's POS. These columns
+    // track that delivery lifecycle independently of the order's own status.
+    posDeliveryStatus: varchar("pos_delivery_status", { length: 20 })
+      .notNull()
+      .default("pending"), // pending | queued | delivering | delivered | failed
+    posDeliveryAttempts: integer("pos_delivery_attempts").notNull().default(0),
+    posLastDeliveryError: text("pos_last_delivery_error").notNull().default(""),
+    posDeliveredAt: timestamp("pos_delivered_at", { withTimezone: true }),
+    // PHASE 19 — the POS's own order reference, captured from inbound webhooks.
+    // null = the POS has not yet reported one (or is not connected).
+    externalOrderId: varchar("external_order_id", { length: 80 }),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
       .defaultNow(),
@@ -256,6 +422,8 @@ export const orders = pgTable(
     index("orders_restaurant_idx").on(t.restaurantId),
     index("orders_customer_idx").on(t.customerId),
     index("orders_status_idx").on(t.status),
+    index("orders_scheduled_idx").on(t.scheduledFor),
+    index("orders_pos_delivery_idx").on(t.posDeliveryStatus),
   ],
 );
 
@@ -282,6 +450,40 @@ export const orderStatusEvents = pgTable(
   (t) => [
     index("order_status_events_order_idx").on(t.orderId),
     index("order_status_events_to_idx").on(t.toStatus, t.createdAt),
+  ],
+);
+
+/**
+ * PHASE 10 — unified, append-only ORDER event audit trail.
+ *
+ * This is a SUPERSET of `order_status_events`: every lifecycle transition is
+ * recorded here AND domain/milestone events that aren't status changes
+ * (PAYMENT_CONFIRMED, ORDER_SENT_TO_RESTAURANT, DELIVERY_ASSIGNED, rider leg,
+ * refunds). One chronological event list per order = the debugging surface for
+ * the marketplace/POS integration. `type` is the machine-readable uppercase
+ * key (ORDER_PLACED, PREPARING, READY, …); `meta` is a free-form JSON payload
+ * (payment ids, amounts, partner ids) so nothing is lost when diagnosing.
+ */
+export const orderEvents = pgTable(
+  "order_events",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    type: varchar("type", { length: 40 }).notNull(),
+    actor: varchar("actor", { length: 24 }).notNull().default("system"), // system | pos | customer | payment | rider
+    fromStatus: varchar("from_status", { length: 24 }),
+    toStatus: varchar("to_status", { length: 24 }),
+    meta: text("meta").notNull().default("{}"), // JSON payload, see PHASE 10 above
+    note: text("note").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("order_events_order_idx").on(t.orderId, t.createdAt),
+    index("order_events_type_idx").on(t.type),
   ],
 );
 
@@ -434,6 +636,9 @@ export const customerAddresses = pgTable(
       .references(() => customers.id, { onDelete: "cascade" }),
     label: varchar("label", { length: 40 }).notNull().default("Home"),
     line: varchar("line", { length: 260 }).notNull(),
+    // PHASE 30 — saved-address coordinates so checkout can reuse them.
+    lat: numeric("lat", { precision: 9, scale: 6 }),
+    lng: numeric("lng", { precision: 9, scale: 6 }),
     isDefault: boolean("is_default").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true })
       .notNull()
@@ -577,6 +782,39 @@ export const reviewReports = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// PHASE 24 — PUSH SUBSCRIPTIONS (Web Push / Push API).
+// Each authenticated customer can have multiple device subscriptions (one row
+// per PushSubscription). A label distinguishes e.g. "Chrome on Desktop" from
+// "Android Chrome". The delivery worker looks these up by customerId when
+// flushing the notifications outbox.
+// ---------------------------------------------------------------------------
+
+export const pushSubscriptions = pgTable(
+  "push_subscriptions",
+  {
+    id: serial("id").primaryKey(),
+    customerId: integer("customer_id")
+      .notNull()
+      .references(() => customers.id, { onDelete: "cascade" }),
+    endpoint: text("endpoint").notNull(),
+    p256dh: text("p256dh").notNull(),
+    auth: text("auth").notNull(),
+    label: varchar("label", { length: 40 }).notNull().default("browser"),
+    // Internal delivery bookkeeping.
+    lastSentAt: timestamp("last_sent_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    revoked: boolean("revoked").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("push_subscriptions_customer_idx").on(t.customerId),
+    index("push_subscriptions_endpoint_idx").on(t.endpoint),
+  ],
+);
+
+// ---------------------------------------------------------------------------
 // PHASE 24 — PAYMENTS (Razorpay audit trail).
 // Every payment attempt — success, failure, or refund — is recorded here.
 // The orders.payment_status column is a denormalized summary derived from
@@ -627,6 +865,440 @@ export const payments = pgTable(
 );
 
 // ---------------------------------------------------------------------------
+// PHASE 29 — DELIVERY PARTNERS (dispatch directory).
+// Platform-level riders who fulfill marketplace `delivery` orders. A partner
+// is either available, busy with an active assignment, or offline. `rating`
+// and `total_deliveries` accumulate across delivered assignments.
+// ---------------------------------------------------------------------------
+
+export const deliveryPartners = pgTable(
+  "delivery_partners",
+  {
+    id: serial("id").primaryKey(),
+    name: varchar("name", { length: 160 }).notNull(),
+    phone: varchar("phone", { length: 40 }).notNull(),
+    vehicleType: varchar("vehicle_type", { length: 24 })
+      .notNull()
+      .default("bike"), // bike | scooter | car | walking
+    status: varchar("status", { length: 24 })
+      .notNull()
+      .default("available"), // available | busy | offline
+    active: boolean("active").notNull().default(true),
+    totalDeliveries: integer("total_deliveries").notNull().default(0),
+    rating: numeric("rating", { precision: 3, scale: 2 })
+      .notNull()
+      .default("5.00"),
+    notes: text("notes").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("delivery_partners_phone_key").on(t.phone),
+    index("delivery_partners_status_idx").on(t.status),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// PHASE 45 — DELIVERY ENGINE (the decoupled delivery track).
+//
+// `orders.status` stays the FOOD lifecycle (placed → accepted → preparing →
+// ready). Delivery-only states live here, on `delivery_orders`, so the POS
+// kitchen flow is never crammed with rider states:
+//
+//   FOOD      placed → accepted → preparing → ready
+//   DELIVERY  pending → assigned → accepted → at_restaurant → picked_up →
+//             out_for_delivery → arriving → delivered (… → failed/cancelled)
+//
+// One `delivery_orders` row per delivery order (unique order_id).
+// ---------------------------------------------------------------------------
+
+export const deliveryOrders = pgTable(
+  "delivery_orders",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    // The authoritative delivery lifecycle (src/lib/delivery-status.ts).
+    deliveryStatus: varchar("delivery_status", { length: 24 })
+      .notNull()
+      .default("pending"),
+    // How the food travels: platform (marketplace fleet) | restaurant_rider
+    // (the restaurant's own staff) | external (3rd-party provider) | tablz.
+    deliveryMode: varchar("delivery_mode", { length: 24 })
+      .notNull()
+      .default("platform"),
+    deliveryFee: numeric("delivery_fee", { precision: 10, scale: 2 })
+      .notNull()
+      .default("0"),
+    pickupLat: numeric("pickup_lat", { precision: 9, scale: 6 }),
+    pickupLng: numeric("pickup_lng", { precision: 9, scale: 6 }),
+    dropoffLat: numeric("dropoff_lat", { precision: 9, scale: 6 }),
+    dropoffLng: numeric("dropoff_lng", { precision: 9, scale: 6 }),
+    estimatedPickupAt: timestamp("estimated_pickup_at", { withTimezone: true }),
+    estimatedDeliveryAt: timestamp("estimated_delivery_at", {
+      withTimezone: true,
+    }),
+    // External dispatch keys (provider integrations, e.g. a 3rd-party fleet).
+    provider: varchar("provider", { length: 40 }).notNull().default(""),
+    providerDeliveryId: varchar("provider_delivery_id", { length: 80 })
+      .notNull()
+      .default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("delivery_orders_order_key").on(t.orderId),
+    index("delivery_orders_restaurant_idx").on(t.restaurantId),
+    index("delivery_orders_status_idx").on(t.deliveryStatus),
+  ],
+);
+
+/** PHASE 45 — per-restaurant rider directory (own rider / restaurant staff). */
+export const deliveryRiders = pgTable(
+  "delivery_riders",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    name: varchar("name", { length: 160 }).notNull(),
+    phone: varchar("phone", { length: 40 }).notNull(),
+    vehicleType: varchar("vehicle_type", { length: 24 })
+      .notNull()
+      .default("bike"), // bike | scooter | car | walking
+    status: varchar("status", { length: 24 })
+      .notNull()
+      .default("available"), // available | busy | offline
+    active: boolean("active").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("delivery_riders_restaurant_idx").on(t.restaurantId),
+    index("delivery_riders_status_idx").on(t.status),
+    unique("delivery_riders_restaurant_phone_key").on(t.restaurantId, t.phone),
+  ],
+);
+
+/**
+ * PHASE 29 — one active delivery assignment per order (enforced by the unique
+ * order_id key). Establishes a POS-assigned partner for a marketplace delivery
+ * order and tracks the rider sub-progress:
+ *
+ *   assigned → accepted → arriving → picked_up → delivered
+ *   assigned → cancelled
+ *
+ * PHASE 45 — evolved: `provider` names the fleet, `rider_id` links a
+ * restaurant-owned rider, and `delivery_order_id` ties the assignment to the
+ * decoupled delivery track above. The platform flow (partner_id + token) keeps
+ * working unchanged; old rows keep NULLs.
+ *
+ * The assignment is a parallel track to the kitchen lifecycle: `delivered`
+ * completes the order (via the existing lifecycle). `token` is the credential
+ * a rider uses to advance the assignment without a session — same pattern as
+ * the public order reference.
+ *
+ *   assigned → accepted → arriving → picked_up → delivered
+ *   assigned → cancelled
+ *
+ * The assignment is a parallel track to the kitchen lifecycle: `delivered`
+ * completes the order (via the existing lifecycle). `token` is the credential
+ * a rider uses to advance the assignment without a session — same pattern as
+ * the public order reference.
+ */
+export const deliveryAssignments = pgTable(
+  "delivery_assignments",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    partnerId: integer("partner_id").references(() => deliveryPartners.id, {
+      onDelete: "set null",
+    }),
+    status: varchar("status", { length: 24 })
+      .notNull()
+      .default("assigned"),
+    token: varchar("token", { length: 40 }).notNull(),
+    // PHASE 45 — the delivery track this assignment drives (nullable for
+    // legacy rows created before delivery_orders existed).
+    deliveryOrderId: integer("delivery_order_id").references(
+      () => deliveryOrders.id,
+      { onDelete: "set null" },
+    ),
+    // PHASE 45 — fleet provenance + restaurant-owned rider link. The
+    // platform flow keeps using partner_id; restaurant_rider mode uses rider_id.
+    provider: varchar("provider", { length: 24 })
+      .notNull()
+      .default("platform"), // platform | restaurant_rider | external | tablz
+    riderId: integer("rider_id").references(() => deliveryRiders.id, {
+      onDelete: "set null",
+    }),
+    assignedAt: timestamp("assigned_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    acceptedAt: timestamp("accepted_at", { withTimezone: true }),
+    pickedUpAt: timestamp("picked_up_at", { withTimezone: true }),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+    note: text("note").notNull().default(""),
+    // PHASE 30 — latest rider position fix (live tracking). The rider app
+    // reports lat/lng/heading; `location_updated_at` drives staleness + rate
+    // limiting. Null until the first fix is reported.
+    riderLat: numeric("rider_lat", { precision: 9, scale: 6 }),
+    riderLng: numeric("rider_lng", { precision: 9, scale: 6 }),
+    riderHeading: numeric("rider_heading", { precision: 5, scale: 2 }),
+    locationUpdatedAt: timestamp("location_updated_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("delivery_assignments_order_key").on(t.orderId),
+    unique("delivery_assignments_token_key").on(t.token),
+    index("delivery_assignments_partner_idx").on(t.partnerId),
+    index("delivery_assignments_location_idx").on(t.locationUpdatedAt),
+    uniqueIndex("delivery_assignments_delivery_order_key")
+      .on(t.deliveryOrderId)
+      .where(sql`${t.deliveryOrderId} is not null`),
+    index("delivery_assignments_rider_idx").on(t.riderId),
+  ],
+);
+
+/**
+ * PHASE 45 — rider position history. The matching latest-fix columns on
+ * `delivery_assignments` (rider_lat/rider_lng/rider_heading) stay as the cheap
+ * current-position read; this table is the append-only motion trail (distance,
+ * ETA and playback can be derived from it). One row per reported tick.
+ */
+export const riderLocations = pgTable(
+  "rider_locations",
+  {
+    id: serial("id").primaryKey(),
+    deliveryOrderId: integer("delivery_order_id").references(
+      () => deliveryOrders.id,
+      { onDelete: "cascade" },
+    ),
+    riderId: integer("rider_id").references(() => deliveryRiders.id, {
+      onDelete: "set null",
+    }),
+    partnerId: integer("partner_id").references(() => deliveryPartners.id, {
+      onDelete: "set null",
+    }),
+    latitude: numeric("latitude", { precision: 9, scale: 6 }).notNull(),
+    longitude: numeric("longitude", { precision: 9, scale: 6 }).notNull(),
+    heading: numeric("heading", { precision: 5, scale: 2 }),
+    speed: numeric("speed", { precision: 6, scale: 2 }),
+    recordedAt: timestamp("recorded_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("rider_locations_delivery_order_idx").on(
+      t.deliveryOrderId,
+      t.recordedAt,
+    ),
+    index("rider_locations_rider_idx").on(t.riderId),
+  ],
+);
+
+/**
+ * PHASE 45 — delivery-track audit trail (parallel to order_events, which stays
+ * kitchen/order-scoped). Append-only: every delivery milestone a rider,
+ * dispatcher or provider integration advances lands here.
+ */
+export const deliveryEvents = pgTable(
+  "delivery_events",
+  {
+    id: serial("id").primaryKey(),
+    deliveryOrderId: integer("delivery_order_id").references(
+      () => deliveryOrders.id,
+      { onDelete: "cascade" },
+    ),
+    eventType: varchar("event_type", { length: 40 }).notNull(),
+    actor: varchar("actor", { length: 24 })
+      .notNull()
+      .default("system"), // system | pos | rider | customer | provider
+    metadata: text("metadata").notNull().default("{}"),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("delivery_events_delivery_order_idx").on(t.deliveryOrderId, t.createdAt),
+    index("delivery_events_type_idx").on(t.eventType),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// PHASE 31 — RESTAURANT INTEGRATIONS (the integration record).
+//
+// One row per restaurant — the marketplace's contract with that business: how
+// it connects (manual today, POS API later), its connection status, the
+// credential hash used to authenticate its POS, health + last-sync bookkeeping.
+// The actual POS connection is plugged in later; this phase ONLY maintains the
+// reliable record. `api_key_hash` is a SHA-256 (same convention as
+// restaurant_marketplace_profiles.posKeyHash), never the raw key.
+// ---------------------------------------------------------------------------
+
+export const restaurantIntegrations = pgTable(
+  "restaurant_integrations",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    provider: varchar("provider", { length: 24 })
+      .notNull()
+      .default("manual"), // manual | pos_openapi | external
+    status: varchar("status", { length: 24 })
+      .notNull()
+      .default("disconnected"), // disconnected | connecting | connected | error | disabled
+    externalRestaurantId: varchar("external_restaurant_id", { length: 80 }),
+    endpointUrl: text("endpoint_url").notNull().default(""),
+    apiKeyHash: varchar("api_key_hash", { length: 128 }).notNull().default(""),
+    // PHASE 12 — raw API key for outbound Marketplace → RestaurantAI calls.
+    // The hash is for RestaurantAI to verify; the raw is for the marketplace
+    // to present. Shown once at rotation; stored here so the dispatcher can
+    // include it in outbound headers. Never exposed to any frontend.
+    apiKeyRaw: text("api_key_raw").notNull().default(""),
+    // First chars of the key, for human-readable display only.
+    apiKeyPrefix: varchar("api_key_prefix", { length: 12 })
+      .notNull()
+      .default(""),
+    // PHASE 33 — webhook signing secret. Verifies the POS and signs outbound
+    // webhook requests. Generated at integration-record creation, never the raw
+    // API key. The POS presents it alongside the connection code to authorize.
+    webhookSecret: varchar("webhook_secret", { length: 64 })
+      .notNull()
+      .default(""),
+    capabilities: text("capabilities").notNull().default("{}"), // JSON: {orders,menu,payments}
+    config: text("config").notNull().default("{}"), // JSON: poll interval, version, locale
+    lastSyncAt: timestamp("last_sync_at", { withTimezone: true }),
+    lastSuccessAt: timestamp("last_success_at", { withTimezone: true }),
+    // PHASE 33 — when the integration settled into `connected`. NULL unless the
+    // restaurant is currently connected, cleared on disconnect/error.
+    connectedAt: timestamp("connected_at", { withTimezone: true }),
+    lastError: text("last_error").notNull().default(""),
+    healthStatus: varchar("health_status", { length: 16 })
+      .notNull()
+      .default("unknown"), // unknown | healthy | degraded | down
+    version: varchar("version", { length: 24 }).notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("restaurant_integrations_restaurant_key").on(t.restaurantId),
+    index("restaurant_integrations_status_idx").on(t.status),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// PHASE 31 — WEBHOOK EVENTS (outbound integration outbox).
+//
+// Append-only outbox of events to deliver to a restaurant's POS endpoint URL
+// (order placed, status changed, payment captured, menu sync …). A Phase 32+
+// dispatch worker will read `pending`/`retrying` rows and target
+// restaurant_integrations.endpoint_url. `order_status_events` remains the
+// single append-only source of truth for lifecycle; this table is the delivery
+// queue, not a duplicate domain log.
+// ---------------------------------------------------------------------------
+
+export const webhookEvents = pgTable(
+  "webhook_events",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    integrationId: integer("integration_id").references(
+      () => restaurantIntegrations.id,
+      { onDelete: "set null" },
+    ),
+    orderId: integer("order_id").references(() => orders.id, {
+      onDelete: "set null",
+    }),
+    eventType: varchar("event_type", { length: 48 }).notNull(),
+    // PHASE 13 — sender's unique event ID for inbound dedup. NULL for legacy
+    // outbound rows; a unique constraint prevents double-processing.
+    eventId: varchar("event_id", { length: 128 }),
+    // PHASE 13 — 'outbound' (marketplace → POS, existing) or 'inbound'
+    // (POS → marketplace, new unified receiver).
+    direction: varchar("direction", { length: 8 })
+      .notNull()
+      .default("outbound"), // outbound | inbound
+    payload: text("payload").notNull().default("{}"),
+    status: varchar("status", { length: 20 })
+      .notNull()
+      .default("pending"), // pending | retrying | success | failed | expired | received | processed
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lastHttpStatus: integer("last_http_status"),
+    lastError: text("last_error").notNull().default(""),
+    deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    index("webhook_events_outbox_idx").on(t.status, t.nextAttemptAt),
+    index("webhook_events_restaurant_idx").on(t.restaurantId),
+    index("webhook_events_order_idx").on(t.orderId),
+    index("webhook_events_integration_idx").on(t.integrationId),
+  ],
+);
+
+// ---------------------------------------------------------------------------
+// PHASE 17 — IDEMPOTENCY STORE.
+//
+// Records processed (scope, key) from inbound integration requests so a
+// network-induced retry returns the cached response instead of re-running the
+// side effect. Used by the marketplace's own inbound receiver and the fake POS
+// (reference RestaurantAI implementation). Unique (scope, idempotency_key).
+// ---------------------------------------------------------------------------
+
+export const integrationIdempotency = pgTable(
+  "integration_idempotency",
+  {
+    id: serial("id").primaryKey(),
+    scope: varchar("scope", { length: 80 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 191 }).notNull(),
+    requestHash: varchar("request_hash", { length: 64 }).notNull(),
+    response: text("response").notNull().default("{}"),
+    statusCode: integer("status_code").notNull().default(200),
+    createdAt: timestamp("created_at", { withTimezone: true })
+      .notNull()
+      .defaultNow(),
+  },
+  (t) => [
+    unique("integration_idempotency_scope_key_uniq").on(t.scope, t.idempotencyKey),
+  ],
+);
+
+export type IntegrationIdempotency = typeof integrationIdempotency.$inferSelect;
+
+// ---------------------------------------------------------------------------
 // MEDIA — restaurant-uploaded images (Phase 4 onboarding).
 // Stored in Postgres and served through /api/media/[id] so uploads survive
 // production rebuilds where the filesystem is not persistent.
@@ -664,3 +1336,14 @@ export type Notification = typeof notifications.$inferSelect;
 export type IdempotencyKey = typeof idempotencyKeys.$inferSelect;
 export type AdminUser = typeof adminUsers.$inferSelect;
 export type Payment = typeof payments.$inferSelect;
+export type PushSubscription = typeof pushSubscriptions.$inferSelect;
+export type DeliveryPartner = typeof deliveryPartners.$inferSelect;
+export type DeliveryAssignment = typeof deliveryAssignments.$inferSelect;
+export type DeliveryOrder = typeof deliveryOrders.$inferSelect;
+export type DeliveryRider = typeof deliveryRiders.$inferSelect;
+export type RiderLocation = typeof riderLocations.$inferSelect;
+export type DeliveryEvent = typeof deliveryEvents.$inferSelect;
+export type Menu = typeof menus.$inferSelect;
+export type RestaurantLocation = typeof restaurantLocations.$inferSelect;
+export type RestaurantIntegration = typeof restaurantIntegrations.$inferSelect;
+export type WebhookEvent = typeof webhookEvents.$inferSelect;

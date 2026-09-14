@@ -65,28 +65,28 @@ export function RestaurantMenuQR({
   const showUploaded = Boolean(uploadedQrUrl) && mode === "uploaded";
 
   return (
-    <div className="flex flex-col items-center rounded-2xl border border-slate-200 bg-white p-5">
+    <div className="card-lift flex flex-col items-center rounded-3xl border border-white/8 bg-ink-850 p-5 shadow-[0_1px_0_rgba(255,255,255,0.03)_inset]">
       {showUploaded ? (
         <>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={uploadedQrUrl as string}
             alt={`Menu QR code for ${restaurantName}`}
-            className="h-[220px] w-[220px] rounded-xl border border-slate-200 bg-white object-contain"
+            className="h-auto w-full max-w-[220px] rounded-2xl border border-white/10 bg-white object-contain sm:h-[220px] sm:w-[220px]"
           />
 
-          <p className="mt-4 text-sm font-semibold text-slate-900">
+          <p className="mt-4 text-sm font-semibold text-white">
             Scan to order from {restaurantName}
           </p>
 
-          <p className="mt-1 text-center text-xs text-slate-500">
+          <p className="mt-1 text-center text-xs text-white/45">
             Menu QR code provided by the restaurant
           </p>
 
           <button
             type="button"
             onClick={() => setMode("stable")}
-            className="mt-4 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            className="mt-4 rounded-2xl border border-white/10 bg-white/5 px-5 py-2.5 text-sm font-semibold text-white/80 transition-colors hover:bg-white/10"
           >
             USE PERMANENT QR INSTEAD
           </button>
@@ -94,21 +94,21 @@ export function RestaurantMenuQR({
       ) : (
         <>
           <div ref={wrapperRef}>
-            <QRCodeSVG value={url} size={220} level="H" includeMargin />
+            <QRCodeSVG value={url} size={220} level="H" includeMargin className="h-auto w-full max-w-[220px] sm:w-[220px]" />
           </div>
 
-          <p className="mt-4 text-sm font-semibold text-slate-900">
+          <p className="mt-4 text-sm font-semibold text-white">
             Scan to order from {restaurantName}
           </p>
 
-          <p className="mt-1 text-center text-xs text-slate-500">
+          <p className="mt-1 text-center text-xs text-white/45">
             Opens the restaurant&apos;s existing online menu
           </p>
 
           <button
             type="button"
             onClick={download}
-            className="mt-4 rounded-xl border border-slate-200 bg-white px-5 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+            className="mt-4 rounded-2xl bg-ember-500 px-5 py-2.5 text-sm font-semibold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-colors hover:bg-ember-400"
           >
             DOWNLOAD QR
           </button>
@@ -117,7 +117,7 @@ export function RestaurantMenuQR({
             <button
               type="button"
               onClick={() => setMode("uploaded")}
-              className="mt-2 rounded-xl px-4 py-2 text-xs font-semibold text-slate-400 hover:text-slate-600"
+              className="mt-2 rounded-2xl px-4 py-2 text-xs font-semibold text-white/40 transition-colors hover:text-white/70"
             >
               SHOW RESTAURANT&apos;S QR
             </button>

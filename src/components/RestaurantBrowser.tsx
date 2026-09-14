@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import type { PublicRestaurant, SortKey } from "@/lib/marketplace";
 import { RestaurantCard, RestaurantCardSkeleton } from "./RestaurantCard";
+import { MapPinIcon, SearchIcon, SlidersIcon, XIcon } from "./ui/icons";
 
 const SORTS: { key: SortKey; label: string }[] = [
   { key: "recommended", label: "Recommended" },
@@ -12,6 +13,11 @@ const SORTS: { key: SortKey; label: string }[] = [
   { key: "popular", label: "Most reviewed" },
   { key: "name", label: "A–Z" },
 ];
+
+const chipBase =
+  "shrink-0 rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ";
+const chipIdle = "border-white/10 bg-white/5 text-white/60 hover:bg-white/10";
+const chipActive = "border-ember-500/50 bg-ember-500/15 text-ember-400";
 
 export function RestaurantBrowser({
   initialItems,
@@ -110,32 +116,32 @@ export function RestaurantBrowser({
   }, [searchParams]);
 
   return (
-    <main className="mx-auto max-w-6xl px-4 pb-12 sm:px-6">
-      <header className="pt-6">
-        <h1 className="text-2xl font-bold tracking-tight sm:text-3xl">
+    <main className="mx-auto max-w-6xl px-4 pb-12 pt-8 sm:px-6">
+      <header>
+        <h1 className="text-2xl font-semibold tracking-tight text-white sm:text-3xl">
           Restaurants
         </h1>
-        <p className="mt-1 text-sm text-slate-500">
+        <p className="mt-1 text-sm text-white/45">
           {loading ? "Searching…" : `${total} ${total === 1 ? "place" : "places"} to order from`}
         </p>
       </header>
 
       {/* Search */}
       <div className="relative mt-4">
-        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400">
-          🔍
+        <span className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-white/40">
+          <SearchIcon className="text-lg" />
         </span>
         <input
           value={q}
           onChange={(e) => setQ(e.target.value)}
           placeholder="Search restaurants or food"
           aria-label="Search restaurants or food"
-          className="w-full rounded-2xl border border-slate-200 bg-white py-3 pl-11 pr-4 text-sm shadow-sm outline-none transition focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+          className="h-12 w-full rounded-2xl border border-white/10 bg-white/5 pl-11 pr-4 text-sm text-white placeholder-white/40 outline-none transition-colors focus:border-ember-500/50 focus:bg-white/8"
         />
       </div>
 
       {/* Cuisine chips */}
-      <div className="-mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="no-scrollbar -mx-4 mt-4 flex gap-2 overflow-x-auto px-4 pb-1 sm:mx-0 sm:flex-wrap sm:px-0">
         <Chip label="All" active={cuisine === "all"} onClick={() => setCuisine("all")} />
         {cuisines.map((c) => (
           <Chip
@@ -149,15 +155,15 @@ export function RestaurantBrowser({
 
       {/* Sort + filters */}
       <div className="mt-4 flex flex-wrap items-center gap-2">
-        <div className="flex gap-1.5 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        <div className="no-scrollbar flex gap-1.5 overflow-x-auto">
           {SORTS.map((s) => (
             <button
               key={s.key}
               onClick={() => setSort(s.key)}
-              className={`shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+              className={`shrink-0 rounded-full border px-4 py-2 text-sm font-medium transition-colors ${
                 sort === s.key
-                  ? "border-slate-900 bg-slate-900 text-white"
-                  : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
+                  ? "border-white/15 bg-white text-ink-950"
+                  : "border-white/10 bg-white/5 text-white/60 hover:bg-white/10"
               }`}
             >
               {s.label}
@@ -166,10 +172,10 @@ export function RestaurantBrowser({
         </div>
         <button
           onClick={() => setOpenOnly((v) => !v)}
-          className={`ml-auto shrink-0 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${
+          className={`ml-auto shrink-0 rounded-full border px-4 py-2 text-sm font-semibold transition-colors ${
             openOnly
-              ? "border-emerald-500 bg-emerald-50 text-emerald-700"
-              : "border-slate-200 bg-white text-slate-600"
+              ? "border-emerald-400/40 bg-emerald-400/10 text-emerald-400"
+              : chipIdle
           }`}
         >
           {openOnly ? "✓ " : ""}Open now
@@ -219,16 +225,17 @@ export function RestaurantBrowser({
               { timeout: 4000 },
             );
           }}
-          className={`rounded-full border px-4 py-1.5 text-sm font-medium ${
+          className={`inline-flex items-center gap-1.5 rounded-full border px-4 py-1.5 text-sm font-medium transition-colors ${
             loc
-              ? "border-sky-500 bg-sky-50 text-sky-700"
-              : "border-slate-200 bg-white text-slate-600"
+              ? "border-ember-500/50 bg-ember-500/15 text-ember-400"
+              : chipIdle
           }`}
         >
-          {loc ? "📍 Nearby" : "Use my location"}
+          <MapPinIcon className="text-base" />
+          {loc ? "Nearby" : "Use my location"}
         </button>
       </div>
-      {locMsg && <p className="mt-1 text-xs text-slate-400">{locMsg}</p>}
+      {locMsg && <p className="mt-1 text-xs text-white/40">{locMsg}</p>}
 
       {/* Grid */}
       <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
@@ -238,8 +245,9 @@ export function RestaurantBrowser({
       </div>
 
       {!loading && items.length === 0 && (
-        <div className="mt-10 rounded-2xl border border-dashed border-slate-300 bg-white p-10 text-center">
-          <p className="text-slate-600">No restaurants match your search.</p>
+        <div className="mt-10 rounded-3xl border border-dashed border-white/10 bg-ink-850 p-10 text-center">
+          <div className="text-4xl">🔍</div>
+          <p className="mt-4 text-white/70">No restaurants match your search.</p>
           <button
             onClick={() => {
               setQ("");
@@ -252,15 +260,15 @@ export function RestaurantBrowser({
               setPriceRange("all");
               setSort("recommended");
             }}
-            className="mt-3 rounded-xl bg-orange-500 px-5 py-2 text-sm font-semibold text-white"
+            className="mt-2 inline-flex h-11 items-center justify-center gap-2 rounded-2xl bg-ember-500 px-6 text-sm font-semibold text-ink-950 shadow-[0_8px_30px_rgba(255,122,26,0.3)] transition-all duration-200 hover:bg-ember-400 active:scale-[0.98]"
           >
-            Clear filters
+            <XIcon className="text-base" /> Clear filters
           </button>
         </div>
       )}
 
       {/* Roadmap transparency */}
-      <p className="mt-8 text-center text-xs text-slate-400">
+      <p className="mt-8 text-center text-xs text-white/30">
         Filters: cuisine · rating · price · vegetarian · open now · pickup ·
         delivery. Nearby uses your location against each restaurant&apos;s
         delivery radius.
@@ -287,11 +295,7 @@ function Chip({
   return (
     <button
       onClick={onClick}
-      className={`shrink-0 rounded-full border px-4 py-1.5 text-sm font-medium transition ${
-        active
-          ? "border-orange-500 bg-orange-500 text-white"
-          : "border-slate-200 bg-white text-slate-600 hover:border-slate-300"
-      }`}
+      className={`${chipBase} ${active ? chipActive : chipIdle}`}
     >
       {label}
     </button>

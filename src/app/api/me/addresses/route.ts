@@ -2,6 +2,7 @@ import { db } from "@/db";
 import { customerAddresses } from "@/db/schema";
 import { and, desc, eq } from "drizzle-orm";
 import { getCurrentCustomer } from "@/lib/session";
+import { parseLatLng } from "@/lib/geo";
 
 export const dynamic = "force-dynamic";
 
@@ -25,6 +26,16 @@ export async function POST(request: Request) {
   const makeDefault = body.isDefault === true;
   if (!line) return Response.json({ error: "Address is required" }, { status: 400 });
 
+  // PHASE 30 — optional lat/lng so saved addresses can be reused as dropoff
+  // coords at checkout. Validated when provided.
+  const coords = parseLatLng(
+    body.lat == null || body.lat === "" ? null : String(body.lat),
+    body.lng == null || body.lng === "" ? null : String(body.lng),
+  );
+  if ((body.lat != null || body.lng != null) && !coords) {
+    return Response.json({ error: "Coordinates are invalid" }, { status: 400 });
+  }
+
   if (makeDefault) {
     await db
       .update(customerAddresses)
@@ -43,6 +54,8 @@ export async function POST(request: Request) {
       customerId: me.id,
       label,
       line,
+      lat: coords ? coords.lat.toFixed(6) : null,
+      lng: coords ? coords.lng.toFixed(6) : null,
       isDefault: makeDefault || existing.length === 0,
     })
     .returning();
