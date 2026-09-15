@@ -1,4 +1,4 @@
--- PHASE 45 — Delivery engine.
+-- PHASE 4 / 45 — Delivery engine.
 --
 -- Adds the decoupled delivery track (delivery_orders), a per-restaurant rider
 -- directory (delivery_riders), a rider position-history ledger (rider_locations)
@@ -7,15 +7,15 @@
 -- flow links into the new track without a rebuild.
 --
 -- `orders.status` stays the FOOD lifecycle; `delivery_orders.delivery_status`
--- is the authoritative DELIVERY lifecycle (pending → assigned → accepted →
--- at_restaurant → picked_up → out_for_delivery → arriving → delivered,
--- plus failed / cancelled) — see src/lib/delivery-status.ts.
+-- is the authoritative DELIVERY lifecycle (pending_assignment → assigned →
+-- accepted → at_restaurant → picked_up → out_for_delivery → arriving →
+-- delivered, plus failed / cancelled) — see src/lib/delivery-lifecycle.ts.
 
 CREATE TABLE IF NOT EXISTS "delivery_orders" (
   "id" serial PRIMARY KEY NOT NULL,
   "order_id" integer NOT NULL,
   "restaurant_id" integer NOT NULL,
-  "delivery_status" varchar(24) DEFAULT 'pending' NOT NULL,
+  "delivery_status" varchar(24) DEFAULT 'pending_assignment' NOT NULL,
   "delivery_mode" varchar(24) DEFAULT 'platform' NOT NULL,
   "delivery_fee" numeric(10, 2) DEFAULT '0' NOT NULL,
   "pickup_lat" numeric(9, 6),

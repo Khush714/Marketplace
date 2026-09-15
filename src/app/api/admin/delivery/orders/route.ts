@@ -31,7 +31,8 @@ export async function GET() {
   }
 
   const liveDelivery = [
-    "pending",
+    "pending_assignment",
+    "pending", // legacy pre-PHASE-4 rows
     "assigned",
     "accepted",
     "at_restaurant",

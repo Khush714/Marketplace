@@ -4,6 +4,10 @@ import { pool } from "@/db";
 import { ORDER_CHANNEL, RIDER_CHANNEL } from "@/lib/realtime";
 import { getRiderLocationForReference, type RiderFix } from "@/lib/delivery";
 import {
+  isNumericReference,
+  PUBLIC_ORDER_REFERENCE_RE,
+} from "@/lib/order-reference";
+import {
   marketplaceOrderingEnabled,
   ORDERING_DISABLED_MESSAGE,
 } from "@/lib/feature-flags";
@@ -11,7 +15,6 @@ import {
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
-const REF_RE = /^[A-Z0-9-]{4,24}$/;
 const PUMP_MS = 3000; // fallback cadence when LISTEN is unavailable
 const LOCATION_PUMP_MS = 12_000; // fallback cadence for rider fixes
 const KEEPALIVE_MS = 15_000;
@@ -44,7 +47,10 @@ const MAX_STREAM_MS = 60 * 60 * 1000; // hard ceiling for a tracker session
  *      exactly once. Terminal orders close the stream.
  *
  * The reference is the access credential (matching the order GET contract),
- * so no session is required.
+ * so no session is required. PHASE 14 — even though Postgres LISTEN covers the
+ * whole bus, each stream only ever forwards the TOKEN's own order and rider:
+ * notifications are filtered by `payload.reference` and every push re-queries
+ * by this reference, so cross-order / cross-rider data is unreachable.
  */
 export async function GET(
   _request: Request,
@@ -56,7 +62,10 @@ export async function GET(
 
   const { id } = await params;
   const reference = id.trim().toUpperCase();
-  if (!REF_RE.test(reference)) {
+  if (
+    !PUBLIC_ORDER_REFERENCE_RE.test(reference) ||
+    isNumericReference(reference)
+  ) {
     return Response.json({ error: "Bad reference" }, { status: 400 });
   }
 

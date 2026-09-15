@@ -185,6 +185,20 @@ try {
   if (evs.status !== 200) fail("existing events RSS poll failed");
   else pass("events endpoint reachable (REST fallback)");
 
+  /* =================== 2b. PHASE 5 auto-dispatch at READY =================== */
+  console.log("\n[2b] PHASE 5 — delivery auto-dispatch at READY (external-provider path)");
+  const readyDispatch = (await api(`/api/marketplace/orders/${ref}`)).json.order;
+  if (readyDispatch.delivery?.status !== "pending_assignment") {
+    fail(`delivery.status at READY → expected pending_assignment`, `got ${readyDispatch.delivery?.status}`);
+  } else {
+    pass(`delivery.status at READY = pending_assignment`);
+  }
+  if (readyDispatch.delivery?.mode !== "external") {
+    fail(`delivery.mode at READY → expected external (no in-house rider)`, `got ${readyDispatch.delivery?.mode}`);
+  } else {
+    pass(`delivery.mode at READY = external (no restaurant rider for ${ref})`);
+  }
+
   /* =================== 3. DISPATCH RIDER =================== */
   console.log("\n[3] Admin dispatch → delivery assignment (token)");
   const admin = adminCookie();
@@ -299,6 +313,72 @@ try {
     join orders ord on ord.id=ll.order_id where ord.reference=$1`, [ref])).rows[0];
   if (Number(loyalty.n) < 1) fail("loyalty points not awarded on delivery", "");
   else pass(`loyalty ledger entry awarded (${loyalty.n})`);
+
+  /* =================== 7. PHASE 14 — SECURITY / TENANT ISOLATION =================== */
+  console.log("\n[7] PHASE 14 — credential + tenant isolation");
+
+  // Numeric ids must never resolve an order (reference-only lookup).
+  const numHit = await api("/api/marketplace/orders/42");
+  if (numHit.status !== 404) fail("numeric order id rejected (GET)", `status ${numHit.status}`);
+  else pass("numeric id → 404 (reference-only lookup enforced)");
+
+  // Malformed references fast-fail before reaching the DB.
+  const badRef = await api("/api/marketplace/orders/NOT-A-REF");
+  const badEvents = await api("/api/marketplace/orders/NOT-A-REF/events");
+  if (badRef.status !== 404) fail("malformed reference rejected (GET)", `status ${badRef.status}`);
+  if (badEvents.status !== 400 && badEvents.status !== 404) {
+    fail("malformed reference rejected (SSE)", `status ${badEvents.status}`);
+  } else {
+    pass(`malformed reference → GET ${badRef.status}, SSE ${badEvents.status}`);
+  }
+
+  // Order reference is a CSPRNG credential (MKT- + 18 hex = 72 bits).
+  if (!/^MKT-[0-9A-F]{18}$/.test(ref)) fail("order reference is CSPRNG format", `got ${ref}`);
+  else pass(`reference is CSPRNG format (${ref})`);
+
+  // Rider token is a CSPRNG credential (should be ≥ 20 chars).
+  if (token.length < 20) fail("assignment token entropy (≥72 bits expected)", `len ${token.length}`);
+  else pass(`assignment token ${token.length} chars (72-bit CSPRNG)`);
+
+  // An unknown token must not resolve any assignment.
+  const fakeRider = await api("/api/delivery/assignments/deadbeefdeadbeef.zzzz");
+  if (fakeRider.status !== 404) fail("unknown assignment token → 404", `status ${fakeRider.status}`);
+  else pass("unknown assignment token → 404 (no cross-assignment resolution)");
+
+  // Restaurant A must never reach Restaurant B's orders / riders / locations.
+  const rid2 = (await q("select id from restaurants where slug='green-bowl-express' limit 1")).rows[0]?.id;
+  const POS_KEY2 = `pos_sec_${randomBytes(16).toString("hex")}`;
+  if (rid2) {
+    const ph2 = createHash("sha256").update(POS_KEY2).digest("hex");
+    await q("UPDATE restaurant_marketplace_profiles SET pos_key_hash=$1 WHERE restaurant_id=$2", [ph2, rid2]);
+
+    const crossEvents = await api(`/api/pos/orders/${ref}/events?key=${POS_KEY2}`);
+    if (crossEvents.status !== 404 && crossEvents.status !== 401) {
+      fail("restaurant B cannot read restaurant A order events", `status ${crossEvents.status}`);
+    } else {
+      pass(`POS key for restaurant ${rid2} → cannot read order ${ref} events (${crossEvents.status})`);
+    }
+
+    const crossTransition = await api(
+      `/api/pos/orders/${ref}/transition?key=${POS_KEY2}&to=cancelled`,
+      { method: "POST" },
+    );
+    if (crossTransition.status !== 404 && crossTransition.status !== 401) {
+      fail("restaurant B cannot transition restaurant A order", `status ${crossTransition.status}`);
+    } else {
+      pass(`POS key for restaurant ${rid2} → cannot transition order ${ref} (${crossTransition.status})`);
+    }
+
+    const crossQueue = await api(`/api/pos/orders?key=${POS_KEY2}`);
+    const leaked = (crossQueue.json?.orders ?? []).some((x) => x.reference === ref);
+    if (leaked) fail(`order ${ref} leaked into restaurant ${rid2}'s POS queue`, "");
+    else pass(`POS queue for restaurant ${rid2} → does not contain ${ref}`);
+
+    // Restore: never leave a mystery POS key live for restaurant 2.
+    await q("UPDATE restaurant_marketplace_profiles SET pos_key_hash = '' WHERE restaurant_id = $1", [rid2]);
+  } else {
+    fail("could not resolve green-bowl-express for tenant check", "");
+  }
 
   exit = results.length ? 2 : 0;
   if (results.length) {

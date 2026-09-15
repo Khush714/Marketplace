@@ -287,6 +287,46 @@ async function activateMarketplace() {
   }
 }
 
+/**
+ * PHASE 5 — seed a minimal delivery fleet: platform partners (admin-dispatch
+ * riders) and restaurant-owned riders (for the automatic internal-rider path
+ * when a delivery order reaches READY). Idempotent: existing rows are skipped
+ * via ON CONFLICT DO NOTHING.
+ */
+async function seedDeliveryFleet() {
+  for (const { name, phone } of [
+    { name: "Rahul Verma", phone: "+15550109991" },
+    { name: "Priya Singh", phone: "+15550109992" },
+  ]) {
+    await q(
+      `INSERT INTO delivery_partners (name, phone, vehicle_type, status, active, total_deliveries, rating)
+       VALUES ($1, $2, 'bike', 'available', true, 0, 5.00)
+       ON CONFLICT (phone) DO NOTHING`,
+      [name, phone],
+    );
+  }
+
+  // Restaurant-owned riders for green-bowl-express (internal-rider path).
+  const r = (
+    await q(
+      `SELECT id FROM restaurants WHERE slug = 'green-bowl-express' LIMIT 1`,
+    )
+  ).rows[0];
+  if (r) {
+    for (const { name, phone } of [
+      { name: "Amit Kumar", phone: "+15550201001" },
+      { name: "Deepa Nair", phone: "+15550201002" },
+    ]) {
+      await q(
+        `INSERT INTO delivery_riders (restaurant_id, name, phone, vehicle_type, status, active)
+         VALUES ($1, $2, $3, 'bike', 'available', true)
+         ON CONFLICT (restaurant_id, phone) DO NOTHING`,
+        [r.id, name, phone],
+      );
+    }
+  }
+}
+
 async function main() {
   let added = 0;
   for (const r of NEW) {
@@ -346,8 +386,9 @@ async function main() {
     }
   }
 
-  await seedOrders();
-await activateMarketplace();
+await seedOrders();
+  await seedDeliveryFleet();
+  await activateMarketplace();
 
   const {
     rows: [made],

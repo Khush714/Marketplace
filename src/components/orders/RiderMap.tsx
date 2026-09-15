@@ -33,10 +33,10 @@ function etaMinutes(km: number, vehicleType?: string | null): number {
   return Math.max(1, Math.round((km * 1.3 * 60) / kmh));
 }
 
-function pin(background: string, label: string, size = 26): string {
+function pin(background: string, emoji: string, size = 28): string {
   return `
-    <div style="width:${size}px;height:${size}px;border-radius:9999px;background:${background};border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.45);display:grid;place-items:center;color:#0b0b0f;font-size:11px;font-weight:800;line-height:1">
-      ${label}
+    <div style="width:${size}px;height:${size}px;border-radius:9999px;background:${background};border:2px solid #fff;box-shadow:0 2px 8px rgba(0,0,0,.45);display:grid;place-items:center;font-size:${Math.round(size * 0.55)}px;line-height:1">
+      ${emoji}
     </div>`;
 }
 
@@ -61,6 +61,7 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
   const restMarker = useRef<import("leaflet").Marker | null>(null);
   const dropMarker = useRef<import("leaflet").Marker | null>(null);
   const riderMarker = useRef<import("leaflet").Marker | null>(null);
+  const routeRef = useRef<import("leaflet").Polyline | null>(null);
   const fittedRider = useRef(false);
 
   const restaurantPin = restaurant.lat != null && restaurant.lng != null;
@@ -115,9 +116,9 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
         restMarker.current = L.marker([rest.lat, rest.lng], {
           icon: L.divIcon({
             className: "",
-            html: pin("#ff7a1a", "R"),
-            iconSize: [26, 26],
-            iconAnchor: [13, 13],
+            html: pin("#fff7ed", "🍽"),
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
           }),
           zIndexOffset: 200,
         }).addTo(map);
@@ -127,9 +128,9 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
         dropMarker.current = L.marker([dropoff.lat, dropoff.lng], {
           icon: L.divIcon({
             className: "",
-            html: pin("#10b981", "D"),
-            iconSize: [26, 26],
-            iconAnchor: [13, 13],
+            html: pin("#ecfdf5", "📍"),
+            iconSize: [28, 28],
+            iconAnchor: [14, 14],
           }),
           zIndexOffset: 200,
         }).addTo(map);
@@ -174,12 +175,13 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
       restMarker.current = null;
       dropMarker.current = null;
       riderMarker.current = null;
+      routeRef.current = null;
       fittedRider.current = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Follow the rider: create the marker on first fix, then just move it.
+  // Follow the rider: create the marker + route on first fix, then glide.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -190,9 +192,13 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
         ? { lat: restaurant.lat, lng: restaurant.lng }
         : null;
 
-    if (!riderMarker.current) {
-      void import("leaflet").then((L) => {
-        if (!mapRef.current) return;
+    void import("leaflet").then((L) => {
+      const mapNow = mapRef.current;
+      if (!mapNow) return;
+
+      // Marker — create on first fix with a one-time fit-to-bounds, then just
+      // move it on every subsequent fix (CSS transition glides the icon).
+      if (!riderMarker.current) {
         riderMarker.current = L.marker([rider.lat, rider.lng], {
           icon: L.divIcon({
             className: "",
@@ -201,22 +207,43 @@ export function RiderMap({ restaurant, dropoff, rider, vehicleType }: RiderMapPr
             iconAnchor: [12, 12],
           }),
           zIndexOffset: 1000,
-        }).addTo(mapRef.current);
+        }).addTo(mapNow);
         const pts: LatLng[] = [];
         if (pickup) pts.push(pickup);
         if (dropoff) pts.push(dropoff);
         pts.push({ lat: rider.lat, lng: rider.lng });
         if (!fittedRider.current) {
           fittedRider.current = true;
-          mapRef.current.fitBounds(
+          mapNow.fitBounds(
             L.latLngBounds(pts.map((p) => L.latLng(p.lat, p.lng))),
             { padding: [36, 36] },
           );
         }
-      });
-    } else {
-      riderMarker.current.setLatLng([rider.lat, rider.lng]);
-    }
+      } else {
+        riderMarker.current.setLatLng([rider.lat, rider.lng]);
+      }
+
+      // PHASE 10 — route polyline (restaurant → rider → dropoff). Straight-line
+      // segments with dashed "road" styling; updated on each fix. Created on
+      // first sighting of the rider, glides as the rider marker moves.
+      const routePts = [pickup, { lat: rider.lat, lng: rider.lng }, dropoff]
+        .filter((p): p is LatLng => p !== null)
+        .map((p) => L.latLng(p.lat, p.lng));
+      if (routePts.length >= 2) {
+        if (!routeRef.current) {
+          routeRef.current = L.polyline(routePts, {
+            color: "#ff7a1a",
+            weight: 3,
+            opacity: 0.55,
+            dashArray: "2 7",
+            interactive: false,
+          }).addTo(mapNow);
+          routeRef.current.bringToBack();
+        } else {
+          routeRef.current.setLatLngs(routePts);
+        }
+      }
+    });
   }, [rider, dropoff, restaurant.lat, restaurant.lng]);
 
   const canDraw = restaurantPin && Boolean(dropoff);

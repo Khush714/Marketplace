@@ -3,6 +3,8 @@
 import { legacyToCanonical, ORDER_MAINLINE, statusLabel } from "@/lib/order-lifecycle";
 import { timeOfDay } from "@/lib/format";
 import type { PublicOrder } from "@/lib/marketplace";
+import type { OrderEventType } from "@/lib/order-events";
+import { formatDistance } from "@/lib/geo";
 import { CheckIcon } from "@/components/ui/icons";
 
 /**
@@ -22,13 +24,65 @@ import { CheckIcon } from "@/components/ui/icons";
  * ever manufactured here; steps with no corresponding event are shown as
  * pending (○) with no time. PHASE 9 — the step list IS the lifecycle's
  * ORDER_MAINLINE, so a contract change is reflected automatically.
+ *
+ * PHASE 11 — the Delivery block surfaces rider milestones taken straight from
+ * the full audit trail (`order.events`): every RIDER_* line was authored
+ * server-side (DELIVERY_ASSIGNED / RIDER_ACCEPTED / RIDER_NEARBY / …). The
+ * browser never invents milestones — it only owns the display glyphs and the
+ * "🚴 Raj is 1.1 km away" phrasing around backend-authorised meta.
  */
 const FORWARD_STEPS = ORDER_MAINLINE;
 
+/** Delivery milestones the customer timeline renders (audit-trail guarded). */
+const DELIVERY_GUARD = new Set<OrderEventType>([
+  "DELIVERY_ASSIGNED",
+  "RIDER_ACCEPTED",
+  "RIDER_AT_RESTAURANT",
+  "RIDER_PICKED_UP",
+  "RIDER_OUT_FOR_DELIVERY",
+  "RIDER_NEARBY",
+  "RIDER_ARRIVING",
+  "RIDER_CANCELLED",
+]);
+
+/** Canonical delivery order for the milestone rows (matches the lifecycle). */
+const DELIVERY_ORDER: readonly OrderEventType[] = [
+  "DELIVERY_ASSIGNED",
+  "RIDER_ACCEPTED",
+  "RIDER_AT_RESTAURANT",
+  "RIDER_PICKED_UP",
+  "RIDER_OUT_FOR_DELIVERY",
+  "RIDER_NEARBY",
+  "RIDER_ARRIVING",
+  "RIDER_CANCELLED",
+];
+
+const DELIVERY_ICON: Record<string, string> = {
+  DELIVERY_ASSIGNED: "🛵",
+  RIDER_ACCEPTED: "🛵",
+  RIDER_AT_RESTAURANT: "🏪",
+  RIDER_PICKED_UP: "🍱",
+  RIDER_OUT_FOR_DELIVERY: "🛵",
+  RIDER_NEARBY: "📍",
+  RIDER_ARRIVING: "🏠",
+  RIDER_CANCELLED: "↩️",
+};
+
+/** Personalised verb per milestone (backed by the rider name in event meta). */
+const DELIVERY_VERB: Partial<Record<OrderEventType, string>> = {
+  RIDER_ACCEPTED: "accepted the delivery",
+  RIDER_AT_RESTAURANT: "arrived at the restaurant",
+  RIDER_PICKED_UP: "picked up your order",
+  RIDER_OUT_FOR_DELIVERY: "is on the way",
+  RIDER_ARRIVING: "is arriving",
+};
+
 export function OrderTimeline({
   events,
+  audit,
 }: {
   events: PublicOrder["timeline"];
+  audit?: PublicOrder["events"];
 }) {
   if (events.length === 0) return null;
 
@@ -37,6 +91,21 @@ export function OrderTimeline({
   for (const e of events) {
     const canonical = legacyToCanonical(e.status);
     if (!byStatus.has(canonical)) byStatus.set(canonical, e);
+  }
+
+  // PHASE 11 — delivery milestones, one row per event type in canonical order.
+  const deliveryRows: { type: OrderEventType; event: PublicOrder["events"][number] }[] = [];
+  if (audit && audit.length > 0) {
+    const firstByType = new Map<OrderEventType, PublicOrder["events"][number]>();
+    for (const e of audit) {
+      if (DELIVERY_GUARD.has(e.type) && !firstByType.has(e.type)) {
+        firstByType.set(e.type, e);
+      }
+    }
+    for (const t of DELIVERY_ORDER) {
+      const e = firstByType.get(t);
+      if (e) deliveryRows.push({ type: t, event: e });
+    }
   }
 
   const cancelled = byStatus.get("cancelled");
@@ -67,8 +136,83 @@ export function OrderTimeline({
         {cancelled && <DoneRow event={cancelled} tone="rose" />}
         {rejected && <DoneRow event={rejected} tone="rose" />}
       </ol>
+
+      {deliveryRows.length > 0 && (
+        <div className="mt-6">
+          <h3 className="text-xs font-bold uppercase tracking-[0.2em] text-white/40">
+            Delivery
+          </h3>
+          <ol className="mt-4">
+            {deliveryRows.map(({ type, event }) => (
+              <DeliveryRow key={type} type={type} event={event} />
+            ))}
+          </ol>
+        </div>
+      )}
     </section>
   );
+}
+
+function DeliveryRow({
+  type,
+  event,
+}: {
+  type: OrderEventType;
+  event: PublicOrder["events"][number];
+}) {
+  const meta = event.meta ?? {};
+  const name =
+    typeof meta.riderName === "string"
+      ? meta.riderName
+      : typeof meta.partnerName === "string"
+        ? meta.partnerName
+        : null;
+
+  return (
+    <li className="pb-4">
+      <div className="flex items-center gap-3">
+        <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full border border-white/15 bg-ink-850 text-[12px] leading-none">
+          {DELIVERY_ICON[type] ?? "🛵"}
+        </span>
+        <span className="flex-1 text-sm font-semibold text-white">
+          {deliveryLabel(type, event, name)}
+        </span>
+      </div>
+      <p className="mt-1 pl-9 text-xs tabular-nums text-white/40">
+        {timeOfDay(event.at)}
+      </p>
+    </li>
+  );
+}
+
+/** Build the customer-facing line from backend meta, never from a guess. */
+function deliveryLabel(
+  type: OrderEventType,
+  event: PublicOrder["events"][number],
+  name: string | null,
+): string {
+  if (type === "RIDER_NEARBY") {
+    const km =
+      typeof event.meta?.distanceKm === "number" ? event.meta.distanceKm : null;
+    if (km != null) {
+      const dist = formatDistance(km);
+      return name ? `${name} is ${dist} away` : `${dist} away`;
+    }
+    return event.label;
+  }
+
+  if (type === "DELIVERY_ASSIGNED") {
+    if (name) return `${name} assigned to your order`;
+    if (typeof event.meta?.note === "string" && event.meta.note) {
+      return event.meta.note;
+    }
+    return event.label;
+  }
+
+  if (type === "RIDER_CANCELLED" || !name) return event.label;
+
+  const verb = DELIVERY_VERB[type];
+  return verb ? `${name} ${verb}` : event.label;
 }
 
 function DoneRow({

@@ -19,8 +19,8 @@ import {
  * computed by the canonical `deliveryStep()` in delivery-status.ts.
  *
  * The rail renders only the "action" sub-range (assigned → arriving) to keep
- * the UI compact, with a leading pending indicator when waiting, and a
- * trailing delivered state.
+ * the UI compact, with a leading pending-assignment indicator when waiting, and
+ * a trailing delivered state.
  */
 export function DeliveryTracker({
   delivery,
@@ -29,10 +29,10 @@ export function DeliveryTracker({
 }) {
   const delivered = delivery.step >= DELIVERY_MAINLINE.length;
 
-  // Show the compact rail: pending dot + 5 core steps + delivered
+  // Show the compact rail: pending-assignment dot + 5 core steps + delivered
   // This covers the visually meaningful progression without overwhelming the user.
   const RAIL_STEPS = [
-    "pending",
+    "pending_assignment",
     "assigned",
     "accepted",
     "at_restaurant",

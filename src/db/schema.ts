@@ -903,15 +903,16 @@ export const deliveryPartners = pgTable(
 );
 
 // ---------------------------------------------------------------------------
-// PHASE 45 — DELIVERY ENGINE (the decoupled delivery track).
+// PHASE 4 — DELIVERY ENGINE (the decoupled delivery track).
 //
 // `orders.status` stays the FOOD lifecycle (placed → accepted → preparing →
 // ready). Delivery-only states live here, on `delivery_orders`, so the POS
 // kitchen flow is never crammed with rider states:
 //
 //   FOOD      placed → accepted → preparing → ready
-//   DELIVERY  pending → assigned → accepted → at_restaurant → picked_up →
-//             out_for_delivery → arriving → delivered (… → failed/cancelled)
+//   DELIVERY  pending_assignment → assigned → accepted → at_restaurant
+//             → picked_up → out_for_delivery → arriving → delivered
+//             (… → failed / cancelled)
 //
 // One `delivery_orders` row per delivery order (unique order_id).
 // ---------------------------------------------------------------------------
@@ -926,10 +927,10 @@ export const deliveryOrders = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
-    // The authoritative delivery lifecycle (src/lib/delivery-status.ts).
+    // The authoritative delivery lifecycle (src/lib/delivery-lifecycle.ts).
     deliveryStatus: varchar("delivery_status", { length: 24 })
       .notNull()
-      .default("pending"),
+      .default("pending_assignment"),
     // How the food travels: platform (marketplace fleet) | restaurant_rider
     // (the restaurant's own staff) | external (3rd-party provider) | tablz.
     deliveryMode: varchar("delivery_mode", { length: 24 })

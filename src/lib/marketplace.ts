@@ -20,7 +20,8 @@ import { priceCart, type LineInput, type LineModifierSelection, type PricingResu
 import { summarizeStatus, statusLabel } from "./order-lifecycle";
 import { appendOrderEvent, listOrderEvents, type OrderEventView } from "./order-events";
 import { and, asc, desc, eq, ilike, inArray, or, sql } from "drizzle-orm";
-import { num, orderReference, currency, shortDateTime } from "./format";
+import { num, currency, shortDateTime } from "./format";
+import { orderReference } from "./order-reference";
 import { flushOrder } from "./push";
 import { publishOrderEvent } from "./realtime";
 import { haversineKm, parseLatLng, type LatLng } from "./geo";

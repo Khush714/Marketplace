@@ -3,14 +3,14 @@
  * PHASE 45 — decoupled delivery engine.
  *
  * The delivery TRACK is authoritative on `delivery_orders.delivery_status`.
- * The canonical lifecycle lives in `src/lib/delivery-status.ts` and is
+ * The canonical lifecycle lives in `src/lib/delivery-lifecycle.ts` and is
  * deliberately decoupled from the kitchen lifecycle (`orders.status`). This
  * module owns:
  *
  *   • creating the `delivery_orders` row when a delivery order is placed
  *   • assigning / re-assigning a delivery partner (+ optional restaurant rider)
  *   • advancing the delivery track (rider PATCH / admin single-step)
- *   • unassigning a partner (delivery returns to `pending`)
+ *   • unassigning a partner (delivery returns to `pending_assignment`)
  *   • ingesting rider GPS fixes (live columns + `rider_locations` history)
  *   • building the public delivery envelope the customer tracker consumes
  */
@@ -24,6 +24,7 @@ import {
   deliveryPartners,
   deliveryRiders,
   notifications,
+  orderEvents,
   orders,
   restaurants,
   riderLocations,
@@ -35,6 +36,7 @@ import {
 } from "@/lib/order-events";
 import { transitionOrder } from "@/lib/order-actions";
 import { statusLabel } from "@/lib/order-lifecycle";
+import { formatDistance, haversineKm } from "@/lib/geo";
 import {
   publishOrderEvent,
   publishRiderLocation,
@@ -49,6 +51,11 @@ import {
   nextDeliveryStatuses,
   type DeliveryStatus,
 } from "@/lib/delivery-status";
+import {
+  DEFAULT_EXTERNAL_PROVIDER,
+  getDeliveryProvider,
+  type ProviderDeliveryOutcome,
+} from "@/lib/delivery/providers";
 
 /* ------------------------------------------------------------------ *
  * Re-export the canonical contract so existing consumers keep one      *
@@ -175,7 +182,7 @@ export async function createDeliveryOrderForOrderTx(
     .values({
       orderId: input.orderId,
       restaurantId: input.restaurantId,
-      deliveryStatus: "pending",
+      deliveryStatus: "pending_assignment",
       deliveryMode: input.mode ?? "platform",
       deliveryFee: input.deliveryFee ?? "0",
       pickupLat: input.pickup.lat,
@@ -400,6 +407,7 @@ export type ReportRiderLocationResult = {
 };
 
 const MIN_LOCATION_INTERVAL_MS = 4000;
+const RIDER_NEARBY_KM = 1.5;
 
 export async function reportRiderLocation(
   token: string,
@@ -476,6 +484,47 @@ export async function reportRiderLocation(
       speed: null,
       recordedAt: now,
     });
+  }
+
+  // PHASE 46 — author exactly ONE "rider nearby" milestone from the backend
+  // the first time the rider (on the road) gets within ~1.5 km of the dropoff,
+  // so the customer timeline never guesses distance. The distance is stored in
+  // the event meta for the timeline to render ("📍 Raj is 1.1 km away").
+  if (
+    a.status === "out_for_delivery" ||
+    a.status === "arriving"
+  ) {
+    const [drop] = await db
+      .select({
+        dropoffLat: orders.dropoffLat,
+        dropoffLng: orders.dropoffLng,
+      })
+      .from(orders)
+      .where(eq(orders.id, a.orderId))
+      .limit(1);
+    const dl = Number(drop?.dropoffLat);
+    const dn = Number(drop?.dropoffLng);
+    if (drop?.dropoffLat != null && drop?.dropoffLng != null) {
+      const km = haversineKm({ lat: fix.lat, lng: fix.lng }, { lat: dl, lng: dn });
+      const [seen] = await db
+        .select({ id: orderEvents.id })
+        .from(orderEvents)
+        .where(
+          and(
+            eq(orderEvents.orderId, a.orderId),
+            eq(orderEvents.type, "RIDER_NEARBY"),
+          ),
+        )
+        .limit(1);
+      if (km <= RIDER_NEARBY_KM && !seen) {
+        await appendOrderEvent(db, {
+          orderId: a.orderId,
+          type: "RIDER_NEARBY",
+          actor: "rider",
+          meta: { distanceKm: Number(km.toFixed(2)) },
+        });
+      }
+    }
   }
 
   await publishRiderLocation(order.reference, fix);
@@ -556,7 +605,11 @@ export async function assignDeliveryPartner(
     return { ok: false, error: "Rider not found", status: 404 };
   }
 
-  const token = `${randomBytes(6).toString("hex")}.${Date.now().toString(36)}`;
+  // PHASE 14 — rider credentials. The assignment token is THE rider's access
+  // credential for the delivery PWA (/rider/:token + GPS endpoint), so it comes
+  // from a CSPRNG (9 bytes = 72 bits, salt) — the time suffix is only a
+  // uniqueness helper against same-millisecond creates.
+  const token = `${randomBytes(9).toString("hex")}.${Date.now().toString(36)}`;
 
   const done = await db.transaction(async (tx) => {
     // One live assignment per order: any previous assignment is superseded.
@@ -853,7 +906,7 @@ export async function unassignDeliveryPartner(
     }
     if (a.deliveryOrderId != null) {
       // Back to the dispatch queue for a fresh rider.
-      await setDeliveryTrackStatus(tx, a.deliveryOrderId, "pending");
+      await setDeliveryTrackStatus(tx, a.deliveryOrderId, "pending_assignment");
       await appendDeliveryEvent(tx, {
         deliveryOrderId: a.deliveryOrderId,
         eventType: "DELIVERY_UNASSIGNED",
@@ -864,5 +917,219 @@ export async function unassignDeliveryPartner(
   });
 
   await publishOrderEvent(order.reference, "delivery_unassigned", "pos");
-  return { ok: true, delivery: { status: "pending", terminal: false } };
+  return { ok: true, delivery: { status: "pending_assignment", terminal: false } };
+}
+
+/* ------------------------------------------------------------------ *
+ * PHASE 5 — auto-dispatch on kitchen READY                            *
+ * ------------------------------------------------------------------ */
+
+/**
+ * Called inside `transitionOrder` the moment a delivery order reaches READY.
+ * Idempotent: safe when a track already exists (e.g. created at placement).
+ *
+ * 1. Ensure a `delivery_orders` track exists (create if legacy).
+ * 2. If already dispatched or terminal → no-op.
+ * 3. Restaurant has an available own rider → assign restaurant_rider.
+ * 4. Otherwise → external-provider path: `getDeliveryProvider` hands the order
+ *    to the configured fleet, `delivery_orders.provider` + `external_id` are
+ *    recorded, and the order stays live in the admin dispatch queue for a
+ *    platform partner to claim.
+ */
+export async function dispatchDeliveryForReadyOrder(
+  conn: DeliveryTx,
+  orderId: number,
+): Promise<void> {
+  const [order] = await conn
+    .select()
+    .from(orders)
+    .where(eq(orders.id, orderId))
+    .limit(1);
+  if (!order) return;
+
+  const [restaurant] = await conn
+    .select({ name: restaurants.name, lat: restaurants.lat, lng: restaurants.lng })
+    .from(restaurants)
+    .where(eq(restaurants.id, order.restaurantId))
+    .limit(1);
+
+  const track = await createDeliveryOrderForOrderTx(conn, {
+    orderId: order.id,
+    restaurantId: order.restaurantId,
+    deliveryFee: order.deliveryFee ?? "0",
+    dropoffLat: order.dropoffLat,
+    dropoffLng: order.dropoffLng,
+    scheduledFor: order.scheduledFor ?? null,
+    pickup: { lat: restaurant?.lat ?? null, lng: restaurant?.lng ?? null },
+    mode: "platform",
+  });
+
+  // Already dispatched (assigned / at_restaurant / …) or terminal — no-op.
+  if (track.deliveryStatus !== "pending_assignment") return;
+
+  // Guard: an existing assignment (e.g. admin manual) is already in play.
+  const [existingAssignment] = await conn
+    .select({ id: deliveryAssignments.id })
+    .from(deliveryAssignments)
+    .where(eq(deliveryAssignments.orderId, order.id))
+    .limit(1);
+  if (existingAssignment) return;
+
+  // PHASE 5 — restaurant-owned rider first; else external provider path.
+  const [rider] = await conn
+    .select()
+    .from(deliveryRiders)
+    .where(
+      and(
+        eq(deliveryRiders.restaurantId, order.restaurantId),
+        eq(deliveryRiders.status, "available"),
+        eq(deliveryRiders.active, true),
+      ),
+    )
+    .limit(1);
+
+  const now = new Date();
+
+  if (!rider) {
+    // PHASE 12 — partner with the configured external fleet. The marketplace
+    // never names the fleet beyond the provider seam (`getDeliveryProvider`);
+    // the quoted ETA (if any) is persisted so the customer tracker can preview
+    // it, and the order stays live in the admin dispatch queue for a platform
+    // partner to claim once the fleet hands back control.
+    const provider = getDeliveryProvider(DEFAULT_EXTERNAL_PROVIDER);
+    let outcome: ProviderDeliveryOutcome;
+    try {
+      outcome = await provider.createDelivery({
+        orderId: order.id,
+        reference: order.reference,
+        restaurant: {
+          id: order.restaurantId,
+          name: restaurant?.name ?? "",
+          lat: restaurant?.lat != null ? Number(restaurant.lat) : null,
+          lng: restaurant?.lng != null ? Number(restaurant.lng) : null,
+        },
+        dropoff:
+          order.dropoffLat != null && order.dropoffLng != null
+            ? { lat: Number(order.dropoffLat), lng: Number(order.dropoffLng) }
+            : null,
+        customer: { name: order.customerName, phone: order.customerPhone },
+        fee: Number(order.deliveryFee ?? 0),
+        scheduledFor: order.scheduledFor ?? null,
+      });
+    } catch {
+      outcome = {
+        provider: provider.id,
+        externalId: null,
+        status: "queued",
+        etaMinutes: null,
+      };
+    }
+
+    const estimatedDeliveryAt = outcome.etaMinutes
+      ? new Date(Date.now() + outcome.etaMinutes * 60_000)
+      : null;
+    await conn
+      .update(deliveryOrders)
+      .set({
+        deliveryMode: "external",
+        provider: outcome.provider,
+        providerDeliveryId: outcome.externalId ?? "",
+        estimatedDeliveryAt,
+        updatedAt: now,
+      })
+      .where(eq(deliveryOrders.id, track.id));
+
+    await appendDeliveryEvent(conn, {
+      deliveryOrderId: track.id,
+      eventType: "DELIVERY_PROVIDER_ASSIGNED",
+      actor: "system",
+      metadata: {
+        provider: outcome.provider,
+        providerDeliveryId: outcome.externalId ?? null,
+        reason: "no_restaurant_rider",
+      },
+    });
+
+    await appendOrderEvent(conn, {
+      orderId: order.id,
+      type: "DELIVERY_ASSIGNED",
+      actor: "system",
+      meta: {
+        provider: outcome.provider,
+        providerDeliveryId: outcome.externalId ?? null,
+        note: "Fleet dispatch — awaiting partner pickup",
+      },
+    });
+
+    // Drive the customer tracker via the existing realtime bus (same as the
+    // internal-rider path below).
+    void publishOrderEvent(order.reference, "delivery_assigned", "system");
+    return;
+  }
+
+  // Internal rider available — assign immediately.
+  // PHASE 14 — assignment token is the rider's credential: CSPRNG, 72 bits.
+  const token = `${randomBytes(9).toString("hex")}.${Date.now().toString(36)}`;
+  await conn.insert(deliveryAssignments).values({
+    orderId: order.id,
+    deliveryOrderId: track.id,
+    partnerId: null,
+    provider: "restaurant_rider",
+    riderId: rider.id,
+    status: "assigned",
+    token,
+    note: "Auto-assigned at READY",
+  });
+
+  await conn
+    .update(deliveryRiders)
+    .set({ status: "busy" })
+    .where(eq(deliveryRiders.id, rider.id));
+
+  await conn
+    .update(deliveryOrders)
+    .set({ deliveryMode: "restaurant_rider", updatedAt: now })
+    .where(eq(deliveryOrders.id, track.id));
+
+  await setDeliveryTrackStatus(conn, track.id, "assigned");
+
+  await appendDeliveryEvent(conn, {
+    deliveryOrderId: track.id,
+    eventType: "DELIVERY_ASSIGNED",
+    actor: "system",
+    metadata: {
+      riderId: rider.id,
+      riderName: rider.name,
+      provider: "restaurant_rider",
+    },
+  });
+
+  await appendOrderEvent(conn, {
+    orderId: order.id,
+    type: "DELIVERY_ASSIGNED",
+    actor: "system",
+    meta: {
+      riderId: rider.id,
+      riderName: rider.name,
+      provider: "restaurant_rider",
+      note: "Auto-assigned at READY",
+    },
+  });
+
+  await conn.insert(notifications).values({
+    customerId: order.customerId,
+    phone: order.customerPhone ?? "",
+    orderId: order.id,
+    kind: "delivery_assigned",
+    message: `${rider.name} is on the way to pick up your order ${order.reference}.`,
+    channel: "push",
+  });
+
+  // Drive the customer tracker via the existing realtime bus.
+  // publishOrderEvent expects the global db; it will commit after the tx.
+  // We don't have access to `conn` for a full post-tx hook here, but the
+  // SSE stream picks up the DELIVERY_ASSIGNED order event committed above.
+  // If the realtime bus is refactored to be conn-aware this can be pushed
+  // into the same tx. For now, schedule it fire-and-forget.
+  void publishOrderEvent(order.reference, "delivery_assigned", "system");
 }

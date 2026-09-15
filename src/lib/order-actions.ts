@@ -179,6 +179,19 @@ export async function transitionOrder(
       }
     }
 
+    // PHASE 5 — the moment a delivery order reaches READY, spin up the
+    // delivery track + dispatch (internal restaurant rider if one is
+    // available, otherwise the external-provider path). Uses a dynamic
+    // import to avoid a static circular dependency (delivery → order-actions).
+    if (toStatusRaw === "ready" && order.fulfillmentType === "delivery") {
+      try {
+        const { dispatchDeliveryForReadyOrder } = await import("./delivery");
+        await dispatchDeliveryForReadyOrder(tx, order.id);
+      } catch (e) {
+        console.error(`delivery dispatch failed for ${order.reference}:`, e);
+      }
+    }
+
     return row;
   });
 

@@ -35,6 +35,7 @@ export type OrderEventType =
   | "RIDER_OUT_FOR_DELIVERY"
   | "RIDER_ARRIVING"
   | "RIDER_PICKED_UP"
+  | "RIDER_NEARBY"
   | "RIDER_CANCELLED";
 
 export type OrderEventActor =
@@ -64,6 +65,7 @@ export const ORDER_EVENT_LABELS: Record<OrderEventType, string> = {
   RIDER_OUT_FOR_DELIVERY: "Out for delivery",
   RIDER_ARRIVING: "Rider arriving",
   RIDER_PICKED_UP: "Rider picked up",
+  RIDER_NEARBY: "Rider nearby",
   RIDER_CANCELLED: "Rider cancelled",
 };
 

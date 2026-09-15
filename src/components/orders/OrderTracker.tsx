@@ -9,6 +9,8 @@ import {
   type OrderLifecycleStatus,
 } from "@/lib/order-lifecycle";
 import { shortDate, shortDateTime, timeAgo } from "@/lib/format";
+import { formatDistance, haversineKm, type LatLng } from "@/lib/geo";
+import type { RiderFix } from "@/lib/delivery";
 import { useOrderTracking } from "@/hooks/useOrderTracking";
 import type { OrderTracking } from "@/hooks/useOrderTracking";
 import type { PublicOrder } from "@/lib/marketplace";
@@ -420,7 +422,7 @@ function LiveTracker({
         />
       )}
 
-      <OrderTimeline events={order.timeline} />
+      <OrderTimeline events={order.timeline} audit={order.events} />
 
       <OrderTypeInfo order={order} />
 
@@ -428,6 +430,16 @@ function LiveTracker({
         <div key={`dlv-${order.delivery.status}-${order.delivery.step}`}>
           {order.delivery.dropoff && (
             <div className="mb-4">
+              {(order.delivery.status === "out_for_delivery" ||
+                order.delivery.status === "arriving") && (
+                <LiveDeliveryEta
+                  status={order.delivery.status}
+                  riderName={order.delivery.partner?.name ?? null}
+                  vehicleType={order.delivery.partner?.vehicleType ?? null}
+                  rider={riderLocation ?? order.delivery.rider}
+                  dropoff={order.delivery.dropoff}
+                />
+              )}
               <RiderMap
                 restaurant={order.restaurant}
                 dropoff={order.delivery.dropoff}
@@ -566,5 +578,57 @@ function VerticalStepTracker({ step }: { step: number }) {
         );
       })}
     </ol>
+  );
+}
+
+const ETA_SPEED_KMH: Record<string, number> = {
+  walking: 5,
+  bike: 25,
+  scooter: 35,
+  car: 40,
+};
+
+/** Straight-line ETA with a 1.3 road-compensation factor (display only). */
+function riderEtaMinutes(km: number, vehicleType?: string | null): number {
+  const kmh = ETA_SPEED_KMH[vehicleType ?? "bike"] ?? ETA_SPEED_KMH.bike;
+  return Math.max(1, Math.round((km * 1.3 * 60) / kmh));
+}
+
+/**
+ * PHASE 9/13 — "LIVE DELIVERY" ETA strip on the customer card once the rider
+ * is on the road (out_for_delivery / arriving). Distance and ETA are computed
+ * from the live fix — never a hardcoded number.
+ */
+function LiveDeliveryEta({
+  status,
+  riderName,
+  vehicleType,
+  rider,
+  dropoff,
+}: {
+  status: string;
+  riderName: string | null;
+  vehicleType: string | null;
+  rider: RiderFix | null;
+  dropoff: LatLng;
+}) {
+  if (!rider) return null;
+  const km = haversineKm({ lat: rider.lat, lng: rider.lng }, dropoff);
+  const eta = riderEtaMinutes(km, vehicleType);
+  return (
+    <div className="mb-3 flex items-center justify-between gap-3 rounded-2xl border border-ember-500/20 bg-ember-500/10 px-4 py-2.5">
+      <p className="flex items-center gap-2 text-sm font-bold text-white">
+        <span className="grid h-6 w-6 place-items-center rounded-full bg-ember-500/15 text-[13px] leading-none">
+          {status === "arriving" ? "🏠" : "🛵"}
+        </span>
+        {riderName ?? "Your rider"}
+        <span className="font-medium text-white/45">
+          {status === "arriving" ? "is arriving" : "is on the way"}
+        </span>
+      </p>
+      <p className="shrink-0 text-right text-xs font-bold tabular-nums text-ember-400">
+        {formatDistance(km)} · ~{eta} min
+      </p>
+    </div>
   );
 }

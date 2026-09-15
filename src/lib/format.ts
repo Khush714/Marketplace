@@ -57,12 +57,6 @@ export function timeAgo(ms: number | null | undefined, now = Date.now()): string
   return h < 24 ? `${h} hr ago` : `${Math.floor(h / 24)}d ago`;
 }
 
-export function orderReference(): string {
-  const stamp = Date.now().toString(36).toUpperCase().slice(-5);
-  const rand = Math.random().toString(36).toUpperCase().slice(2, 10);
-  return `MKT-${stamp}${rand}`;
-}
-
 /**
  * Permanent marketplace restaurant id, e.g. "rst_01j8abc123xyz". Lowercase
  * base-36 so it is URL-safe and unambiguous next to uppercase MKT-/DLV- ids.
