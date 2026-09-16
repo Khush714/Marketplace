@@ -1,42 +1,39 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
+import { Ambient } from "@/components/ambient";
+import { AppShell } from "@/components/app-shell";
+import { Providers } from "@/components/providers";
 import "./globals.css";
-import { AppShell } from "@/components/shell/AppShell";
 
 export const metadata: Metadata = {
-  title: {
-    default: "TABLZ — Order from local restaurants",
-    template: "%s · TABLZ",
-  },
+  title: "crave. — Food, delivered beautifully",
   description:
-    "Discover nearby restaurants, browse menus and order online. Powered by the restaurants' own POS.",
-  manifest: "/manifest.webmanifest",
-  appleWebApp: {
-    capable: true,
-    title: "TABLZ",
-    statusBarStyle: "default",
-  },
-  icons: {
-    icon: [
-      { url: "/icons/favicon-32.png", sizes: "32x32", type: "image/png" },
-      { url: "/icons/icon-192.png", sizes: "192x192", type: "image/png" },
-    ],
-    apple: "/icons/apple-touch-icon.png",
-  },
+    "A next-generation food marketplace. Discover restaurants, order in seconds, track your rider live.",
+  icons: { icon: "/favicon.svg" },
 };
 
 export const viewport: Viewport = {
-  themeColor: "#0c0c0f",
+  themeColor: "#07070a",
   width: "device-width",
   initialScale: 1,
-  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en" className="noise">
-      <body className="min-h-screen bg-ink-950 font-sans text-[#f5f3ef] antialiased">
-        <AppShell>{children}</AppShell>
+    <html lang="en" className="js">
+      <head>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="anonymous" />
+        <link
+          href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,300..800&family=Inter:wght@400;500;600;700;800&display=swap"
+          rel="stylesheet"
+        />
+      </head>
+      <body className="bg-void font-sans text-cream-50">
+        <Providers>
+          <Ambient />
+          <AppShell>{children}</AppShell>
+        </Providers>
       </body>
     </html>
   );
