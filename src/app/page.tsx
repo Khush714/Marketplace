@@ -74,8 +74,8 @@ export default async function HomePage() {
             </div>
             <div className="zoom-on-scroll relative aspect-[16/10] md:aspect-auto md:h-full md:min-h-[340px]">
               <Image
-                src="/images/hero-burger.svg"
-                alt="Floating smash burger with exploded ingredients"
+                src="/images/hero-burger.jpg"
+                alt="Smash burger with melted cheddar and caramelised onions"
                 fill
                 priority
                 sizes="(max-width: 768px) 100vw, 44vw"
