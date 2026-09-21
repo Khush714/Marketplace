@@ -23,7 +23,8 @@ import {
   TrendingUp,
   X,
 } from "lucide-react";
-import { cn, formatINR } from "@/lib/domain";
+import { cn, formatINR, withLoc } from "@/lib/domain";
+import { useLocation } from "@/lib/location";
 import { cssVars } from "@/components/motion-primitives";
 import { useProfile } from "@/lib/profile";
 import type { DishSearchResult, RestaurantDto, RestaurantSearchResult, SearchResult } from "@/lib/types";
@@ -87,19 +88,20 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [featured, setFeatured] = useState<RestaurantDto[]>([]);
   const { recentSearches, pushRecentSearch, clearRecentSearches } = useProfile();
+  const { locality } = useLocation();
 
   // Lock body scroll + autofocus
   useEffect(() => {
     document.documentElement.style.overflow = "hidden";
     inputRef.current?.focus();
-    fetch("/api/restaurants?featured=1")
+    fetch(`/api/restaurants?featured=1&loc=${locality.key}`)
       .then((r) => r.json())
       .then((d) => setFeatured(d.restaurants ?? []))
       .catch(() => {});
     return () => {
       document.documentElement.style.overflow = "";
     };
-  }, []);
+  }, [locality.key]);
 
   // Debounced live search
   useEffect(() => {
@@ -108,13 +110,13 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
       return;
     }
     const t = window.setTimeout(() => {
-      fetch(`/api/search?q=${encodeURIComponent(q.trim())}`)
+      fetch(`/api/search?q=${encodeURIComponent(q.trim())}&loc=${locality.key}`)
         .then((r) => r.json())
         .then((d) => setResults(d.results ?? []))
         .catch(() => setResults([]));
     }, 220);
     return () => window.clearTimeout(t);
-  }, [q]);
+  }, [q, locality.key]);
 
   const submit = useCallback(
     (value: string) => {
@@ -122,9 +124,9 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
       if (!clean) return;
       pushRecentSearch(clean);
       onClose();
-      router.push(`/restaurants?q=${encodeURIComponent(clean)}`);
+      router.push(withLoc(`/restaurants?q=${encodeURIComponent(clean)}`, locality.key));
     },
-    [onClose, pushRecentSearch, router],
+    [onClose, pushRecentSearch, router, locality.key],
   );
 
   const restaurants = results?.filter((r): r is RestaurantSearchResult => r.type === "restaurant") ?? [];

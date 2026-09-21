@@ -46,6 +46,8 @@ interface RestaurantDef {
   featured?: boolean;
   pureVeg?: boolean;
   locality: string;
+  /** Set to false to hide this restaurant from the marketplace (soft-hide). */
+  active?: boolean;
   items: ItemDef[];
 }
 
@@ -66,7 +68,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: BURGERS[3],
     heroUrl: BURGERS[0],
     featured: true,
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "The Oak Smash", 329, "Double smashed patty, aged cheddar, burnt-onion mayo, potato bun.", BURGERS[4], false, true],
       ["Recommended", "Ember Stack", 399, "Triple layer, charred jalapeño relish, smoked gouda.", BURGERS[1], false, true],
@@ -94,7 +96,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: PIZZA[0],
     heroUrl: PIZZA[2],
     featured: true,
-    locality: "Koramangala",
+    locality: "Zadeshwar",
     items: [
       ["Recommended", "Margherita Fiamma", 425, "San Marzano tomato, fior di latte, basil, cold-pressed olive oil.", PIZZA[0], true, true],
       ["Recommended", "Diavola", 545, "Spicy salami, calabrian chilli honey, smoked mozzarella.", PIZZA[2], false, true],
@@ -120,7 +122,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: SUSHI[0],
     heroUrl: SUSHI[5],
     featured: true,
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Omakase Platter · 12 pc", 899, "Chef's selection of nigiri, maki & sashimi.", SUSHI[5], false, true],
       ["Recommended", "Salmon Aburi Nigiri · 6 pc", 549, "Torched salmon belly, yuzu kosho, nikiri soy.", SUSHI[2], false, true],
@@ -148,7 +150,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: INDIAN[3],
     heroUrl: INDIAN[1],
     featured: true,
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Butter Chicken 1962", 389, "Charcoal tikka, tomato-makhan velvet, kasuri methi.", INDIAN[3], false, true],
       ["Recommended", "Galouti Kebab", 419, "Melt-in-mouth lamb kebab, saffron sheermal.", INDIAN[5], false, true],
@@ -175,7 +177,7 @@ const DATA: RestaurantDef[] = [
     offerMaxCents: 7500,
     imageUrl: INDIAN[0],
     heroUrl: INDIAN[2],
-    locality: "HSR Layout",
+    locality: "Maktampur",
     items: [
       ["Recommended", "Hyderabadi Chicken Dum", 329, "Aged basmati, saffron milk, brown onion, mirchi ka salan.", INDIAN[0], false, true],
       ["Recommended", "Raan Biryani", 549, "Slow-braised lamb shank, royal spices, edible silver.", INDIAN[2], false, true],
@@ -201,7 +203,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: RAMEN[0],
     heroUrl: RAMEN[2],
     featured: true,
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Tonkotsu Black", 449, "Rich pork broth, black garlic oil, chashu, ajitama.", RAMEN[4], false, true],
       ["Recommended", "Spicy Miso Bomb", 429, "Miso tare, chilli paste, buttered corn, minced chicken.", RAMEN[2], false, true],
@@ -228,7 +230,7 @@ const DATA: RestaurantDef[] = [
     offerMaxCents: 10000,
     imageUrl: DESSERT[2],
     heroUrl: DESSERT[0],
-    locality: "Koramangala",
+    locality: "Zadeshwar",
     pureVeg: true,
     items: [
       ["Recommended", "Midnight Mousse Cake", 349, "70% dark chocolate mousse, hazelnut praline core.", DESSERT[0], true, true],
@@ -255,7 +257,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: SALAD[2],
     heroUrl: SALAD[0],
     pureVeg: true,
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Harvest Buddha Bowl", 349, "Quinoa, roast pumpkin, avocado, tahini drizzle.", SALAD[2], true, true],
       ["Recommended", "Falafel Garden", 319, "Crisp falafel, pickled veg, hummus, sumac onions.", SALAD[1], true, true],
@@ -280,7 +282,7 @@ const DATA: RestaurantDef[] = [
     offer: "Free churros on ₹599+",
     imageUrl: TACOS[3],
     heroUrl: TACOS[1],
-    locality: "Koramangala",
+    locality: "Zadeshwar",
     items: [
       ["Recommended", "Baja Shrimp Tacos · 3", 399, "Crisp shrimp, chipotle crema, mango slaw.", TACOS[2], false, true],
       ["Recommended", "Pollo al Pastor · 3", 349, "Achiote chicken, grilled pineapple, salsa verde.", TACOS[1], false, true],
@@ -307,7 +309,7 @@ const DATA: RestaurantDef[] = [
     offerMaxCents: 8000,
     imageUrl: FRIED[0],
     heroUrl: FRIED[1],
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Nashville Hot Tenders", 289, "Cayenne-dusted tenders, comeback sauce, pickles.", FRIED[2], false, true],
       ["Recommended", "The Club Bucket · 8 pc", 549, "Signature twice-fried chicken, house dips.", FRIED[1], false, true],
@@ -333,7 +335,7 @@ const DATA: RestaurantDef[] = [
     imageUrl: PASTA[0],
     heroUrl: PASTA[2],
     featured: true,
-    locality: "Koramangala",
+    locality: "Zadeshwar",
     items: [
       ["Recommended", "Tagliatelle al Pomodoro", 545, "Hand-cut pasta, datterini tomato, basil, parmesan.", PASTA[0], true, true],
       ["Recommended", "Fettuccine Funghi", 585, "Wild mushroom cream, truffle pecorino.", PASTA[2], true, true],
@@ -358,7 +360,7 @@ const DATA: RestaurantDef[] = [
     offer: null,
     imageUrl: DRINKS[0],
     heroUrl: DRINKS[2],
-    locality: "Indiranagar",
+    locality: "Old City",
     items: [
       ["Recommended", "Vietnamese Iced Coffee", 189, "Slow-drip robusta, condensed milk silk.", DRINKS[0], true, true],
       ["Recommended", "Cold Brew Tonic", 209, "18-hour cold brew, citrus tonic, ice sphere.", DRINKS[1], true, true],
@@ -382,10 +384,10 @@ async function seed() {
 
   console.log(`Seeding ${DATA.length} restaurants…`);
   for (const def of DATA) {
-    const { items, ...rest } = def;
+    const { items, active, ...rest } = def;
     const [row] = await db
       .insert(restaurants)
-      .values({ ...rest, offerPercent: def.offerPercent ?? 0, offerMaxCents: def.offerMaxCents ?? 0 })
+      .values({ ...rest, isActive: active ?? true, offerPercent: def.offerPercent ?? 0, offerMaxCents: def.offerMaxCents ?? 0 })
       .returning();
     await db.insert(menuItems).values(
       items.map((it, i) => ({

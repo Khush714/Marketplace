@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/atoms";
 import { BrowseFilters } from "@/components/browse-filters";
 import { RestaurantCard } from "@/components/restaurant-card";
 import { browseRestaurants, type BrowseFilters as Filters } from "@/db/queries";
+import { localityByKey, withLoc } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
 
@@ -16,10 +17,12 @@ interface SearchParams {
   offers?: string;
   minRating?: string;
   veg?: string;
+  loc?: string;
 }
 
 export default async function RestaurantsPage(props: { searchParams: Promise<SearchParams> }) {
   const sp = await props.searchParams;
+  const locality = localityByKey(sp.loc);
   const filters: Filters = {
     q: sp.q?.trim() || undefined,
     cuisine: sp.cuisine || undefined,
@@ -27,6 +30,7 @@ export default async function RestaurantsPage(props: { searchParams: Promise<Sea
     offers: sp.offers === "1",
     minRating: sp.minRating === "1",
     veg: sp.veg === "1",
+    locality: locality.name,
   };
   const restaurants = await browseRestaurants(filters);
 
@@ -48,11 +52,11 @@ export default async function RestaurantsPage(props: { searchParams: Promise<Sea
           )}
         </h1>
         <p className="mt-1.5 text-sm text-cream-500">
-          {restaurants.length} {restaurants.length === 1 ? "place" : "places"} delivering to Indiranagar
+          {restaurants.length} {restaurants.length === 1 ? "place" : "places"} delivering to {locality.name}
         </p>
       </header>
 
-      <BrowseFilters sp={{ q: sp.q, cuisine: sp.cuisine, sort: sp.sort, offers: sp.offers, minRating: sp.minRating, veg: sp.veg }} />
+      <BrowseFilters sp={{ q: sp.q, cuisine: sp.cuisine, sort: sp.sort, offers: sp.offers, minRating: sp.minRating, veg: sp.veg, loc: sp.loc }} />
 
       {restaurants.length === 0 ? (
         <div className="mt-8">
@@ -62,7 +66,7 @@ export default async function RestaurantsPage(props: { searchParams: Promise<Sea
             sub="Try widening the net — clear a filter or two, or search for a different craving."
             action={
               <a
-                href="/restaurants"
+                href={withLoc("/restaurants", locality.key)}
                 className="press mt-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-5 py-2.5 text-sm font-bold text-white shadow-glow"
               >
                 Clear all filters

@@ -3,7 +3,7 @@
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Check, Leaf, Percent, SlidersHorizontal, Star, X } from "lucide-react";
-import { cn, CUISINES } from "@/lib/domain";
+import { cn, CUISINES, withLoc } from "@/lib/domain";
 
 const SORTS = [
   { key: "", label: "Relevance" },
@@ -21,6 +21,7 @@ interface Sp {
   offers?: string;
   minRating?: string;
   veg?: string;
+  loc?: string;
 }
 
 export function BrowseFilters({ sp }: { sp: Sp }) {
@@ -233,7 +234,7 @@ function FilterSheet({
             <button
               type="button"
               onClick={() => {
-                router.push("/restaurants");
+                router.push(withLoc("/restaurants", sp.loc ?? ""));
               }}
               className="press text-sm font-semibold text-chili-400"
             >

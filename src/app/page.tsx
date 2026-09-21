@@ -1,3 +1,4 @@
+import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, BadgePercent, Bike, Flame, Star, Timer, Wallet } from "lucide-react";
@@ -6,8 +7,11 @@ import { Rail } from "@/components/rail";
 import { RestaurantCard } from "@/components/restaurant-card";
 import { SectionHeader } from "@/components/atoms";
 import { browseRestaurants, featuredRestaurants } from "@/db/queries";
+import { localityByKey } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
+
+export const metadata: Metadata = { title: "crave. — Food, delivered beautifully" };
 
 const TICKER = [
   { Icon: Bike, text: "Free delivery over ₹499" },
@@ -17,13 +21,19 @@ const TICKER = [
   { Icon: Flame, text: "Live-fire kitchens open late" },
 ];
 
-export default async function HomePage() {
+interface HomeSearchParams {
+  loc?: string;
+}
+
+export default async function HomePage(props: { searchParams: Promise<HomeSearchParams> }) {
+  const sp = await props.searchParams;
+  const locality = localityByKey(sp.loc);
   const [all, featured, offers, topRated, nearby] = await Promise.all([
-    browseRestaurants(),
-    featuredRestaurants(),
-    browseRestaurants({ offers: true }),
-    browseRestaurants({ sort: "rating" }),
-    browseRestaurants({ sort: "near" }),
+    browseRestaurants({ locality: locality.name }),
+    featuredRestaurants(locality.name),
+    browseRestaurants({ offers: true, locality: locality.name }),
+    browseRestaurants({ sort: "rating", locality: locality.name }),
+    browseRestaurants({ sort: "near", locality: locality.name }),
   ]);
 
   return (
@@ -74,8 +84,8 @@ export default async function HomePage() {
             </div>
             <div className="zoom-on-scroll relative aspect-[16/10] md:aspect-auto md:h-full md:min-h-[340px]">
               <Image
-                src="/images/hero-burger.svg"
-                alt="Floating smash burger with exploded ingredients"
+                src="/images/hero-burger.jpg"
+                alt="Smash burger with melted cheddar and caramelised onions"
                 fill
                 priority
                 sizes="(max-width: 768px) 100vw, 44vw"
@@ -94,7 +104,7 @@ export default async function HomePage() {
       {/* Featured rail */}
       <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
-          <SectionHeader title="Featured tonight" sub="Hand-picked kitchens at the top of their game" href="/restaurants?sort=rating" />
+          <SectionHeader title="Featured tonight" sub={`Hand-picked in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
         <Rail ariaLabel="Featured restaurants">
           {featured.map((r, i) => (
@@ -113,7 +123,7 @@ export default async function HomePage() {
       {/* Popular near you */}
       <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
-          <SectionHeader title="Popular near you" sub="Within a short ride of Indiranagar" href="/restaurants?sort=near" />
+          <SectionHeader title="Popular near you" sub={`Within a short ride of ${locality.name}`} href={`/restaurants?sort=near&loc=${locality.key}`} />
         </div>
         <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {nearby.slice(0, 8).map((r, i) => (
@@ -170,7 +180,7 @@ export default async function HomePage() {
       {/* Top rated rail */}
       <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
-          <SectionHeader title="Top rated" sub="Consistently exceptional, according to the city" href="/restaurants?sort=rating" />
+          <SectionHeader title="Top rated" sub={`Consistently exceptional in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
         <Rail ariaLabel="Top rated restaurants">
           {topRated.slice(0, 8).map((r, i) => (
@@ -187,7 +197,7 @@ export default async function HomePage() {
       {/* Offers */}
       <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
-          <SectionHeader title="Offers near you" sub="Deals worth crossing the street for" href="/restaurants?offers=1" />
+          <SectionHeader title="Offers near you" sub={`Deals worth crossing the street for in ${locality.name}`} href={`/restaurants?offers=1&loc=${locality.key}`} />
         </div>
         <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
           {offers.slice(0, 8).map((r, i) => (

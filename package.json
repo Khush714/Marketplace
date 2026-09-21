@@ -4,7 +4,7 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "postbuild": "npx drizzle-kit push --force && npx tsx src/db/seed.ts",
+    "postbuild": "npx tsx src/db/reset.ts && npx drizzle-kit push --force && npx tsx src/db/seed.ts",
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit"
@@ -13,11 +13,13 @@
     "clsx": "^2.1.1",
     "dotenv": "17.3.1",
     "drizzle-orm": "0.45.2",
+    "framer-motion": "^13.4.0",
     "lucide-react": "^1.46.0",
     "next": "16.2.6",
     "pg": "8.20.0",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "tailwind-merge": "^3.4.0",
     "tsx": "^4.23.13"
   },
   "devDependencies": {

@@ -6,6 +6,7 @@ import { ChevronDown, MapPin, ShoppingBag, CircleUserRound } from "lucide-react"
 import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
+import { useLocation } from "@/lib/location";
 import { useProfile } from "@/lib/profile";
 import { cn } from "@/lib/domain";
 
@@ -39,6 +40,8 @@ export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
   const { itemCount, bump } = useCart();
   const { name } = useProfile();
+  const { locality, detecting, notServed, openPicker } = useLocation();
+  const place = detecting ? "Detecting…" : notServed ? "Select an area" : locality.name;
 
   useEffect(() => {
     const onScroll = () => setScrolled(window.scrollY > 10);
@@ -59,13 +62,15 @@ export function SiteHeader() {
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 pt-3 md:h-16 md:gap-5 md:pt-0 lg:px-6">
         {/* Mobile row-1: location + profile */}
         <div className="flex flex-1 items-center justify-between md:hidden">
-          <button type="button" className="flex items-center gap-1.5 press" aria-label="Change delivery location">
+          <button type="button" onClick={openPicker} className="flex items-center gap-1.5 press" aria-label="Change delivery location">
             <MapPin className="size-4 text-chili-400" />
             <span className="text-left">
               <span className="block text-[13px] font-semibold leading-tight text-cream-50">
-                Indiranagar <ChevronDown className="inline size-3 -translate-y-px text-cream-400" />
+                {place} <ChevronDown className="inline size-3 -translate-y-px text-cream-400" />
               </span>
-              <span className="block text-[11px] leading-tight text-cream-500">Bengaluru</span>
+              <span className="block text-[11px] leading-tight text-cream-500">
+                {notServed ? "Pick a delivery area to browse" : `${locality.city} ${locality.pincode}`}
+              </span>
             </span>
           </button>
           <div className="flex items-center gap-2">
@@ -86,15 +91,18 @@ export function SiteHeader() {
         </div>
         <button
           type="button"
+          onClick={openPicker}
           className="hidden items-center gap-1.5 rounded-full px-2 py-1.5 press md:flex"
           aria-label="Change delivery location"
         >
           <MapPin className="size-4 text-chili-400" />
           <span className="text-left leading-tight">
             <span className="flex items-center gap-1 text-[13px] font-semibold text-cream-50">
-              Indiranagar <ChevronDown className="size-3 text-cream-500" />
+              {place} <ChevronDown className="size-3 text-cream-500" />
             </span>
-            <span className="block text-[11px] text-cream-500">Bengaluru 560038</span>
+            <span className="block text-[11px] text-cream-500">
+              {notServed ? "Pick a delivery area to browse" : `${locality.city} ${locality.pincode}`}
+            </span>
           </span>
         </button>
 

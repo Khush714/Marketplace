@@ -45,7 +45,7 @@ const EMPTY: ProfileState = {
     {
       id: "addr-default",
       label: "Home",
-      text: "221-B, 100 Feet Road, Indiranagar, Bengaluru 560038",
+      text: "12, Station Road, Old City, Bharuch, Gujarat 392001",
     },
   ],
   favorites: [],

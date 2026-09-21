@@ -37,7 +37,10 @@ export const restaurants = pgTable("restaurants", {
   heroUrl: text("hero_url").notNull(),
   featured: boolean("featured").notNull().default(false),
   pureVeg: boolean("pure_veg").notNull().default(false),
-  locality: text("locality").notNull().default("Indiranagar"),
+  locality: text("locality").notNull().default("Old City"),
+  isActive: boolean("is_active").notNull().default(true),
+  externalId: text("external_id").unique(),
+  ownerKeyHash: text("owner_key_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -59,6 +62,45 @@ export const menuItems = pgTable(
   },
   (t) => [index("menu_restaurant_idx").on(t.restaurantId)],
 );
+
+export const connectionCodes = pgTable("connection_codes", {
+  id: serial("id").primaryKey(),
+  code: text("code").notNull().unique(),
+  status: text("status").notNull().default("unused"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const connections = pgTable("connections", {
+  id: serial("id").primaryKey(),
+  codeId: integer("code_id")
+    .notNull()
+    .unique()
+    .references(() => connectionCodes.id),
+  restaurantId: integer("restaurant_id")
+    .notNull()
+    .unique()
+    .references(() => restaurants.id),
+  marketplace: text("marketplace").notNull().default("crave"),
+  status: text("status").notNull().default("active"),
+  connectedAt: timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const integrationSessions = pgTable("integration_sessions", {
+  id: serial("id").primaryKey(),
+  tokenHash: text("token_hash").notNull().unique(),
+  restaurantId: integer("restaurant_id")
+    .notNull()
+    .references(() => restaurants.id),
+  codeId: integer("code_id")
+    .notNull()
+    .references(() => connectionCodes.id),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
 
 export const orders = pgTable(
   "orders",
@@ -91,3 +133,6 @@ export const orders = pgTable(
 export type RestaurantRow = typeof restaurants.$inferSelect;
 export type MenuItemRow = typeof menuItems.$inferSelect;
 export type OrderRow = typeof orders.$inferSelect;
+export type ConnectionCodeRow = typeof connectionCodes.$inferSelect;
+export type ConnectionRow = typeof connections.$inferSelect;
+export type IntegrationSessionRow = typeof integrationSessions.$inferSelect;

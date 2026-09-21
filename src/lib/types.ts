@@ -21,6 +21,10 @@ export interface RestaurantDto {
   locality: string;
 }
 
+export interface RestaurantManageDto extends RestaurantDto {
+  isActive: boolean;
+}
+
 export interface MenuItemDto {
   id: number;
   restaurantId: number;
@@ -69,6 +73,28 @@ export interface OrderDto {
   totalCents: number;
   createdAt: string;
   status: OrderStatusDto;
+}
+
+export interface ConnectionCodeDto {
+  id: number;
+  code: string;
+  status: "unused" | "used";
+  restaurantId: number | null;
+  restaurantName: string | null;
+  createdAt: string;
+  usedAt: string | null;
+  expiresAt: string | null;
+}
+
+export interface ConnectionDto {
+  id: number;
+  code: string;
+  restaurantId: number;
+  restaurantName: string;
+  restaurantSlug: string;
+  marketplace: string;
+  status: string;
+  connectedAt: string;
 }
 
 export interface RestaurantSearchResult {

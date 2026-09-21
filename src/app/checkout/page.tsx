@@ -3,11 +3,10 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
-  Banknote,
   Check,
   ChevronDown,
   CreditCard,
@@ -16,25 +15,39 @@ import {
   MapPin,
   NotebookPen,
   Plus,
+  ShieldCheck,
   Smartphone,
   TriangleAlert,
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
-import { cn, estimateBill, formatINR } from "@/lib/domain";
+import { PaymentStage, type SettleResult } from "@/components/payment-stage";
+import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { useCart } from "@/lib/cart";
 import { useProfile, type Address } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { OrderDto } from "@/lib/types";
+import type { OrderLine } from "@/payment/lib/checkout";
 
 type PayMethod = "upi" | "card" | "cod";
 type PlaceState = "idle" | "loading" | "success" | "error";
 
-const PAY_METHODS: Array<{ key: PayMethod; label: string; sub: string; Icon: typeof Smartphone }> = [
-  { key: "upi", label: "UPI", sub: "GPay, PhonePe, Paytm & more", Icon: Smartphone },
-  { key: "card", label: "Card", sub: "Credit or debit card", Icon: CreditCard },
-  { key: "cod", label: "Cash", sub: "Pay on delivery", Icon: Banknote },
-];
+async function postBill(
+  restaurantSlug: string,
+  items: { menuItemId: number; quantity: number }[],
+): Promise<BillBreakdown | null> {
+  try {
+    const res = await fetch("/api/orders/bill", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ restaurantSlug, items }),
+    });
+    const data = (await res.json()) as { ok?: boolean; bill?: BillBreakdown };
+    return res.ok && data.ok && data.bill ? data.bill : null;
+  } catch {
+    return null;
+  }
+}
 
 export default function CheckoutPage() {
   const cart = useCart();
@@ -48,11 +61,75 @@ export default function CheckoutPage() {
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [payment, setPayment] = useState<PayMethod>("upi");
+  const [payOpen, setPayOpen] = useState(false);
   const [instructions, setInstructions] = useState("");
   const [openSummary, setOpenSummary] = useState(false);
   const [placeState, setPlaceState] = useState<PlaceState>("idle");
   const [error, setError] = useState<string | null>(null);
+  const [bill, setBill] = useState<BillBreakdown | null>(null);
+  const [paidBill, setPaidBill] = useState<BillBreakdown | null>(null);
+  const [placedCode, setPlacedCode] = useState<string | null>(null);
+  const [redirectIn, setRedirectIn] = useState<number | null>(null);
+
+  const totalCents = bill?.totalCents ?? estimateBill(cart.subtotalCents).total;
+
+  const payLines = useMemo<OrderLine[]>(() => {
+    const b = paidBill ?? bill;
+    const itemLines = cart.items.map((i) => ({
+      label: `${i.quantity}× ${i.name}`,
+      value: Math.round((i.priceCents * i.quantity) / 100),
+    }));
+    if (!b) {
+      const itemRupees = itemLines.reduce((sum, l) => sum + l.value, 0);
+      const totalRupees = Math.round(estimateBill(cart.subtotalCents).total / 100);
+      if (totalRupees > itemRupees) {
+        itemLines.push({ label: "Delivery & fees", value: totalRupees - itemRupees });
+      }
+      return itemLines;
+    }
+    if (b.discountCents > 0) {
+      itemLines.push({ label: "Restaurant discount", value: -Math.round(b.discountCents / 100) });
+    }
+    const feesRupees = Math.round((b.deliveryFeeCents + b.platformFeeCents) / 100);
+    if (feesRupees > 0) {
+      itemLines.push({ label: "Delivery & fees", value: feesRupees });
+    }
+    const totalRupees = Math.round(b.totalCents / 100);
+    const sum = itemLines.reduce((acc, l) => acc + l.value, 0);
+    if (sum !== totalRupees) {
+      itemLines.push({ label: "Rounding", value: totalRupees - sum });
+    }
+    return itemLines;
+  }, [cart.items, cart.subtotalCents, bill, paidBill]);
+
+  // fetch the authoritative bill for the current cart (mirrors createOrder)
+  useEffect(() => {
+    if (!cart.hydrated || cart.items.length === 0) return;
+    let cancelled = false;
+    setBillLoading(true);
+    postBill(
+      cart.restaurantSlug,
+      cart.items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity })),
+    ).then((b) => {
+      if (cancelled) return;
+      setBill(b);
+      setBillLoading(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [cart.hydrated, cart.restaurantSlug, cart.items]);
+
+  // 10s grace on the success screen before auto-navigating to the order
+  useEffect(() => {
+    if (redirectIn === null || !placedCode) return;
+    if (redirectIn <= 0) {
+      router.replace(`/order/${placedCode}/success`);
+      return;
+    }
+    const t = window.setTimeout(() => setRedirectIn((n) => (n === null ? n : n - 1)), 1000);
+    return () => window.clearTimeout(t);
+  }, [redirectIn, placedCode, router]);
 
   // prefill from profile after hydration
   useEffect(() => {
@@ -101,7 +178,7 @@ export default function CheckoutPage() {
   const canPlace =
     name.trim().length > 0 && phoneDigits.length >= 10 && effectiveAddressText.trim().length > 10;
 
-  const placeOrder = async () => {
+  const placeOrder = async (channel: PayMethod) => {
     if (!canPlace || placeState === "loading") return;
     setPlaceState("loading");
     setError(null);
@@ -123,7 +200,7 @@ export default function CheckoutPage() {
           addressText: newAddress?.text ?? effectiveAddressText,
           customerName: name.trim(),
           phone: phoneDigits.slice(-10),
-          paymentMethod: payment,
+          paymentMethod: channel,
           instructions: instructions.trim(),
         }),
       });
@@ -134,14 +211,36 @@ export default function CheckoutPage() {
       setPlaceState("success");
       profile.rememberOrder(data.order.code);
       cart.clear();
+      setPlacedCode(data.order.code);
+      setRedirectIn(10);
       toast("Order placed", { sub: `${data.order.restaurantName} · ${data.order.code}` });
-      window.setTimeout(() => {
-        router.replace(`/order/${data.order!.code}/success`);
-      }, 700);
     } catch (e) {
       setPlaceState("error");
       setError(e instanceof Error ? e.message : "Something went wrong");
       toast("Order failed", { sub: "Please try again", kind: "error" });
+    }
+  };
+
+  const openStage = async () => {
+    if (placeState === "loading") return;
+    let target = bill;
+    if (!target) {
+      target = await postBill(
+        cart.restaurantSlug,
+        cart.items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity })),
+      );
+      if (target) setBill(target);
+    }
+    setPaidBill(target);
+    setPayOpen(true);
+  };
+
+  const handleClose = () => {
+    if (placedCode) {
+      setRedirectIn(null);
+      router.replace(`/order/${placedCode}/success`);
+    } else {
+      setPayOpen(false);
     }
   };
 
@@ -254,36 +353,33 @@ export default function CheckoutPage() {
 
           {/* ------------------------------ payment ------------------------------ */}
           <Section step={3} title="Payment" Icon={CreditCard}>
-            <div className="grid gap-2.5 sm:grid-cols-3">
-              {PAY_METHODS.map(({ key, label: mLabel, sub, Icon }) => (
-                <button
-                  key={key}
-                  type="button"
-                  onClick={() => setPayment(key)}
-                  aria-pressed={payment === key}
-                  className={cn(
-                    "press rounded-2xl border p-4 text-left transition-all duration-200",
-                    payment === key
-                      ? "border-ember-400/50 bg-ember-400/8"
-                      : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]",
-                  )}
-                >
-                  <span
-                    className={cn(
-                      "grid size-9 place-items-center rounded-xl transition-colors",
-                      payment === key ? "bg-gradient-to-b from-ember-400 to-chili-600 text-white shadow-glow" : "bg-white/8 text-cream-300",
-                    )}
-                  >
-                    <Icon className="size-4.5" />
-                  </span>
-                  <span className="mt-2.5 flex items-center gap-1.5 text-sm font-bold text-cream-50">
-                    {mLabel}
-                    {payment === key && <Check className="size-3.5 text-ember-400" strokeWidth={3} />}
-                  </span>
-                  <span className="mt-0.5 block text-[11px] leading-snug text-cream-500">{sub}</span>
-                </button>
-              ))}
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+              <div className="flex min-w-0 items-center gap-3">
+                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-emerald-400/10 text-emerald-300">
+                  <ShieldCheck className="size-5" />
+                </span>
+                <div className="min-w-0">
+                  <p className="text-sm font-bold text-cream-50">Secure express checkout</p>
+                  <p className="truncate text-xs text-cream-500">
+                    UPI · Card · Cash on delivery — {cart.itemCount} item
+                    {cart.itemCount === 1 ? "" : "s"} · {cart.restaurantName}
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                disabled={!canPlace || billLoading}
+                onClick={openStage}
+                className="press inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-5 py-3 text-sm font-bold text-white shadow-glow transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Pay {formatINR(totalCents)} <ArrowRight className="size-4" />
+              </button>
             </div>
+            {!canPlace && (
+              <p className="mt-2.5 text-xs text-chili-300">
+                Add a delivery address, name & 10-digit phone to continue
+              </p>
+            )}
           </Section>
 
           {/* --------------------------- instructions --------------------------- */}
@@ -303,6 +399,7 @@ export default function CheckoutPage() {
           <CheckoutSummary
             open={openSummary}
             onToggle={() => setOpenSummary((o) => !o)}
+            totalCents={totalCents}
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
@@ -328,7 +425,9 @@ export default function CheckoutPage() {
           <PlaceOrderButton
             state={placeState}
             disabled={!canPlace}
-            onClick={placeOrder}
+            busy={billLoading}
+            totalCents={totalCents}
+            onClick={openStage}
             className="mt-4 hidden lg:flex"
           />
           {!canPlace && (
@@ -342,8 +441,25 @@ export default function CheckoutPage() {
 
       {/* mobile sticky place order */}
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
-        <PlaceOrderButton state={placeState} disabled={!canPlace} onClick={placeOrder} />
+        <PlaceOrderButton state={placeState} disabled={!canPlace} busy={billLoading} totalCents={totalCents} onClick={openStage} />
       </div>
+
+      {payOpen && (
+        <PaymentStage
+          amountCents={(paidBill ?? bill)?.totalCents ?? estimateBill(cart.subtotalCents).total}
+          payee={cart.restaurantName || "CODEXR"}
+          lines={payLines}
+          redirect={redirectIn !== null && placedCode ? { code: placedCode, in: redirectIn } : null}
+          onViewOrder={() => {
+            setRedirectIn(null);
+            if (placedCode) router.replace(`/order/${placedCode}/success`);
+          }}
+          onSettled={(r: SettleResult) => {
+            if (r.phase === "success") placeOrder(r.channel === "cash" ? "cod" : r.channel);
+          }}
+          onClose={handleClose}
+        />
+      )}
     </div>
   );
 }
@@ -381,10 +497,12 @@ function Section({
 function CheckoutSummary({
   open,
   onToggle,
+  totalCents,
   itemsNode,
 }: {
   open: boolean;
   onToggle: () => void;
+  totalCents: number;
   itemsNode: ReactNode;
 }) {
   const cart = useCart();
@@ -407,7 +525,7 @@ function CheckoutSummary({
       )}
       <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">
         <span className="text-xs font-bold uppercase tracking-[0.14em] text-cream-500">Total</span>
-        <AnimatedPrice cents={estimateBill(cart.subtotalCents).total} className="font-display text-lg font-bold text-cream-50" />
+        <AnimatedPrice cents={totalCents} className="font-display text-lg font-bold text-cream-50" />
       </div>
     </div>
   );
@@ -416,19 +534,22 @@ function CheckoutSummary({
 function PlaceOrderButton({
   state,
   disabled,
+  busy,
+  totalCents,
   onClick,
   className,
 }: {
   state: PlaceState;
   disabled: boolean;
+  busy?: boolean;
+  totalCents: number;
   onClick: () => void;
   className?: string;
 }) {
-  const cart = useCart();
   return (
     <button
       type="button"
-      disabled={disabled || state === "loading" || state === "success"}
+      disabled={disabled || state === "loading" || state === "success" || busy}
       onClick={onClick}
       className={cn(
         "flex w-full items-center justify-center gap-2 rounded-2xl py-4 text-[15px] font-bold transition-all duration-200 press",
@@ -451,9 +572,13 @@ function PlaceOrderButton({
         </>
       ) : state === "error" ? (
         "Try again"
+      ) : busy ? (
+        <>
+          <LoaderCircle className="size-4.5 animate-spin-slow" /> Computing total…
+        </>
       ) : (
         <>
-          Place order{cart.itemCount > 0 ? "" : ""}
+          Pay {formatINR(totalCents)}
           <ArrowRight className="size-4.5" />
         </>
       )}

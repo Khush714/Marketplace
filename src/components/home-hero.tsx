@@ -30,7 +30,8 @@ import {
   WordReveal,
   cssVars,
 } from "@/components/motion-primitives";
-import { cn, greetingFor } from "@/lib/domain";
+import { cn, greetingFor, withLoc } from "@/lib/domain";
+import { useLocation } from "@/lib/location";
 import { useProfile } from "@/lib/profile";
 
 const CRAVINGS = ["extraordinary", "fiery", "handmade", "midnight-worthy", "indulgent"];
@@ -53,6 +54,7 @@ const CATEGORIES: Array<{ label: string; q: string; Icon: LucideIcon; tint: stri
 export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
   const { open } = useSearch();
   const { name } = useProfile();
+  const { locality } = useLocation();
   const [greeting, setGreeting] = useState("Good evening");
 
   useEffect(() => {
@@ -154,7 +156,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
           {CATEGORIES.map(({ label, q, Icon, tint }, i) => (
             <Link
               key={label}
-              href={`/restaurants?cuisine=${encodeURIComponent(q)}`}
+              href={withLoc(`/restaurants?cuisine=${encodeURIComponent(q)}`, locality.key)}
               data-reveal="zoom"
               style={cssVars({ "--rd": `${i * 45}ms` })}
               className="press group flex shrink-0 items-center gap-2 rounded-full border border-white/8 bg-white/[0.045] py-2 pl-3 pr-4 transition-all duration-300 hover:-translate-y-0.5 hover:border-white/20 hover:bg-white/10"

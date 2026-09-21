@@ -88,6 +88,23 @@ export function makeOrderCode(): string {
   return `CRV-${s}`;
 }
 
+/** Single-use invite that lets a restaurant connect itself to the marketplace. */
+export function makeConnectionCode(): string {
+  const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
+  let s = "";
+  for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)];
+  return `CNX-${s}`;
+}
+
+/** Lifetime of an integration session token issued after code+passkey login. */
+export const INTEGRATION_SESSION_TTL_MS = 60 * 60 * 1000;
+
+/** Fallback imagery for restaurants onboarded via a connection code. */
+export const DEFAULT_RESTAURANT_IMAGE =
+  "https://images.pexels.com/photos/28674660/pexels-photo-28674660.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
+export const DEFAULT_RESTAURANT_HERO =
+  "https://images.pexels.com/photos/24554391/pexels-photo-24554391.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
+
 export const DELIVERY_FREE_ABOVE_CENTS = 49900;
 export const DELIVERY_FEE_CENTS = 3900;
 export const PLATFORM_FEE_CENTS = 600;
@@ -101,6 +118,44 @@ export function estimateBill(subtotalCents: number) {
     platformFee,
     total: subtotalCents + deliveryFee + platformFee,
     freeDelivery: deliveryFee === 0,
+  };
+}
+
+/* The exact bill a restaurant contract produces. The server applies this at
+   order time — the payment & receipt must use the same numbers, so this single
+   function is shared by the bill endpoint, createOrder and the client confirm. */
+export interface BillBreakdown {
+  subtotalCents: number;
+  discountCents: number;
+  deliveryFeeCents: number;
+  platformFeeCents: number;
+  totalCents: number;
+}
+
+/**
+ * Authoritative order bill for a restaurant offer + cart.
+ * Mirrors what createOrder records so the amount paid always matches the order.
+ */
+export function billFor(
+  subtotalCents: number,
+  offerPercent: number,
+  offerMaxCents: number,
+): BillBreakdown {
+  let discountCents = 0;
+  if (offerPercent > 0) {
+    discountCents = Math.min(Math.round((subtotalCents * offerPercent) / 100), offerMaxCents);
+  } else if (offerMaxCents > 0 && subtotalCents >= offerMaxCents * 3) {
+    discountCents = offerMaxCents;
+  }
+  const deliveryFeeCents =
+    subtotalCents >= DELIVERY_FREE_ABOVE_CENTS ? 0 : DELIVERY_FEE_CENTS;
+  const platformFeeCents = PLATFORM_FEE_CENTS;
+  return {
+    subtotalCents,
+    discountCents,
+    deliveryFeeCents,
+    platformFeeCents,
+    totalCents: subtotalCents - discountCents + deliveryFeeCents + platformFeeCents,
   };
 }
 
@@ -118,3 +173,77 @@ export const CUISINES = [
   "Fried Chicken",
   "Cafe",
 ] as const;
+
+/* -------------------------------- locations ------------------------------ */
+
+export interface Locality {
+  key: string;
+  name: string; // must match restaurants.locality values in the DB
+  city: string;
+  pincode: string;
+  lat: number;
+  lng: number;
+}
+
+export const LOCALITIES: Locality[] = [
+  { key: "old-city", name: "Old City", city: "Bharuch", pincode: "392001", lat: 21.6947, lng: 72.9974 },
+  { key: "zadeshwar", name: "Zadeshwar", city: "Bharuch", pincode: "392011", lat: 21.7275, lng: 73.031 },
+  { key: "maktampur", name: "Maktampur", city: "Bharuch", pincode: "392012", lat: 21.7388, lng: 73.0382 },
+];
+
+export const DEFAULT_LOCALITY = LOCALITIES[0];
+
+export function localityByKey(key?: string | null): Locality {
+  return LOCALITIES.find((l) => l.key === key) ?? DEFAULT_LOCALITY;
+}
+
+function toRad(deg: number): number {
+  return (deg * Math.PI) / 180;
+}
+
+/** Great-circle distance in km (Haversine). */
+export function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+/**
+ * Max distance from a served locality before we auto-assign it.
+ * Beyond this we treat the user as "not served" instead of guessing.
+ */
+export const DELIVERY_RADIUS_KM = 25;
+
+export interface LocalityMatch {
+  locality: Locality;
+  distanceKm: number;
+  served: boolean;
+}
+
+/** Snap raw GPS coordinates to the nearest known locality within delivery range. */
+export function localityNear(lat: number, lng: number): LocalityMatch {
+  let best = DEFAULT_LOCALITY;
+  let bestD = Infinity;
+  for (const l of LOCALITIES) {
+    const d = distanceKm(lat, lng, l.lat, l.lng);
+    if (d < bestD) {
+      bestD = d;
+      best = l;
+    }
+  }
+  return { locality: best, distanceKm: bestD, served: bestD <= DELIVERY_RADIUS_KM };
+}
+
+/** Append (or override) the ?loc= param on a relative href, preserving other params. */
+export function withLoc(href: string, key?: string | null): string {
+  if (!key) return href;
+  const [path, qs = ""] = href.split("?");
+  const params = new URLSearchParams(qs);
+  params.set("loc", key);
+  const enc = params.toString();
+  return enc ? `${path}?${enc}` : path;
+}

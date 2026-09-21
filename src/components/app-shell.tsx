@@ -119,8 +119,11 @@ function SiteFooter() {
     <footer className="border-t border-white/6 py-8 text-center">
       <p className="text-xs text-cream-600">
         crave<span className="text-chili-500">.</span> — a marketplace experience · Crafted with fire in
-        Bengaluru
+        Bharuch
       </p>
+      <Link href="/partner" className="press mt-2 inline-flex items-center gap-1 text-xs font-semibold text-ember-400 transition-colors hover:text-ember-300">
+        Partner with us <ArrowRight className="size-3.5" />
+      </Link>
     </footer>
   );
 }
