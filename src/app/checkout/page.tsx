@@ -3,10 +3,11 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  Banknote,
   Check,
   ChevronDown,
   CreditCard,
@@ -21,20 +22,55 @@ import {
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
-import { PaymentStage, type SettleResult } from "@/components/payment-stage";
+import { PaymentStage } from "@/components/payment-stage";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
-import { useCart } from "@/lib/cart";
+import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
 import { useProfile, type Address } from "@/lib/profile";
+import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 import { useToast } from "@/lib/toast";
 import type { OrderDto } from "@/lib/types";
-import type { OrderLine } from "@/payment/lib/checkout";
 
-type PayMethod = "upi" | "card" | "cod";
+/**
+ * "online" is charged by the provider; "cod" is collected by the rider and
+ * never creates a provider order. The instrument for online payments (UPI
+ * intent, card, netbanking, wallet) is chosen inside Razorpay's own checkout.
+ */
+type PayChoice = "online" | "cod";
 type PlaceState = "idle" | "loading" | "success" | "error";
+
+interface CartLinePayload {
+  menuItemId: number;
+  quantity: number;
+  priceCents?: number;
+  modifiers?: { optionId: number; quantity: number }[];
+}
+
+interface PlacedOrder {
+  code: string;
+  restaurantName: string;
+  paid: boolean;
+  method: PayChoice;
+}
+
+/**
+ * Cart → wire lines. `priceCents` is a client-held snapshot (the server flags a
+ * mismatch as stale rather than trusting it) and each modifier rides its
+ * optionId, which is all computeBill needs to re-resolve the real price.
+ */
+function cartLines(items: CartItem[]): CartLinePayload[] {
+  return items.map((i) => ({
+    menuItemId: i.menuItemId,
+    quantity: i.quantity,
+    priceCents: i.priceCents,
+    ...(i.modifiers?.length
+      ? { modifiers: i.modifiers.map((m) => ({ optionId: m.optionId, quantity: m.quantity })) }
+      : {}),
+  }));
+}
 
 async function postBill(
   restaurantSlug: string,
-  items: { menuItemId: number; quantity: number }[],
+  items: CartLinePayload[],
 ): Promise<BillBreakdown | null> {
   try {
     const res = await fetch("/api/orders/bill", {
@@ -61,56 +97,28 @@ export default function CheckoutPage() {
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
-  const [payOpen, setPayOpen] = useState(false);
+  const [payChoice, setPayChoice] = useState<PayChoice>("online");
   const [instructions, setInstructions] = useState("");
   const [openSummary, setOpenSummary] = useState(false);
   const [placeState, setPlaceState] = useState<PlaceState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [bill, setBill] = useState<BillBreakdown | null>(null);
-  const [paidBill, setPaidBill] = useState<BillBreakdown | null>(null);
-  const [placedCode, setPlacedCode] = useState<string | null>(null);
+  const [billLoading, setBillLoading] = useState(false);
+  const [placed, setPlaced] = useState<PlacedOrder | null>(null);
+  const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
+  // Stable per-checkout-session idempotency key: retried place attempts reuse
+  // it so a lost-response retry never creates a duplicate order.
+  const [placeRequestId] = useState(() => crypto.randomUUID());
 
   const totalCents = bill?.totalCents ?? estimateBill(cart.subtotalCents).total;
-
-  const payLines = useMemo<OrderLine[]>(() => {
-    const b = paidBill ?? bill;
-    const itemLines = cart.items.map((i) => ({
-      label: `${i.quantity}× ${i.name}`,
-      value: Math.round((i.priceCents * i.quantity) / 100),
-    }));
-    if (!b) {
-      const itemRupees = itemLines.reduce((sum, l) => sum + l.value, 0);
-      const totalRupees = Math.round(estimateBill(cart.subtotalCents).total / 100);
-      if (totalRupees > itemRupees) {
-        itemLines.push({ label: "Delivery & fees", value: totalRupees - itemRupees });
-      }
-      return itemLines;
-    }
-    if (b.discountCents > 0) {
-      itemLines.push({ label: "Restaurant discount", value: -Math.round(b.discountCents / 100) });
-    }
-    const feesRupees = Math.round((b.deliveryFeeCents + b.platformFeeCents) / 100);
-    if (feesRupees > 0) {
-      itemLines.push({ label: "Delivery & fees", value: feesRupees });
-    }
-    const totalRupees = Math.round(b.totalCents / 100);
-    const sum = itemLines.reduce((acc, l) => acc + l.value, 0);
-    if (sum !== totalRupees) {
-      itemLines.push({ label: "Rounding", value: totalRupees - sum });
-    }
-    return itemLines;
-  }, [cart.items, cart.subtotalCents, bill, paidBill]);
 
   // fetch the authoritative bill for the current cart (mirrors createOrder)
   useEffect(() => {
     if (!cart.hydrated || cart.items.length === 0) return;
     let cancelled = false;
     setBillLoading(true);
-    postBill(
-      cart.restaurantSlug,
-      cart.items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity })),
-    ).then((b) => {
+    postBill(cart.restaurantSlug, cartLines(cart.items)).then((b) => {
       if (cancelled) return;
       setBill(b);
       setBillLoading(false);
@@ -122,14 +130,14 @@ export default function CheckoutPage() {
 
   // 10s grace on the success screen before auto-navigating to the order
   useEffect(() => {
-    if (redirectIn === null || !placedCode) return;
+    if (redirectIn === null || !placed) return;
     if (redirectIn <= 0) {
-      router.replace(`/order/${placedCode}/success`);
+      router.replace(`/order/${placed.code}/success`);
       return;
     }
     const t = window.setTimeout(() => setRedirectIn((n) => (n === null ? n : n - 1)), 1000);
     return () => window.clearTimeout(t);
-  }, [redirectIn, placedCode, router]);
+  }, [redirectIn, placed, router]);
 
   // prefill from profile after hydration
   useEffect(() => {
@@ -152,7 +160,7 @@ export default function CheckoutPage() {
     );
   }
 
-  if (cart.items.length === 0 && placeState !== "success") {
+  if (cart.items.length === 0 && !placed) {
     return (
       <div className="mx-auto max-w-3xl px-4 pb-10 pt-14 text-center md:px-6">
         <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-white/6 text-cream-400">
@@ -178,7 +186,12 @@ export default function CheckoutPage() {
   const canPlace =
     name.trim().length > 0 && phoneDigits.length >= 10 && effectiveAddressText.trim().length > 10;
 
-  const placeOrder = async (channel: PayMethod) => {
+  /**
+   * Create the order first, then take the money. For online payments the server
+   * holds the order at PAYMENT_PENDING and hands back a provider session; the
+   * order is only released to the restaurant once the capture is confirmed.
+   */
+  const placeOrder = async (choice: PayChoice) => {
     if (!canPlace || placeState === "loading") return;
     setPlaceState("loading");
     setError(null);
@@ -187,7 +200,8 @@ export default function CheckoutPage() {
     if (showAddressForm && addressText.trim().length > 10) {
       newAddress = profile.addAddress(label || "Other", addressText.trim());
     }
-    profile.setIdentity(name.trim(), phoneDigits.slice(-10));
+    const digits = phoneDigits.slice(-10);
+    profile.setIdentity(name.trim(), digits);
 
     try {
       const res = await fetch("/api/orders", {
@@ -195,25 +209,61 @@ export default function CheckoutPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           restaurantSlug: cart.restaurantSlug,
-          items: cart.items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity })),
+          clientRequestId: placeRequestId,
+          items: cartLines(cart.items),
           addressLabel: newAddress?.label ?? effectiveLabel,
           addressText: newAddress?.text ?? effectiveAddressText,
           customerName: name.trim(),
-          phone: phoneDigits.slice(-10),
-          paymentMethod: channel,
+          phone: digits,
+          paymentMethod: choice === "online" ? "upi" : "cod",
           instructions: instructions.trim(),
         }),
       });
-      const data = (await res.json()) as { ok: boolean; order?: OrderDto; error?: string };
-      if (!res.ok || !data.ok || !data.order) {
+      const data = (await res.json()) as {
+        ok?: boolean;
+        order?: OrderDto;
+        orderToken?: string;
+        error?: string;
+        payment?: {
+          reference?: string;
+          providerOrderId?: string | null;
+          keyId?: string | null;
+          amountCents?: number;
+          currency?: string;
+          mode?: ProviderMode;
+          error?: string | null;
+        };
+      };
+      if (!res.ok || !data.ok || !data.order || !data.orderToken) {
         throw new Error(data.error ?? "Could not place order");
       }
-      setPlaceState("success");
-      profile.rememberOrder(data.order.code);
+
+      const code = data.order.code;
+      const token = data.orderToken;
+      profile.rememberOrder(code, token);
       cart.clear();
-      setPlacedCode(data.order.code);
-      setRedirectIn(10);
-      toast("Order placed", { sub: `${data.order.restaurantName} · ${data.order.code}` });
+      toast("Order placed", { sub: `${data.order.restaurantName} · ${code}` });
+
+      if (choice === "cod") {
+        setPlaced({ code, restaurantName: data.order.restaurantName, paid: false, method: "cod" });
+        setPlaceState("success");
+        setRedirectIn(10);
+        return;
+      }
+
+      setPayTarget({
+        code,
+        token,
+        reference: data.payment?.reference ?? "",
+        providerOrderId: data.payment?.providerOrderId ?? null,
+        keyId: data.payment?.keyId ?? null,
+        amountCents: data.payment?.amountCents ?? data.order.totalCents,
+        currency: data.payment?.currency ?? "INR",
+        mode: data.payment?.mode ?? "unavailable",
+        payeeName: data.order.restaurantName || "crave.",
+        customerName: name.trim(),
+        phone: digits,
+      });
     } catch (e) {
       setPlaceState("error");
       setError(e instanceof Error ? e.message : "Something went wrong");
@@ -221,28 +271,65 @@ export default function CheckoutPage() {
     }
   };
 
-  const openStage = async () => {
+  /** Make sure the authoritative total is in hand before we commit to an order. */
+  const startCheckout = async () => {
     if (placeState === "loading") return;
     let target = bill;
     if (!target) {
-      target = await postBill(
-        cart.restaurantSlug,
-        cart.items.map((i) => ({ menuItemId: i.menuItemId, quantity: i.quantity })),
-      );
+      target = await postBill(cart.restaurantSlug, cartLines(cart.items));
       if (target) setBill(target);
     }
-    setPaidBill(target);
-    setPayOpen(true);
+    void placeOrder(payChoice);
   };
 
-  const handleClose = () => {
-    if (placedCode) {
-      setRedirectIn(null);
-      router.replace(`/order/${placedCode}/success`);
-    } else {
-      setPayOpen(false);
-    }
+  const markPaid = () => {
+    if (!payTarget) return;
+    setPayTarget(null);
+    setPlaceState("success");
+    setPlaced({
+      code: payTarget.code,
+      restaurantName: payTarget.payeeName,
+      paid: true,
+      method: "online",
+    });
+    setRedirectIn(10);
   };
+
+  /** Customer closed the provider window: the order exists but is unpaid. */
+  const keepUnpaid = () => {
+    if (!payTarget) return;
+    setPayTarget(null);
+    setPlaceState("success");
+    setPlaced({ code: payTarget.code, restaurantName: payTarget.payeeName, paid: false, method: "online" });
+    setRedirectIn(10);
+  };
+
+  const goToOrder = () => {
+    setRedirectIn(null);
+    const code = placed?.code ?? payTarget?.code;
+    if (code) router.replace(`/order/${code}/success`);
+  };
+
+  /**
+   * Leaving a still-confirming payment is navigation only. It must never run
+   * `markPaid`: the capture is unproven, so the order keeps its real status and
+   * the success page re-reads it from the server.
+   */
+  const viewUnconfirmedOrder = () => {
+    const code = payTarget?.code ?? placed?.code;
+    if (code) router.replace(`/order/${code}/success`);
+  };
+
+  if (placed) {
+    return (
+      <PlacedPanel
+        placed={placed}
+        redirectIn={redirectIn}
+        onView={goToOrder}
+        onTrack={() => router.replace(`/order/${placed.code}/track`)}
+      />
+    );
+  }
 
   return (
     <div className="mx-auto max-w-5xl px-4 pb-36 pt-6 md:px-6 md:pb-12 md:pt-9">
@@ -353,28 +440,69 @@ export default function CheckoutPage() {
 
           {/* ------------------------------ payment ------------------------------ */}
           <Section step={3} title="Payment" Icon={CreditCard}>
-            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
+            <div className="grid gap-2.5 sm:grid-cols-2">
+              {PAY_CHOICES.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => setPayChoice(c.id)}
+                  className={cn(
+                    "press flex items-start gap-3 rounded-2xl border p-4 text-left transition-all duration-200",
+                    payChoice === c.id
+                      ? "border-ember-400/50 bg-ember-400/8"
+                      : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]",
+                  )}
+                >
+                  <span
+                    className={cn(
+                      "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-2 transition-all",
+                      payChoice === c.id ? "border-ember-400" : "border-white/25",
+                    )}
+                  >
+                    {payChoice === c.id && (
+                      <span className="size-2.5 rounded-full bg-gradient-to-b from-ember-400 to-chili-500" />
+                    )}
+                  </span>
+                  <span className="min-w-0">
+                    <span className="flex items-center gap-1.5 text-sm font-bold text-cream-50">
+                      {c.label}
+                    </span>
+                    <span className="mt-0.5 block text-xs leading-relaxed text-cream-400">{c.hint}</span>
+                  </span>
+                </button>
+              ))}
+            </div>
+
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
               <div className="flex min-w-0 items-center gap-3">
-                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-emerald-400/10 text-emerald-300">
+                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-mint-500/10 text-mint-400">
                   <ShieldCheck className="size-5" />
                 </span>
                 <div className="min-w-0">
-                  <p className="text-sm font-bold text-cream-50">Secure express checkout</p>
+                  <p className="text-sm font-bold text-cream-50">
+                    {payChoice === "online" ? "Pay securely online" : "Pay cash on delivery"}
+                  </p>
                   <p className="truncate text-xs text-cream-500">
-                    UPI · Card · Cash on delivery — {cart.itemCount} item
-                    {cart.itemCount === 1 ? "" : "s"} · {cart.restaurantName}
+                    {cart.itemCount} item{cart.itemCount === 1 ? "" : "s"} · {cart.restaurantName}
                   </p>
                 </div>
               </div>
               <button
                 type="button"
                 disabled={!canPlace || billLoading}
-                onClick={openStage}
+                onClick={startCheckout}
                 className="press inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-5 py-3 text-sm font-bold text-white shadow-glow transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                Pay {formatINR(totalCents)} <ArrowRight className="size-4" />
+                {payChoice === "online" ? "Pay" : "Place order"}{" "}
+                {formatINR(totalCents)} <ArrowRight className="size-4" />
               </button>
             </div>
+            {payChoice === "online" && (
+              <p className="mt-2.5 text-[11px] leading-relaxed text-cream-500">
+                UPI, cards, netbanking and wallets are offered on the secure payment page. The
+                restaurant only receives your order once the payment is confirmed.
+              </p>
+            )}
             {!canPlace && (
               <p className="mt-2.5 text-xs text-chili-300">
                 Add a delivery address, name & 10-digit phone to continue
@@ -403,7 +531,7 @@ export default function CheckoutPage() {
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
-                  <li key={i.menuItemId} className="flex items-center gap-3">
+                  <li key={i.lineKey} className="flex items-start gap-3">
                     <span className="relative size-11 shrink-0 overflow-hidden rounded-xl">
                       <Image src={i.imageUrl} alt="" fill sizes="44px" className="object-cover" placeholder="blur" blurDataURL={BLUR_DATA} />
                     </span>
@@ -412,10 +540,17 @@ export default function CheckoutPage() {
                         <VegDot veg={i.isVeg} className="size-3" />
                         <span className="truncate text-[13px] font-medium text-cream-200">{i.name}</span>
                       </span>
+                      {i.modifiers?.length ? (
+                        <span className="mt-0.5 block text-[11px] leading-snug text-cream-500">
+                          {i.modifiers
+                            .map((m) => `${m.quantity > 1 ? `${m.quantity}× ` : ""}${m.name}`)
+                            .join(", ")}
+                        </span>
+                      ) : null}
                       <span className="text-xs text-cream-500">× {i.quantity}</span>
                     </span>
-                    <span className="text-[13px] font-semibold text-cream-50 tabular-nums">
-                      {formatINR(i.priceCents * i.quantity)}
+                    <span className="shrink-0 text-[13px] font-semibold text-cream-50 tabular-nums">
+                      {formatINR(i.priceCents * i.quantity + cartModifierTotalCents(i))}
                     </span>
                   </li>
                 ))}
@@ -427,7 +562,7 @@ export default function CheckoutPage() {
             disabled={!canPlace}
             busy={billLoading}
             totalCents={totalCents}
-            onClick={openStage}
+            onClick={startCheckout}
             className="mt-4 hidden lg:flex"
           />
           {!canPlace && (
@@ -441,23 +576,23 @@ export default function CheckoutPage() {
 
       {/* mobile sticky place order */}
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
-        <PlaceOrderButton state={placeState} disabled={!canPlace} busy={billLoading} totalCents={totalCents} onClick={openStage} />
+        <PlaceOrderButton
+          state={placeState}
+          disabled={!canPlace}
+          busy={billLoading}
+          totalCents={totalCents}
+          label={payChoice === "online" ? "Pay" : "Place order"}
+          onClick={startCheckout}
+        />
       </div>
 
-      {payOpen && (
+      {payTarget && (
         <PaymentStage
-          amountCents={(paidBill ?? bill)?.totalCents ?? estimateBill(cart.subtotalCents).total}
-          payee={cart.restaurantName || "CODEXR"}
-          lines={payLines}
-          redirect={redirectIn !== null && placedCode ? { code: placedCode, in: redirectIn } : null}
-          onViewOrder={() => {
-            setRedirectIn(null);
-            if (placedCode) router.replace(`/order/${placedCode}/success`);
-          }}
-          onSettled={(r: SettleResult) => {
-            if (r.phase === "success") placeOrder(r.channel === "cash" ? "cod" : r.channel);
-          }}
-          onClose={handleClose}
+          target={payTarget}
+          onPaid={markPaid}
+          onViewOrder={viewUnconfirmedOrder}
+          onAbandon={keepUnpaid}
+          onClose={keepUnpaid}
         />
       )}
     </div>
@@ -520,7 +655,12 @@ function CheckoutSummary({
       </div>
       {!open && (
         <p className="mt-3 animate-fade-in truncate text-[13px] text-cream-500">
-          {cart.items.map((i) => `${i.quantity}× ${i.name}`).join(", ")}
+          {cart.items
+            .map((i) => {
+              const extras = i.modifiers?.length ? ` (${i.modifiers.map((m) => m.name).join(", ")})` : "";
+              return `${i.quantity}× ${i.name}${extras}`;
+            })
+            .join(", ")}
         </p>
       )}
       <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">
@@ -536,6 +676,7 @@ function PlaceOrderButton({
   disabled,
   busy,
   totalCents,
+  label = "Pay",
   onClick,
   className,
 }: {
@@ -543,6 +684,7 @@ function PlaceOrderButton({
   disabled: boolean;
   busy?: boolean;
   totalCents: number;
+  label?: string;
   onClick: () => void;
   className?: string;
 }) {
@@ -578,10 +720,93 @@ function PlaceOrderButton({
         </>
       ) : (
         <>
-          Pay {formatINR(totalCents)}
+          {label} {formatINR(totalCents)}
           <ArrowRight className="size-4.5" />
         </>
       )}
     </button>
+  );
+}
+
+const PAY_CHOICES: { id: PayChoice; label: string; hint: string }[] = [
+  {
+    id: "online",
+    label: "Pay online",
+    hint: "UPI, card, netbanking or wallet on a secure page. Kitchen starts once it clears.",
+  },
+  {
+    id: "cod",
+    label: "Cash on delivery",
+    hint: "Pay the rider in cash when the order arrives.",
+  },
+];
+
+/**
+ * Post-order confirmation. The copy states exactly what is true: a COD order is
+ * with the restaurant and the rider collects the money; an online order says so
+ * only when the server confirmed the capture. An unpaid online order is labelled
+ * as such and links straight back to the payment step.
+ */
+function PlacedPanel({
+  placed,
+  redirectIn,
+  onView,
+  onTrack,
+}: {
+  placed: PlacedOrder;
+  redirectIn: number | null;
+  onView: () => void;
+  onTrack: () => void;
+}) {
+  const unpaidOnline = placed.method === "online" && !placed.paid;
+
+  return (
+    <div className="mx-auto flex min-h-[80vh] max-w-xl flex-col items-center justify-center px-4 py-12 text-center">
+      <span
+        className={cn(
+          "grid size-16 place-items-center rounded-full",
+          placed.paid ? "bg-mint-500/15 text-mint-400" : "bg-ember-400/12 text-ember-300",
+        )}
+      >
+        {placed.paid ? <Check className="size-7" strokeWidth={3} /> : <Banknote className="size-7" />}
+      </span>
+
+      <h1 className="mt-5 font-display text-2xl font-bold tracking-tight text-cream-50">
+        {placed.paid ? "Payment received" : unpaidOnline ? "Order saved, payment pending" : "Order placed"}
+      </h1>
+      <p className="mt-2 text-sm text-cream-500">
+        <span className="font-semibold text-cream-200">{placed.restaurantName}</span> ·{" "}
+        <span className="font-mono">{placed.code}</span>
+      </p>
+
+      <p className="mt-4 max-w-sm text-sm leading-relaxed text-cream-400">
+        {placed.paid
+          ? "We've sent your order to the kitchen. Track it live as it gets prepared."
+          : unpaidOnline
+            ? "We haven't taken any money yet. Complete the payment from your order page to release your order to the restaurant."
+            : "The kitchen is preparing your order. Keep the exact amount ready for the rider."}
+      </p>
+
+      <div className="mt-7 flex w-full flex-col gap-2.5">
+        <button
+          type="button"
+          onClick={onView}
+          className="press flex w-full items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-4 text-sm font-bold text-white shadow-glow transition-opacity hover:opacity-95"
+        >
+          {unpaidOnline ? "Complete payment" : "Track order"} <ArrowRight className="size-4" />
+        </button>
+        <button
+          type="button"
+          onClick={onTrack}
+          className="press flex w-full items-center justify-center gap-2 rounded-2xl border border-white/10 py-3.5 text-sm font-semibold text-cream-300 transition-colors hover:border-white/25 hover:text-cream-50"
+        >
+          View order details
+        </button>
+      </div>
+
+      {redirectIn !== null && redirectIn > 0 && (
+        <p className="mt-5 text-xs text-cream-600">Opening your order in {redirectIn}s…</p>
+      )}
+    </div>
   );
 }

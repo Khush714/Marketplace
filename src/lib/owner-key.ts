@@ -19,6 +19,11 @@ export function makeAccessToken(): string {
   return randomBytes(24).toString("base64url");
 }
 
+/** Server-generated canonical marketplace ID for a restaurant listing (rst_…). */
+export function makeMarketplaceId(): string {
+  return `rst_${randomBytes(12).toString("base64url")}`;
+}
+
 export function hashToken(token: string): string {
   return sha256hex(token);
 }

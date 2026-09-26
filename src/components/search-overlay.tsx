@@ -84,39 +84,89 @@ const BLUR =
 function SearchOverlay({ onClose }: { onClose: () => void }) {
   const router = useRouter();
   const inputRef = useRef<HTMLInputElement>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const previousActiveElement = useRef<HTMLElement | null>(null);
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [featured, setFeatured] = useState<RestaurantDto[]>([]);
   const { recentSearches, pushRecentSearch, clearRecentSearches } = useProfile();
   const { locality } = useLocation();
 
-  // Lock body scroll + autofocus
   useEffect(() => {
+    previousActiveElement.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const previousOverflow = document.documentElement.style.overflow;
     document.documentElement.style.overflow = "hidden";
     inputRef.current?.focus();
-    fetch(`/api/restaurants?featured=1&loc=${locality.key}`)
+
+    return () => {
+      document.documentElement.style.overflow = previousOverflow;
+      previousActiveElement.current?.focus();
+    };
+  }, []);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    fetch(`/api/restaurants?featured=1&loc=${locality.key}`, { signal: controller.signal })
       .then((r) => r.json())
       .then((d) => setFeatured(d.restaurants ?? []))
       .catch(() => {});
-    return () => {
-      document.documentElement.style.overflow = "";
-    };
+    return () => controller.abort();
   }, [locality.key]);
 
-  // Debounced live search
   useEffect(() => {
     if (q.trim().length < 2) {
       setResults(null);
       return;
     }
+    const controller = new AbortController();
     const t = window.setTimeout(() => {
-      fetch(`/api/search?q=${encodeURIComponent(q.trim())}&loc=${locality.key}`)
+      fetch(`/api/search?q=${encodeURIComponent(q.trim())}&loc=${locality.key}`, { signal: controller.signal })
         .then((r) => r.json())
         .then((d) => setResults(d.results ?? []))
-        .catch(() => setResults([]));
+        .catch((error: unknown) => {
+          if (!(error instanceof DOMException && error.name === "AbortError")) setResults([]);
+        });
     }, 220);
-    return () => window.clearTimeout(t);
+    return () => {
+      window.clearTimeout(t);
+      controller.abort();
+    };
   }, [q, locality.key]);
+
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab" || !panelRef.current) return;
+
+      const focusable = Array.from(
+        panelRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      );
+      if (!focusable.length) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      const active = document.activeElement;
+      if (!active || !panelRef.current.contains(active)) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      } else if (event.shiftKey && active === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && active === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", onKeyDown);
+    return () => document.removeEventListener("keydown", onKeyDown);
+  }, [onClose]);
 
   const submit = useCallback(
     (value: string) => {
@@ -134,7 +184,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   const searching = q.trim().length >= 2;
 
   return (
-    <div role="dialog" aria-modal="true" aria-label="Search" className="fixed inset-0 z-[80]">
+    <div id="search-dialog" role="dialog" aria-modal="true" aria-label="Search" className="fixed inset-0 z-[80]">
       {/* backdrop */}
       <button
         aria-label="Close search"
@@ -143,8 +193,12 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
       />
 
       {/* panel */}
-      <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center px-3 pt-3 md:pt-[10vh]">
-        <div className="glass-strong animate-pop-in pointer-events-auto flex max-h-[86vh] w-full max-w-xl flex-col overflow-hidden rounded-3xl md:max-h-[70vh]">
+      <div className="pointer-events-none absolute inset-x-0 top-0 flex justify-center px-3 pt-[max(0.75rem,env(safe-area-inset-top))] md:pt-[10vh]">
+        <div
+          ref={panelRef}
+          className="glass-strong animate-pop-in pointer-events-auto flex max-h-[86dvh] w-full max-w-xl flex-col overflow-hidden rounded-3xl md:max-h-[70vh]"
+          aria-busy={searching && results === null}
+        >
           {/* input row */}
           <div className="flex items-center gap-3 border-b border-white/8 px-5 py-4">
             <Search className="size-5 shrink-0 text-ember-400" />
@@ -154,10 +208,9 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === "Enter") submit(q);
-                if (e.key === "Escape") onClose();
               }}
               placeholder="Search restaurants, dishes, cravings…"
-              className="min-w-0 flex-1 bg-transparent text-base text-cream-50 placeholder:text-cream-500 focus:outline-none"
+              className="min-w-0 flex-1 bg-transparent text-base text-cream-50 placeholder:text-cream-500 focus:outline-none focus:ring-2 focus:ring-ember-400/60"
               aria-label="Search"
             />
             {q ? (
@@ -170,6 +223,10 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
               </button>
             )}
           </div>
+
+          <p className="sr-only" aria-live="polite">
+            {searching ? (results === null ? "Searching" : `${results.length} results`) : "Search suggestions"}
+          </p>
 
           <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-5 py-4">
             {!searching && (

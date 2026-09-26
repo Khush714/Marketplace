@@ -4,7 +4,6 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { House, Search, ReceiptText, CircleUserRound, type LucideIcon } from "lucide-react";
 import { useSearch } from "@/components/search-overlay";
-import { Magnetic } from "@/components/motion-primitives";
 import { cn } from "@/lib/domain";
 
 interface Tab {
@@ -20,12 +19,13 @@ const TABS: Tab[] = [
   { href: "/profile", label: "Profile", icon: CircleUserRound, match: (p) => p.startsWith("/profile") },
 ];
 
-/** Column index each tab occupies in the 4-column bar (search FAB sits in column 1). */
 const COLUMN_OF = [0, 2, 3];
 
 export function BottomNav() {
   const pathname = usePathname();
-  const { open } = useSearch();
+  const { open, isOpen } = useSearch();
+
+  if (pathname === "/cart" || pathname === "/checkout") return null;
 
   const activeIndex = TABS.findIndex((t) => t.match(pathname));
   const activeColumn = activeIndex === -1 ? -1 : COLUMN_OF[activeIndex];
@@ -47,25 +47,7 @@ export function BottomNav() {
         </span>
 
         <NavItem tab={TABS[0]} active={TABS[0].match(pathname)} />
-
-        {/* Center search — elevated magnetic action */}
-        <div className="flex justify-center">
-          <Magnetic strength={0.4} max={10} className="flex justify-center">
-            <button
-              type="button"
-              onClick={open}
-              aria-label="Search"
-              className="press relative -mt-7 grid size-13 place-items-center rounded-full bg-gradient-to-br from-ember-400 via-chili-500 to-chili-600 shadow-glow ring-4 ring-void transition-transform duration-200 hover:scale-105"
-            >
-              <span
-                aria-hidden
-                className="animate-ripple absolute inset-0 rounded-full border border-ember-300/50"
-              />
-              <Search className="relative size-5.5 text-white" strokeWidth={2.4} />
-            </button>
-          </Magnetic>
-        </div>
-
+        <NavButton icon={Search} label="Search" active={isOpen} onClick={open} />
         <NavItem tab={TABS[1]} active={TABS[1].match(pathname)} />
         <NavItem tab={TABS[2]} active={TABS[2].match(pathname)} />
       </div>
@@ -74,13 +56,46 @@ export function BottomNav() {
 }
 
 function NavItem({ tab, active }: { tab: Tab; active: boolean }) {
-  const Icon = tab.icon;
   return (
     <Link
       href={tab.href}
       aria-current={active ? "page" : undefined}
       className="press relative z-10 flex flex-col items-center gap-0.5 rounded-2xl px-1 py-2"
     >
+      <NavContents icon={tab.icon} label={tab.label} active={active} />
+    </Link>
+  );
+}
+
+function NavButton({
+  icon: Icon,
+  label,
+  active,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-label={label}
+      aria-haspopup="dialog"
+      aria-expanded={active}
+      aria-controls="search-dialog"
+      className="press relative z-10 flex flex-col items-center gap-0.5 rounded-2xl px-1 py-2"
+    >
+      <NavContents icon={Icon} label={label} active={active} />
+    </button>
+  );
+}
+
+function NavContents({ icon: Icon, label, active }: { icon: LucideIcon; label: string; active: boolean }) {
+  return (
+    <>
       <span
         className={cn(
           "relative grid place-items-center transition-all duration-[420ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]",
@@ -101,8 +116,8 @@ function NavItem({ tab, active }: { tab: Tab; active: boolean }) {
           active ? "text-cream-50" : "text-cream-500",
         )}
       >
-        {tab.label}
+        {label}
       </span>
-    </Link>
+    </>
   );
 }

@@ -37,7 +37,7 @@ function FloatingCartBar() {
   if (!hydrated || itemCount === 0) return null;
 
   return (
-    <div className="fixed inset-x-0 bottom-[84px] z-40 flex justify-center px-4 md:bottom-6">
+    <div className="fixed inset-x-0 bottom-[calc(84px+env(safe-area-inset-bottom))] z-40 flex justify-center px-4 md:bottom-6">
       <Link
         href="/cart"
         className="animate-pop-in group relative flex w-full max-w-md items-center gap-3 overflow-hidden rounded-2xl bg-gradient-to-r from-ember-500 via-chili-500 to-chili-600 py-3 pl-4 pr-3 shadow-glow transition-transform duration-300 hover:-translate-y-0.5 press"

@@ -19,10 +19,27 @@ export interface RestaurantDto {
   featured: boolean;
   pureVeg: boolean;
   locality: string;
+  /** Canonical public Marketplace External Restaurant ID (rst_…). */
+  marketplaceId: string | null;
 }
 
 export interface RestaurantManageDto extends RestaurantDto {
   isActive: boolean;
+}
+
+export interface ModifierOptionDto {
+  id: number;
+  name: string;
+  priceCents: number;
+  isVeg: boolean;
+}
+
+export interface ModifierGroupDto {
+  id: number;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  options: ModifierOptionDto[];
 }
 
 export interface MenuItemDto {
@@ -35,6 +52,8 @@ export interface MenuItemDto {
   imageUrl: string;
   isVeg: boolean;
   isBestseller: boolean;
+  /** POS-synced modifier groups offered for this dish. Absent when it has none. */
+  modifierGroups?: ModifierGroupDto[];
 }
 
 export interface MenuSection {
@@ -42,15 +61,22 @@ export interface MenuSection {
   items: MenuItemDto[];
 }
 
-export interface OrderStatusDto {
+export interface OrderLifecycleStage {
   stageIndex: number;
   stageKey: string;
   stageLabel: string;
   stageSub: string;
   delivered: boolean;
   riderProgress: number;
+}
+
+export interface OrderStatusDto extends OrderLifecycleStage {
   etaIso: string;
   etaSeconds: number;
+  statusUpdatedAt: string | null;
+  stages: OrderLifecycleStage[];
+  cancellable: boolean;
+  cancelReason: string | null;
 }
 
 export interface OrderDto {
@@ -58,12 +84,16 @@ export interface OrderDto {
   code: string;
   restaurantSlug: string;
   restaurantName: string;
+  /** Internal ids — never surfaced in the customer tracking payload. */
+  restaurantId: number;
+  externalOrderId: string | null;
   items: OrderItemSnapshot[];
   addressLabel: string;
   addressText: string;
   customerName: string;
   phone: string;
   paymentMethod: string;
+  paymentStatus: string;
   instructions: string;
   riderName: string;
   subtotalCents: number;

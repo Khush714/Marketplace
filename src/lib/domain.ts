@@ -88,12 +88,35 @@ export function makeOrderCode(): string {
   return `CRV-${s}`;
 }
 
-/** Single-use invite that lets a restaurant connect itself to the marketplace. */
+/**
+ * Single-use invite that lets a restaurant connect itself to the marketplace.
+ *
+ * This is a bearer credential — `POST /api/partner/connect` accepts whoever
+ * presents one — so it must come from a CSPRNG, not `Math.random()`. The code
+ * lives in domain.ts (imported by client components), so use the Web Crypto
+ * `globalThis.crypto` rather than `node:crypto`, which would break the client
+ * bundle.
+ *
+ * 5 symbols drawn with rejection sampling. The alphabet has 31 characters,
+ * which does NOT divide 256 evenly (256 % 31 === 8), so a plain `byte % 31`
+ * would make the first 8 symbols ~12.5% more likely than the rest. Bytes at or
+ * above 248 are therefore discarded rather than folded, which keeps the
+ * distribution uniform. Rejection costs about 3% of draws.
+ */
 export function makeConnectionCode(): string {
   const chars = "ABCDEFGHJKMNPQRSTUVWXYZ23456789";
-  let s = "";
-  for (let i = 0; i < 5; i++) s += chars[Math.floor(Math.random() * chars.length)];
-  return `CNX-${s}`;
+  const limit = 256 - (256 % chars.length); // 248
+  const out: string[] = [];
+  const buf = new Uint8Array(16);
+  while (out.length < 5) {
+    crypto.getRandomValues(buf);
+    for (const b of buf) {
+      if (b >= limit) continue;
+      out.push(chars[b % chars.length]);
+      if (out.length === 5) break;
+    }
+  }
+  return `CNX-${out.join("")}`;
 }
 
 /** Lifetime of an integration session token issued after code+passkey login. */

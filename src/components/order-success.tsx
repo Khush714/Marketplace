@@ -1,9 +1,10 @@
 "use client";
 
 import Link from "next/link";
-import { MapPinned, ReceiptText, Sparkles } from "lucide-react";
+import { CreditCard, MapPinned, ReceiptText, Sparkles } from "lucide-react";
 import { AnimatedPrice, WordReveal, cssVars } from "@/components/motion-primitives";
-import type { OrderDto } from "@/lib/types";
+import { cn, formatINR } from "@/lib/domain";
+import type { PublicOrder } from "@/lib/order-public";
 
 const SPARK_COLORS = [
   "var(--color-ember-400)",
@@ -27,7 +28,36 @@ const SPARKS = Array.from({ length: 26 }, (_, i) => {
   };
 });
 
-export function OrderSuccess({ order }: { order: OrderDto }) {
+export function OrderSuccess({
+  order,
+  onResumePayment,
+  resumingPayment,
+}: {
+  order: PublicOrder;
+  /** Present only while the order is still awaiting an online payment. */
+  onResumePayment?: () => void;
+  resumingPayment?: boolean;
+}) {
+  // Only say "payment confirmed" when the server says the payment is captured.
+  // A COD order is with the kitchen but unpaid; an unpaid online order is not
+  // even with the kitchen yet, and claiming otherwise is the exact lie this
+  // screen used to tell.
+  const status = order.paymentStatus.toUpperCase();
+  const paidOnline = order.paymentMethod.toUpperCase() !== "COD" && (status === "PAID" || status === "CAPTURED");
+  const isCod = order.paymentMethod.toUpperCase() === "COD";
+  const unpaidOnline = !isCod && !paidOnline && status !== "REFUNDED";
+
+  const badge = paidOnline
+    ? "Payment confirmed"
+    : isCod
+      ? "Pay the rider on arrival"
+      : "Payment not completed";
+  const blurb = paidOnline
+    ? `${order.restaurantName} is firing up the kitchen for you right now.`
+    : isCod
+      ? `${order.restaurantName} is firing up the kitchen. Keep the exact amount ready for the rider.`
+      : `We haven't taken any money yet. Finish the payment from your order page so the kitchen can start.`;
+
   return (
     <div className="relative mx-auto flex min-h-[72vh] max-w-lg flex-col items-center justify-center px-4 py-14 text-center">
       {/* animated seal + burst */}
@@ -84,10 +114,13 @@ export function OrderSuccess({ order }: { order: OrderDto }) {
       </div>
 
       <p
-        className="animate-rise mt-8 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.24em] text-mint-400"
+        className={cn(
+          "animate-rise mt-8 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.24em]",
+          paidOnline || isCod ? "text-mint-400" : "text-ember-300",
+        )}
         style={cssVars({ animationDelay: "0.5s" })}
       >
-        <Sparkles className="size-3.5 animate-glow-breathe" /> Payment confirmed
+        <Sparkles className="size-3.5 animate-glow-breathe" /> {badge}
       </p>
       <h1
         className="animate-rise mt-2 font-display text-4xl font-bold tracking-tight text-cream-50 md:text-5xl"
@@ -100,8 +133,7 @@ export function OrderSuccess({ order }: { order: OrderDto }) {
         className="animate-rise mt-3 max-w-xs text-[15px] leading-relaxed text-cream-400"
         style={cssVars({ animationDelay: "0.74s" })}
       >
-        <span className="font-semibold text-cream-200">{order.restaurantName}</span> is firing up the
-        kitchen for you right now.
+        {blurb}
       </p>
 
       <div className="animate-rise glass mt-7 flex w-full items-center justify-between gap-4 rounded-2xl px-5 py-4" style={cssVars({ animationDelay: "0.86s" })}>
@@ -113,16 +145,32 @@ export function OrderSuccess({ order }: { order: OrderDto }) {
       </div>
 
       <div className="animate-rise mt-7 flex w-full flex-col gap-2.5 sm:flex-row" style={cssVars({ animationDelay: "0.98s" })}>
-        <Link
-          href={`/order/${order.code}/track`}
-          className="press group relative flex flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-3.5 text-sm font-bold text-white shadow-glow"
-        >
-          <span
-            aria-hidden
-            className="sheen-band absolute inset-y-0 -left-1/3 w-1/3 opacity-0 group-hover:animate-sheen group-hover:opacity-100"
-          />
-          <MapPinned className="relative size-4.5" /> Track your order
-        </Link>
+        {unpaidOnline && onResumePayment ? (
+          <button
+            type="button"
+            onClick={onResumePayment}
+            disabled={resumingPayment}
+            className="press group relative flex flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-3.5 text-sm font-bold text-white shadow-glow disabled:opacity-60"
+          >
+            <span
+              aria-hidden
+              className="sheen-band absolute inset-y-0 -left-1/3 w-1/3 opacity-0 group-hover:animate-sheen group-hover:opacity-100"
+            />
+            <CreditCard className="relative size-4.5" />
+            {resumingPayment ? "Starting…" : `Pay ${formatINR(order.totalCents)} now`}
+          </button>
+        ) : (
+          <Link
+            href={`/order/${order.code}/track`}
+            className="press group relative flex flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-3.5 text-sm font-bold text-white shadow-glow"
+          >
+            <span
+              aria-hidden
+              className="sheen-band absolute inset-y-0 -left-1/3 w-1/3 opacity-0 group-hover:animate-sheen group-hover:opacity-100"
+            />
+            <MapPinned className="relative size-4.5" /> Track your order
+          </Link>
+        )}
         <Link
           href="/"
           className="press flex flex-1 items-center justify-center rounded-2xl bg-white/8 py-3.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"

@@ -7,3 +7,6 @@
 _tmp_*
 _next
 .pgdata
+*.log
+_e2e_check*.cjs
+tmp_*.cjs

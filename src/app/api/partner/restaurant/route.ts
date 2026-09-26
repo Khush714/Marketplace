@@ -5,7 +5,9 @@ export const dynamic = "force-dynamic";
 
 /** Look up the listing controlled by an owner key. */
 export async function GET(req: NextRequest) {
-  const ownerKey = String(req.nextUrl.searchParams.get("ownerKey") ?? "").trim();
+  // Phase 7 — ownerKey rides a header, never a URL query (query params leak
+  // into logs/proxies and land in browser history).
+  const ownerKey = String(req.headers.get("x-owner-key") ?? "").trim();
   const restaurant = await getRestaurantByOwnerKey(ownerKey);
   if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
   return Response.json({ ok: true, restaurant });

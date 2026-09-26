@@ -7,7 +7,7 @@ import { AddButton } from "@/components/add-button";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { formatINR } from "@/lib/domain";
-import { useCart } from "@/lib/cart";
+import { useCart, cartModifierTotalCents } from "@/lib/cart";
 
 /** Desktop sticky side-cart on the restaurant page. Logic lives in the cart engine. */
 export function MiniCart({ restaurantSlug, restaurantName }: { restaurantSlug: string; restaurantName: string }) {
@@ -27,7 +27,7 @@ export function MiniCart({ restaurantSlug, restaurantName }: { restaurantSlug: s
           <div className="animate-fade-in">
             <ul className="mt-4 space-y-3.5">
               {cart.items.map((i) => (
-                <li key={i.menuItemId} className="flex items-center gap-2.5">
+                <li key={i.lineKey} className="flex items-center gap-2.5">
                   <span className="relative size-10 shrink-0 overflow-hidden rounded-lg">
                     <Image src={i.imageUrl} alt="" fill sizes="40px" className="object-cover" placeholder="blur" blurDataURL={BLUR_DATA} />
                   </span>
@@ -36,10 +36,25 @@ export function MiniCart({ restaurantSlug, restaurantName }: { restaurantSlug: s
                       <VegDot veg={i.isVeg} className="size-3" />
                       <span className="truncate text-[13px] font-medium text-cream-200">{i.name}</span>
                     </span>
-                    <span className="text-xs text-cream-500 tabular-nums">{formatINR(i.priceCents * i.quantity)}</span>
+                    {i.modifiers?.length ? (
+                      <span className="block truncate text-[11px] text-cream-500">
+                        {i.modifiers.map((m) => m.name).join(", ")}
+                      </span>
+                    ) : null}
+                    <span className="text-xs text-cream-400 tabular-nums">
+                      {formatINR(i.priceCents * i.quantity + cartModifierTotalCents(i))}
+                    </span>
                   </span>
                   <AddButton
-                    item={{ menuItemId: i.menuItemId, name: i.name, priceCents: i.priceCents, imageUrl: i.imageUrl, isVeg: i.isVeg }}
+                    item={{
+                      menuItemId: i.menuItemId,
+                      name: i.name,
+                      priceCents: i.priceCents,
+                      imageUrl: i.imageUrl,
+                      isVeg: i.isVeg,
+                      modifiers: i.modifiers,
+                      lineKey: i.lineKey,
+                    }}
                     restaurantSlug={restaurantSlug}
                     restaurantName={restaurantName}
                     compact

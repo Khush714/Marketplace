@@ -7,7 +7,7 @@ import { AddButton } from "@/components/add-button";
 import { BLUR_DATA, EmptyState, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { estimateBill, formatINR } from "@/lib/domain";
-import { useCart } from "@/lib/cart";
+import { useCart, cartModifierTotalCents } from "@/lib/cart";
 
 export default function CartPage() {
   const cart = useCart();
@@ -66,7 +66,7 @@ export default function CartPage() {
           <ul className="space-y-3">
             {cart.items.map((i, idx) => (
               <li
-                key={i.menuItemId}
+                key={i.lineKey}
                 style={{ animationDelay: `${idx * 50}ms` }}
                 className="animate-rise glass lift flex items-center gap-4 rounded-3xl p-3.5 hover:shadow-lift"
               >
@@ -86,14 +86,38 @@ export default function CartPage() {
                     <VegDot veg={i.isVeg} />
                     <h3 className="truncate font-display text-[15px] font-bold text-cream-50">{i.name}</h3>
                   </div>
-                  <p className="mt-0.5 text-xs text-cream-500 tabular-nums">{formatINR(i.priceCents)} each</p>
+                  {i.modifiers?.length ? (
+                    <ul className="mt-1 space-y-0.5">
+                      {i.modifiers.map((m) => (
+                        <li key={m.optionId} className="truncate text-xs text-cream-500">
+                          {m.quantity > 1 && <span className="tabular-nums">{m.quantity}× </span>}
+                          {m.name}
+                          {m.priceCents > 0 && (
+                            <span className="tabular-nums"> (+{formatINR(m.priceCents * m.quantity)})</span>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p className="mt-0.5 text-xs text-cream-500 tabular-nums">
+                      {formatINR(i.priceCents)} each
+                    </p>
+                  )}
                   <p className="mt-1 text-sm font-bold text-cream-50 tabular-nums">
-                    {formatINR(i.priceCents * i.quantity)}
+                    {formatINR(i.priceCents * i.quantity + cartModifierTotalCents(i))}
                   </p>
                 </div>
                 <div className="flex flex-col items-end gap-2">
                   <AddButton
-                    item={{ menuItemId: i.menuItemId, name: i.name, priceCents: i.priceCents, imageUrl: i.imageUrl, isVeg: i.isVeg }}
+                    item={{
+                      menuItemId: i.menuItemId,
+                      name: i.name,
+                      priceCents: i.priceCents,
+                      imageUrl: i.imageUrl,
+                      isVeg: i.isVeg,
+                      modifiers: i.modifiers,
+                      lineKey: i.lineKey,
+                    }}
                     restaurantSlug={cart.restaurantSlug}
                     restaurantName={cart.restaurantName}
                     compact

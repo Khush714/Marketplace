@@ -19,6 +19,7 @@ import {
 import { RestaurantCard } from "@/components/restaurant-card";
 import { Rail } from "@/components/rail";
 import { cn, formatINR } from "@/lib/domain";
+import type { PublicOrder } from "@/lib/order-public";
 import { useProfile } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
@@ -48,19 +49,39 @@ export default function ProfilePage() {
     }
   }, [profile.hydrated, profile.favorites]);
 
+  /**
+   * "Spent" only counts money that actually moved: a captured payment on an
+   * order that was not cancelled or rejected. Summing order totals would have
+   * counted unpaid and cancelled orders as spend.
+   */
   useEffect(() => {
-    if (!profile.hydrated || !profile.orderCodes.length) {
+    if (!profile.hydrated || !profile.orders.length) {
       setSpent(0);
       return;
     }
-    fetch(`/api/orders?codes=${profile.orderCodes.join(",")}`)
-      .then((r) => r.json())
-      .then((d) => {
-        const list = (d.orders ?? []) as Array<{ totalCents: number }>;
-        setSpent(list.reduce((n, o) => n + o.totalCents, 0));
+    fetch("/api/orders/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        orders: profile.orders.slice(0, 30).map((o) => ({ code: o.code, token: o.token })),
+      }),
+      cache: "no-store",
+    })
+      .then((r) => (r.ok ? r.json() : { orders: [] }))
+      .then((d: { orders?: PublicOrder[] }) => {
+        const list = d.orders ?? [];
+        setSpent(
+          list
+            .filter((o) => {
+              const paid = o.paymentStatus.toUpperCase();
+              const closed = o.status.stageKey === "cancelled" || o.status.stageKey === "rejected";
+              return !closed && (paid === "PAID" || paid === "CAPTURED");
+            })
+            .reduce((n, o) => n + o.totalCents, 0),
+        );
       })
       .catch(() => setSpent(null));
-  }, [profile.hydrated, profile.orderCodes]);
+  }, [profile.hydrated, profile.orders]);
 
   const initials = profile.name ? profile.name.slice(0, 1).toUpperCase() : "?";
 

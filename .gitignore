@@ -32,6 +32,9 @@ yarn-error.log*
 .env
 .env*.local
 
+# comment template (no secrets) should be committed
+!.env.example
+
 # vercel
 .vercel
 
@@ -42,5 +45,13 @@ next-env.d.ts
 .vercel
 .env*
 
+# comment template (no secrets) should be committed
+!.env.example
+
 # local dev logs
 server.log
+dev*.log
+
+# throwaway debug scripts (throwaway_pg_checks etc.)
+_*.cjs
+tmp_*.cjs

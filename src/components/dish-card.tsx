@@ -1,12 +1,14 @@
 "use client";
 
 import Image from "next/image";
-import { forwardRef } from "react";
+import { forwardRef, useState } from "react";
 import { Flame } from "lucide-react";
 import { AddButton } from "@/components/add-button";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
+import { DishSheet } from "@/components/dish-sheet";
 import { cssVars } from "@/components/motion-primitives";
 import { cn, formatINR } from "@/lib/domain";
+import { lineKeyFor } from "@/lib/cart";
 import type { MenuItemDto } from "@/lib/types";
 
 export const DishCard = forwardRef<
@@ -19,6 +21,12 @@ export const DishCard = forwardRef<
     index?: number;
   }
 >(function DishCard({ item, restaurantSlug, restaurantName, highlighted, index = 0 }, ref) {
+  const [configuring, setConfiguring] = useState(false);
+  const configurable = (item.modifierGroups?.length ?? 0) > 0;
+  const cheapest = configurable
+    ? Math.min(...item.modifierGroups!.flatMap((g) => g.options.map((o) => o.priceCents)))
+    : 0;
+
   return (
     <div
       ref={ref}
@@ -41,11 +49,21 @@ export const DishCard = forwardRef<
               <Flame className="size-2.5" /> BESTSELLER
             </span>
           )}
+          {configurable && (
+            <span className="rounded-full bg-white/8 px-1.5 py-0.5 text-[10px] font-bold text-cream-400">
+              CUSTOMISABLE
+            </span>
+          )}
         </div>
         <h4 className="mt-1.5 font-display text-[15px] font-bold tracking-tight text-cream-50 md:text-base">
           {item.name}
         </h4>
-        <p className="mt-0.5 text-sm font-semibold text-cream-200">{formatINR(item.priceCents)}</p>
+        <p className="mt-0.5 text-sm font-semibold text-cream-200">
+          {formatINR(item.priceCents)}
+          {configurable && cheapest > 0 && (
+            <span className="ml-1 text-xs font-medium text-cream-500">+ extras</span>
+          )}
+        </p>
         {item.description && (
           <p className="mt-1.5 line-clamp-2 max-w-md text-[13px] leading-relaxed text-cream-500">
             {item.description}
@@ -74,14 +92,25 @@ export const DishCard = forwardRef<
               priceCents: item.priceCents,
               imageUrl: item.imageUrl,
               isVeg: item.isVeg,
+              lineKey: lineKeyFor(item.id),
             }}
             restaurantSlug={restaurantSlug}
             restaurantName={restaurantName}
             className="w-full justify-center"
             compact
+            {...(configurable ? { onConfigure: () => setConfiguring(true) } : {})}
           />
         </div>
       </div>
+
+      {configuring && (
+        <DishSheet
+          item={item}
+          restaurantSlug={restaurantSlug}
+          restaurantName={restaurantName}
+          onClose={() => setConfiguring(false)}
+        />
+      )}
     </div>
   );
 });

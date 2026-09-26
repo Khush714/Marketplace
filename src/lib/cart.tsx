@@ -10,13 +10,26 @@ import {
   type ReactNode,
 } from "react";
 
+export interface CartModifier {
+  optionId: number;
+  groupId: number;
+  name: string;
+  priceCents: number;
+  quantity: number;
+  isVeg: boolean;
+}
+
 export interface CartItem {
   menuItemId: number;
   name: string;
+  /** Base dish price only — modifier prices live on `modifiers`. */
   priceCents: number;
   imageUrl: string;
   isVeg: boolean;
   quantity: number;
+  modifiers?: CartModifier[];
+  /** Stable identity: dish + exact modifier selection. Persisted, never rebuilt. */
+  lineKey: string;
 }
 
 export interface CartState {
@@ -35,10 +48,13 @@ interface CartContextValue extends CartState {
   hydrated: boolean;
   itemCount: number;
   subtotalCents: number;
-  quantityOf: (menuItemId: number) => number;
+  /** Quantity for one exact line (dish + modifier selection). */
+  quantityOf: (lineKey: string) => number;
+  /** Total quantity of a dish across every modifier selection of it. */
+  dishQuantityOf: (menuItemId: number) => number;
   /** Returns true if added; false + sets `conflict` when cart belongs to another restaurant. */
   add: (item: Omit<CartItem, "quantity">, restaurantSlug: string, restaurantName: string) => boolean;
-  setQuantity: (menuItemId: number, quantity: number) => void;
+  setQuantity: (lineKey: string, quantity: number) => void;
   clear: () => void;
   conflict: PendingAdd | null;
   resolveConflict: (replace: boolean) => void;
@@ -46,10 +62,58 @@ interface CartContextValue extends CartState {
   bump: number;
 }
 
+/**
+ * Cart lines are identified by dish *and* modifier selection, so a burger with
+ * extra cheese merges with itself but never with the same burger plain. The key
+ * is built from sorted option ids so selection order can't fork a line.
+ */
+export function lineKeyFor(menuItemId: number, modifiers?: CartModifier[]): string {
+  const opts = (modifiers ?? [])
+    .filter((m) => m.quantity > 0)
+    .map((m) => `${m.optionId}x${m.quantity}`)
+    .sort();
+  return opts.length ? `${menuItemId}::${opts.join(",")}` : String(menuItemId);
+}
+
+/** Per-unit price of a line: base dish plus its selected modifiers. */
+export function cartUnitPriceCents(item: Pick<CartItem, "priceCents" | "modifiers">): number {
+  const modifiers = (item.modifiers ?? []).reduce((s, m) => s + m.priceCents * m.quantity, 0);
+  return item.priceCents + modifiers;
+}
+
+/** Rupee cost of a modifier selection — server bills this per line, not per unit. */
+export function cartModifierTotalCents(item: Pick<CartItem, "modifiers">): number {
+  return (item.modifiers ?? []).reduce((s, m) => s + m.priceCents * m.quantity, 0);
+}
+
 const CartContext = createContext<CartContextValue | null>(null);
-const KEY = "crave.cart.v1";
+const KEY = "crave.cart.v2";
+/** v1 predates modifiers: those lines have no selection and stay valid as-is. */
+const LEGACY_KEY = "crave.cart.v1";
 
 const EMPTY: CartState = { restaurantSlug: "", restaurantName: "", items: [] };
+
+/** Backfill `lineKey` on stored items so v1 carts survive the v2 shape change. */
+function normalizeItem(raw: unknown): CartItem | null {
+  if (!raw || typeof raw !== "object") return null;
+  const i = raw as Partial<CartItem>;
+  if (typeof i.menuItemId !== "number" || typeof i.name !== "string") return null;
+  const modifiers = Array.isArray(i.modifiers)
+    ? i.modifiers.filter(
+        (m): m is CartModifier => !!m && typeof m.optionId === "number" && typeof m.name === "string",
+      )
+    : undefined;
+  return {
+    menuItemId: i.menuItemId,
+    name: i.name,
+    priceCents: Number(i.priceCents) || 0,
+    imageUrl: typeof i.imageUrl === "string" ? i.imageUrl : "",
+    isVeg: !!i.isVeg,
+    quantity: Math.max(1, Math.floor(Number(i.quantity)) || 1),
+    ...(modifiers?.length ? { modifiers } : {}),
+    lineKey: typeof i.lineKey === "string" && i.lineKey ? i.lineKey : lineKeyFor(i.menuItemId, modifiers),
+  };
+}
 
 export function CartProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CartState>(EMPTY);
@@ -59,10 +123,16 @@ export function CartProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(KEY);
+      const raw = localStorage.getItem(KEY) ?? localStorage.getItem(LEGACY_KEY);
       if (raw) {
         const parsed = JSON.parse(raw) as CartState;
-        if (parsed && Array.isArray(parsed.items)) setState(parsed);
+        if (parsed && Array.isArray(parsed.items)) {
+          const items = parsed.items
+            .map(normalizeItem)
+            .filter((i): i is CartItem => i !== null);
+          setState({ restaurantSlug: parsed.restaurantSlug ?? "", restaurantName: parsed.restaurantName ?? "", items });
+          localStorage.removeItem(LEGACY_KEY);
+        }
       }
     } catch {
       /* ignore */
@@ -86,11 +156,9 @@ export function CartProvider({ children }: { children: ReactNode }) {
         return false;
       }
       setState((s) => {
-        const existing = s.items.find((i) => i.menuItemId === item.menuItemId);
+        const existing = s.items.find((i) => i.lineKey === item.lineKey);
         const items = existing
-          ? s.items.map((i) =>
-              i.menuItemId === item.menuItemId ? { ...i, quantity: i.quantity + 1 } : i,
-            )
+          ? s.items.map((i) => (i.lineKey === item.lineKey ? { ...i, quantity: i.quantity + 1 } : i))
           : [...s.items, { ...item, quantity: 1 }];
         return { restaurantSlug, restaurantName, items };
       });
@@ -115,15 +183,15 @@ export function CartProvider({ children }: { children: ReactNode }) {
     [conflict],
   );
 
-  const setQuantity = useCallback((menuItemId: number, quantity: number) => {
+  const setQuantity = useCallback((lineKey: string, quantity: number) => {
     setState((s) => {
       if (quantity <= 0) {
-        const items = s.items.filter((i) => i.menuItemId !== menuItemId);
+        const items = s.items.filter((i) => i.lineKey !== lineKey);
         return items.length ? { ...s, items } : EMPTY;
       }
       return {
         ...s,
-        items: s.items.map((i) => (i.menuItemId === menuItemId ? { ...i, quantity } : i)),
+        items: s.items.map((i) => (i.lineKey === lineKey ? { ...i, quantity } : i)),
       };
     });
   }, []);
@@ -135,13 +203,20 @@ export function CartProvider({ children }: { children: ReactNode }) {
     let subtotal = 0;
     for (const i of state.items) {
       count += i.quantity;
-      subtotal += i.priceCents * i.quantity;
+      // Mirrors computeBill exactly: base × qty, modifiers charged once per line.
+      subtotal += i.priceCents * i.quantity + cartModifierTotalCents(i);
     }
     return { itemCount: count, subtotalCents: subtotal };
   }, [state.items]);
 
   const quantityOf = useCallback(
-    (menuItemId: number) => state.items.find((i) => i.menuItemId === menuItemId)?.quantity ?? 0,
+    (lineKey: string) => state.items.find((i) => i.lineKey === lineKey)?.quantity ?? 0,
+    [state.items],
+  );
+
+  const dishQuantityOf = useCallback(
+    (menuItemId: number) =>
+      state.items.filter((i) => i.menuItemId === menuItemId).reduce((s, i) => s + i.quantity, 0),
     [state.items],
   );
 
@@ -152,6 +227,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       itemCount,
       subtotalCents,
       quantityOf,
+      dishQuantityOf,
       add,
       setQuantity,
       clear,
@@ -159,7 +235,7 @@ export function CartProvider({ children }: { children: ReactNode }) {
       resolveConflict,
       bump,
     }),
-    [state, hydrated, itemCount, subtotalCents, quantityOf, add, setQuantity, clear, conflict, resolveConflict, bump],
+    [state, hydrated, itemCount, subtotalCents, quantityOf, dishQuantityOf, add, setQuantity, clear, conflict, resolveConflict, bump],
   );
 
   return <CartContext.Provider value={value}>{children}</CartContext.Provider>;

@@ -1,9 +1,20 @@
 import { NextRequest } from "next/server";
 import { listConnections, redeemConnectionCode, type RedeemConnectionInput } from "@/db/queries";
+import { requireOpsToken } from "@/lib/ops-auth";
 
 export const dynamic = "force-dynamic";
 
-export async function GET() {
+/**
+ * Enumerating every POS connection is ops-only.
+ *
+ * `POST` is deliberately NOT token-gated: redeeming a code is the restaurant's
+ * own onboarding handshake, and the single-use code *is* the capability. The
+ * abuse path that mattered — minting codes at will — is closed on
+ * `POST /api/partner/codes`, so an attacker cannot manufacture a code to redeem.
+ */
+export async function GET(req: NextRequest) {
+  const rejected = requireOpsToken(req);
+  if (rejected) return rejected;
   return Response.json({ connections: await listConnections() });
 }
 

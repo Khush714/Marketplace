@@ -4,7 +4,6 @@ import { Ambient } from "@/components/ambient";
 import { AppShell } from "@/components/app-shell";
 import { Providers } from "@/components/providers";
 import "./globals.css";
-import "@/payment/index.css";
 
 export const metadata: Metadata = {
   title: "crave. — Food, delivered beautifully",
@@ -17,6 +16,7 @@ export const viewport: Viewport = {
   themeColor: "#07070a",
   width: "device-width",
   initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {

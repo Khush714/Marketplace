@@ -16,23 +16,36 @@ export interface Address {
   text: string;
 }
 
+/**
+ * A placed order as this browser remembers it. The token is the signed
+ * per-order credential (see lib/order-token) — without it the order can no
+ * longer be read, so the pair is stored together and never separated.
+ */
+export interface StoredOrder {
+  code: string;
+  token: string;
+  at: number;
+}
+
 interface ProfileState {
   name: string;
   phone: string;
   addresses: Address[];
   favorites: string[]; // restaurant slugs
-  orderCodes: string[]; // most recent first
+  orders: StoredOrder[]; // most recent first
   recentSearches: string[];
 }
 
 interface ProfileContextValue extends ProfileState {
   hydrated: boolean;
+  /** Codes only, for counters and links. Reading an order needs its token. */
+  orderCodes: string[];
   setIdentity: (name: string, phone: string) => void;
   addAddress: (label: string, text: string) => Address;
   removeAddress: (id: string) => void;
   toggleFavorite: (slug: string) => void;
   isFavorite: (slug: string) => boolean;
-  rememberOrder: (code: string) => void;
+  rememberOrder: (code: string, token: string) => void;
   pushRecentSearch: (q: string) => void;
   clearRecentSearches: () => void;
 }
@@ -49,7 +62,7 @@ const EMPTY: ProfileState = {
     },
   ],
   favorites: [],
-  orderCodes: [],
+  orders: [],
   recentSearches: [],
 };
 
@@ -63,8 +76,16 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     try {
       const raw = localStorage.getItem(KEY);
       if (raw) {
-        const parsed = JSON.parse(raw) as Partial<ProfileState>;
-        setState({ ...EMPTY, ...parsed, addresses: parsed.addresses?.length ? parsed.addresses : EMPTY.addresses });
+        const parsed = JSON.parse(raw) as Partial<ProfileState> & { orderCodes?: string[] };
+        setState({
+          ...EMPTY,
+          ...parsed,
+          addresses: parsed.addresses?.length ? parsed.addresses : EMPTY.addresses,
+          // Legacy builds stored bare codes. Those orders are unreachable now
+          // (a code alone is not a credential), so they are dropped instead of
+          // being shown as permanently unloadable rows.
+          orders: Array.isArray(parsed.orders) ? parsed.orders.filter((o) => o?.code && o?.token) : [],
+        });
       }
     } catch {
       /* ignore */
@@ -109,8 +130,13 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     [state.favorites],
   );
 
-  const rememberOrder = useCallback((code: string) => {
-    setState((s) => ({ ...s, orderCodes: [code, ...s.orderCodes.filter((c) => c !== code)].slice(0, 30) }));
+  const rememberOrder = useCallback((code: string, token: string) => {
+    const clean = code.trim().toUpperCase();
+    if (!clean) return;
+    setState((s) => ({
+      ...s,
+      orders: [{ code: clean, token, at: Date.now() }, ...s.orders.filter((o) => o.code !== clean)].slice(0, 30),
+    }));
   }, []);
 
   const pushRecentSearch = useCallback((q: string) => {
@@ -130,6 +156,7 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     () => ({
       ...state,
       hydrated,
+      orderCodes: state.orders.map((o) => o.code),
       setIdentity,
       addAddress,
       removeAddress,

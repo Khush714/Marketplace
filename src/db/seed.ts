@@ -1,6 +1,27 @@
 import "dotenv/config";
 import { db } from "./index";
-import { menuItems, orders, restaurants } from "./schema";
+import {
+  integrationAudit,
+  integrationRecords,
+  integrationSessions,
+  menuItemModifierGroups,
+  menuItems,
+  modifierGroups,
+  modifierOptions,
+  orders,
+  restaurants,
+} from "./schema";
+
+const CONFIRM_TOKEN = "--confirm";
+
+if (!process.argv.includes(CONFIRM_TOKEN)) {
+  console.error("Refusing to run: pass '--confirm' to acknowledge this overwrites all data.");
+  process.exit(1);
+}
+if (process.env.NODE_ENV === "production") {
+  console.error("Refusing to run in production.");
+  process.exit(1);
+}
 
 const px = (id: number) =>
   `https://images.pexels.com/photos/${id}/pexels-photo-${id}.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200`;
@@ -374,38 +395,192 @@ const DATA: RestaurantDef[] = [
   },
 ];
 
+/* ------------------------------- modifiers -------------------------------- */
+
+/**
+ * Local modifier catalogue so the storefront dish sheet has something real to
+ * offer without a live POS. In production these rows are POS-owned and arrive
+ * through the menu webhook (`applyMenuSync` / `applyModifierEvent`); the seed
+ * only fabricates the POS ids those events would have supplied.
+ *
+ * [groupName, minSelect, maxSelect, [[optionName, priceRupe, isVeg], ...]]
+ */
+type ModifierGroupDef = [
+  name: string,
+  minSelect: number,
+  maxSelect: number,
+  options: [optionName: string, priceRupe: number, isVeg: boolean][],
+];
+
+/** One group flattened with the dish it belongs to. */
+type FlatModifierGroup = [
+  dishName: string,
+  groupName: string,
+  minSelect: number,
+  maxSelect: number,
+  options: [optionName: string, priceRupe: number, isVeg: boolean][],
+];
+
+/** restaurant slug → exact dish name → groups */
+const MODIFIERS: Record<string, Record<string, ModifierGroupDef[]>> = {  "ember-and-oak": {
+    "The Oak Smash": [
+      ["Patty", 1, 1, [["Double smash", 0, false], ["Triple smash", 80, false]]],
+      ["Cheese", 0, 2, [["Aged cheddar", 0, true], ["Smoked gouda", 45, true], ["Blue cheese", 55, true]]],
+      ["Extras", 0, 3, [["Bacon jam", 60, false], ["Extra patty", 120, false], ["Pickled jalapeño", 25, true]]],
+    ],
+    "Ember Stack": [
+      ["Spice level", 1, 1, [["Mild", 0, true], ["Ember hot", 0, false], ["Volcanic", 0, false]]],
+      ["Cheese", 0, 1, [["Smoked gouda", 0, true], ["Cheddar blend", 40, true]]],
+      ["Extras", 0, 2, [["Charred jalapeño relish", 35, true], ["Crispy onion", 25, true]]],
+    ],
+    "Garden Smash": [
+      ["Bun", 1, 1, [["Potato bun", 0, true], ["Multigrain bun", 20, true], ["Lettuce wrap", 0, true]]],
+      ["Extras", 0, 2, [["Extra patty", 90, true], ["Pickled onion", 20, true], ["Chipotle aioli", 15, true]]],
+    ],
+    "Blue Ridge Melt": [
+      ["Cheese", 1, 1, [["Blue cheese cream", 0, true], ["Aged cheddar", 30, true]]],
+      ["Extras", 0, 2, [["Rocket leaves", 25, true], ["Bacon jam", 60, false]]],
+    ],
+  },
+  "crust-theory": {
+    "Margherita Fiamma": [
+      ["Crust", 1, 1, [["Classic", 0, true], ["Thin & crisp", 0, true], ["Stuffed rim", 70, true]]],
+      ["Extras", 0, 3, [["Buffalo mozzarella", 85, true], ["Fresh basil", 20, true], ["Chilli honey", 30, true]]],
+    ],
+    "Diavola": [
+      ["Spice level", 1, 1, [["Mild", 0, false], ["Calabrian", 0, false], ["Inferno", 0, false]]],
+      ["Extras", 0, 2, [["Extra salami", 95, false], ["Hot honey", 30, true]]],
+    ],
+    "Funghi e Taleggio": [
+      ["Crust", 1, 1, [["Classic", 0, true], ["Thin & crisp", 0, true]]],
+      ["Extras", 0, 2, [["Truffle oil", 60, true], ["Extra taleggio", 75, true]]],
+    ],
+  },
+  "spice-route": {
+    "Butter Chicken 1962": [
+      ["Spice level", 1, 1, [["Mild", 0, true], ["Medium", 0, true], ["Hot", 0, true]]],
+      ["Extras", 0, 3, [["Extra butter sauce", 40, true], ["Coriander", 15, true], ["Chilli", 15, true]]],
+    ],
+  },
+  "nori-house": {
+    "Salmon Aburi Nigiri · 6 pc": [
+      ["Wasabi", 0, 1, [["No wasabi", 0, true], ["Fresh wasabi", 40, true]]],
+    ],
+  },
+};
+
 /* --------------------------------- seed ---------------------------------- */
 
 async function seed() {
   console.log("Clearing existing data…");
+  await db.delete(integrationSessions);
+  await db.delete(integrationAudit);
+  await db.delete(integrationRecords);
   await db.delete(orders);
+  await db.delete(menuItemModifierGroups);
+  await db.delete(modifierOptions);
+  await db.delete(modifierGroups);
   await db.delete(menuItems);
   await db.delete(restaurants);
 
   console.log(`Seeding ${DATA.length} restaurants…`);
+  let modifierCount = 0;
+  let optionCount = 0;
+  /* Modifier keys are exact dish names, so a typo or a renamed dish would
+     otherwise just quietly seed fewer groups. Collect and fail at the end. */
+  const unmatched: string[] = [];
   for (const def of DATA) {
     const { items, active, ...rest } = def;
     const [row] = await db
       .insert(restaurants)
       .values({ ...rest, isActive: active ?? true, offerPercent: def.offerPercent ?? 0, offerMaxCents: def.offerMaxCents ?? 0 })
       .returning();
-    await db.insert(menuItems).values(
-      items.map((it, i) => ({
+    const inserted = await db
+      .insert(menuItems)
+      .values(
+        items.map((it, i) => ({
+          restaurantId: row.id,
+          category: it[0],
+          name: it[1],
+          priceCents: Math.round(it[2] * 100),
+          description: it[3],
+          imageUrl: it[4],
+          isVeg: it[5] ?? false,
+          isBestseller: it[6] ?? false,
+          sort: i,
+        })),
+      )
+      .returning({ id: menuItems.id, name: menuItems.name });
+
+    /* Modifiers: POS ids are synthesized per restaurant (stable, unique) since
+       there is no POS behind a fresh seed. */
+    const byName = new Map(inserted.map((m) => [m.name, m.id]));
+    const dishModifiers = MODIFIERS[def.slug] ?? {};
+    for (const [dishName, groupName, minSelect, maxSelect, options] of flatGroups(dishModifiers)) {
+      const menuItemId = byName.get(dishName);
+      if (menuItemId === undefined) {
+        unmatched.push(`${def.slug} / "${dishName}"`);
+        console.warn(`  ! modifier group for "${dishName}" has no matching dish in ${def.slug}`);
+        continue;
+      }
+      const posGroupId = 9000 + modifierCount;
+      const [group] = await db
+        .insert(modifierGroups)
+        .values({
+          restaurantId: row.id,
+          posGroupId,
+          name: groupName,
+          minSelect,
+          maxSelect,
+          isActive: true,
+        })
+        .returning({ id: modifierGroups.id });
+      await db.insert(menuItemModifierGroups).values({
+        menuItemId,
+        modifierGroupId: group.id,
         restaurantId: row.id,
-        category: it[0],
-        name: it[1],
-        priceCents: Math.round(it[2] * 100),
-        description: it[3],
-        imageUrl: it[4],
-        isVeg: it[5] ?? false,
-        isBestseller: it[6] ?? false,
-        sort: i,
-      })),
-    );
+      });
+      modifierCount += 1;
+
+      await db.insert(modifierOptions).values(
+        options.map(([name, price, isVeg], i) => ({
+          groupId: group.id,
+          restaurantId: row.id,
+          posGroupId,
+          posOptionId: 9000 + optionCount + i,
+          name,
+          priceCents: Math.round(price * 100),
+          isVeg,
+          available: true,
+        })),
+      );
+      optionCount += options.length;
+    }
+
     console.log(`  ✓ ${def.name} (${items.length} dishes)`);
   }
-  console.log("Seed complete.");
+
+  if (unmatched.length > 0) {
+    throw new Error(
+      `Modifier catalogue references ${unmatched.length} dish name(s) that do not exist ` +
+        `in DATA. Fix the keys in MODIFIERS (they are exact, case-sensitive dish names):\n` +
+        unmatched.map((u) => `  - ${u}`).join("\n"),
+    );
+  }
+
+  console.log(`Seed complete (${modifierCount} modifier groups, ${optionCount} options).`);
   process.exit(0);
+}
+
+/** Flatten `{ dish: groups[] }` into `[dish, group, min, max, options][]`. */
+function flatGroups(byDish: Record<string, ModifierGroupDef[]>): FlatModifierGroup[] {
+  const out: FlatModifierGroup[] = [];
+  for (const [dish, groups] of Object.entries(byDish)) {
+    for (const [name, minSelect, maxSelect, options] of groups) {
+      out.push([dish, name, minSelect, maxSelect, options]);
+    }
+  }
+  return out;
 }
 
 seed().catch((err) => {

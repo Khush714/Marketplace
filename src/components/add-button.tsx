@@ -18,19 +18,27 @@ export function AddButton({
   restaurantName,
   className,
   compact = false,
+  onConfigure,
 }: {
   item: Omit<CartItem, "quantity">;
   restaurantSlug: string;
   restaurantName: string;
   className?: string;
   compact?: boolean;
+  /**
+   * When set, the button opens the dish customization sheet instead of adding
+   * straight away. Configurable dishes never show a stepper because one dish
+   * can hold several modifier variants at once, so there is no single line to
+   * increment.
+   */
+  onConfigure?: () => void;
 }) {
   const cart = useCart();
   const { toast } = useToast();
   const [ripple, setRipple] = useState(0);
-  const qty = cart.quantityOf(item.menuItemId);
+  const qty = cart.quantityOf(item.lineKey);
 
-  if (qty === 0) {
+  if (qty === 0 || onConfigure) {
     return (
       <button
         type="button"
@@ -38,6 +46,11 @@ export function AddButton({
           const rect = e.currentTarget.getBoundingClientRect();
           e.currentTarget.style.setProperty("--rx-pt", `${e.clientX - rect.left}px`);
           e.currentTarget.style.setProperty("--ry-pt", `${e.clientY - rect.top}px`);
+
+          if (onConfigure) {
+            onConfigure();
+            return;
+          }
 
           const ok = cart.add(item, restaurantSlug, restaurantName);
           if (ok) {
@@ -52,9 +65,9 @@ export function AddButton({
           compact ? "px-4 py-1.5 text-xs" : "px-6 py-2 text-sm",
           className,
         )}
-        aria-label={`Add ${item.name} to cart`}
+        aria-label={onConfigure ? `Customize ${item.name}` : `Add ${item.name} to cart`}
       >
-        <span className="relative z-10">ADD</span>
+        <span className="relative z-10">{onConfigure ? "CUSTOMISE" : "ADD"}</span>
         <Ripple id={ripple} />
       </button>
     );
@@ -74,7 +87,7 @@ export function AddButton({
       <button
         type="button"
         aria-label="Decrease quantity"
-        onClick={() => cart.setQuantity(item.menuItemId, qty - 1)}
+        onClick={() => cart.setQuantity(item.lineKey, qty - 1)}
         className={cn(
           "press relative grid place-items-center rounded-l-xl transition-colors hover:bg-white/15",
           compact ? "px-2 py-1.5" : "px-2.5 py-2",
@@ -92,7 +105,7 @@ export function AddButton({
         type="button"
         aria-label="Increase quantity"
         onClick={() => {
-          cart.setQuantity(item.menuItemId, qty + 1);
+          cart.setQuantity(item.lineKey, qty + 1);
           setRipple((r) => r + 1);
         }}
         className={cn(

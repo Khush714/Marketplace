@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Image from "next/image";
+import Link from "next/link";
 import { notFound } from "next/navigation";
 import { ChevronLeft, Clock3, MapPin, Percent, Star } from "lucide-react";
 import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
@@ -50,13 +51,13 @@ export default async function RestaurantPage(props: {
 
           {/* floating controls */}
           <div className="absolute inset-x-0 top-0 z-10 mx-auto flex max-w-5xl items-center justify-between px-4 pt-4 md:px-6">
-            <a
+            <Link
               href="/restaurants"
               aria-label="Back to restaurants"
               className="press glass-strong grid size-10 place-items-center rounded-full transition-colors hover:bg-white/15"
             >
               <ChevronLeft className="size-5 text-cream-50" />
-            </a>
+            </Link>
             <FavoriteHeroButton restaurant={r} />
           </div>
         </div>

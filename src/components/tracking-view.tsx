@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import {
   BadgeCheck,
+  Ban,
   Bike,
   ChefHat,
   House,
@@ -14,21 +15,26 @@ import {
   RefreshCcw,
   Star,
   Store,
-  UserRound,
+  XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
-import { cn, formatINR, ORDER_STAGES } from "@/lib/domain";
-import type { OrderDto } from "@/lib/types";
+import { orderItemLineTotalCents } from "@/db/schema";
+import { cn, formatINR } from "@/lib/domain";
+import { fetchPublicOrder } from "@/lib/order-access";
+import type { PublicOrder } from "@/lib/order-public";
 
+/* Canonical Marketplace stage keys — always rendered from the server-provided
+   `status.stages`, never re-derived in a component (Phase 5 mapping rule). */
 const STAGE_ICONS: Record<string, LucideIcon> = {
   placed: ReceiptText,
-  confirmed: BadgeCheck,
+  accepted: BadgeCheck,
   preparing: ChefHat,
   ready: Store,
-  rider: UserRound,
-  on_the_way: Bike,
+  out_for_delivery: Bike,
   delivered: PartyPopper,
+  cancelled: XCircle,
+  rejected: Ban,
 };
 
 interface Pt {
@@ -36,27 +42,62 @@ interface Pt {
   y: number;
 }
 
-export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
+type CancelState =
+  | { kind: "idle" }
+  | { kind: "sending" }
+  | { kind: "cancelled" }
+  | { kind: "pending" }
+  | { kind: "error"; message: string };
+
+export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrder; token: string }) {
   const [order, setOrder] = useState(initialOrder);
+  const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
 
   /* Live polling — the engine behind status updates */
   useEffect(() => {
     const poll = window.setInterval(async () => {
-      try {
-        const res = await fetch(`/api/orders/${order.code}`, { cache: "no-store" });
-        if (res.ok) {
-          const data = await res.json();
-          setOrder(data.order);
-        }
-      } catch {
-        /* keep last known state */
-      }
+      const found = await fetchPublicOrder(order.code, token);
+      if (found) setOrder(found);
     }, 4000);
     return () => window.clearInterval(poll);
-  }, [order.code]);
+  }, [order.code, token]);
+
+  async function handleCancel() {
+    setCancel({ kind: "sending" });
+    try {
+      const res = await fetch(`/api/orders/${order.code}/cancel`, {
+        method: "POST",
+        headers: { "x-order-token": token },
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        cancelled?: boolean;
+        pending?: boolean;
+        reason?: string;
+        code?: string;
+      } | null;
+      if (data?.cancelled) {
+        setCancel({ kind: "cancelled" });
+      } else if (data?.pending) {
+        setCancel({ kind: "pending" });
+      } else {
+        setCancel({ kind: "error", message: data?.reason ?? "Cancellation is not possible right now" });
+      }
+    } catch {
+      setCancel({ kind: "error", message: "Something went wrong — please try again" });
+    }
+  }
 
   const s = order.status;
   const etaMin = Math.max(1, Math.ceil(s.etaSeconds / 60));
+  const settled = s.stageKey === "cancelled" || s.stageKey === "rejected";
+  const mainline = Array.isArray(s.stages) ? s.stages : [];
+  const terminal = settled ? s : null;
+  const steps = terminal ? [...mainline, terminal] : mainline;
+  const currentIndex = terminal
+    ? s.stageIndex
+    : (steps.filter((st) => st.delivered).at(-1)?.stageIndex ?? -1);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-6 md:px-6 md:pt-9">
@@ -64,18 +105,26 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">
-            {!s.delivered && (
+            {!s.delivered && !settled && (
               <span className="relative flex size-2">
                 <span className="animate-dot-ping absolute inline-flex h-full w-full rounded-full bg-ember-400" />
                 <span className="relative inline-flex size-2 rounded-full bg-ember-400" />
               </span>
             )}
-            {s.delivered ? "Completed" : "Live tracking"}
+            {s.delivered ? "Completed" : settled ? "Closed" : "Live tracking"}
           </p>
           <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-4xl">
             {s.delivered ? (
               <>
                 Delivered<span className="text-gradient">.</span> Enjoy
+              </>
+            ) : s.stageKey === "cancelled" ? (
+              <>
+                Order cancelled<span className="text-gradient">.</span>
+              </>
+            ) : s.stageKey === "rejected" ? (
+              <>
+                Order rejected<span className="text-gradient">.</span>
               </>
             ) : (
               <>
@@ -92,7 +141,7 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
           </p>
         </div>
 
-        {!s.delivered && (
+        {!s.delivered && !settled && (
           <div className="glass rounded-2xl px-4 py-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">Current status</p>
             <p key={s.stageKey} className="animate-jelly mt-0.5 font-display text-base font-bold text-ember-300">
@@ -111,18 +160,18 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
           <div className="glass rounded-3xl p-5 md:p-6">
             <h2 className="mb-5 font-display text-base font-bold text-cream-50">Order journey</h2>
             <ol className="relative">
-              {ORDER_STAGES.map((stage, i) => {
-                const done = i < s.stageIndex;
-                const current = i === s.stageIndex;
-                const Icon = STAGE_ICONS[stage.key] ?? ReceiptText;
+              {steps.map((step) => {
+                const done = step.delivered || terminal?.stageKey === step.stageKey;
+                const current = step.stageIndex === currentIndex;
+                const Icon = STAGE_ICONS[step.stageKey] ?? ReceiptText;
                 return (
-                  <li key={stage.key} className="relative flex gap-4 pb-6 last:pb-0">
-                    {i < ORDER_STAGES.length - 1 && (
+                  <li key={step.stageKey} className="relative flex gap-4 pb-6 last:pb-0">
+                    {steps.indexOf(step) < steps.length - 1 && (
                       <span
                         aria-hidden
                         className={cn(
                           "absolute left-[17px] top-9 h-[calc(100%-28px)] w-0.5 origin-top rounded-full transition-all duration-700",
-                          i < s.stageIndex
+                          done
                             ? "scale-y-100 bg-gradient-to-b from-mint-400 to-mint-500/60"
                             : "scale-y-0 bg-white/10",
                         )}
@@ -133,13 +182,15 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
                       className={cn(
                         "relative z-10 grid size-9 shrink-0 place-items-center rounded-full transition-all duration-500",
                         done
-                          ? "bg-mint-500 text-emerald-950"
+                          ? terminal?.stageKey === step.stageKey
+                            ? "bg-gradient-to-b from-chili-400 to-red-700 text-white"
+                            : "bg-mint-500 text-emerald-950"
                           : current
                             ? "animate-jelly bg-gradient-to-b from-ember-400 to-chili-600 text-white shadow-glow"
                             : "bg-white/6 text-cream-600",
                       )}
                     >
-                      {current && !s.delivered && (
+                      {current && !s.delivered && !settled && (
                         <span className="animate-ripple absolute inset-0 rounded-full border border-ember-400/60" />
                       )}
                       <Icon className="size-4" strokeWidth={done || current ? 2.4 : 2} />
@@ -151,7 +202,7 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
                           current ? "text-cream-50" : done ? "text-cream-200" : "text-cream-600",
                         )}
                       >
-                        {stage.label}
+                        {step.stageLabel}
                       </p>
                       <p
                         className={cn(
@@ -159,7 +210,7 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
                           current ? "text-cream-400" : "text-cream-600",
                         )}
                       >
-                        {current ? stage.sub : done ? "Done" : "Upcoming"}
+                        {current ? step.stageSub : done ? "Done" : "Upcoming"}
                       </p>
                     </div>
                   </li>
@@ -168,8 +219,23 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
             </ol>
           </div>
 
+          {/* cancel order */}
+          {!settled && !s.delivered && cancel.kind !== "cancelled" && (
+            <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
+          )}
+          {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (
+            <div className="animate-pop-in rounded-3xl bg-gradient-to-br from-chili-400/15 to-transparent p-5 ring-1 ring-chili-400/25">
+              <p className="flex items-center gap-2 font-display text-base font-bold text-chili-300">
+                <XCircle className="size-5" /> Cancellation confirmed
+              </p>
+              <p className="mt-1 text-sm leading-relaxed text-cream-400">
+                Your order has been cancelled. Any payment will be refunded back to your original method.
+              </p>
+            </div>
+          )}
+
           {/* rider card */}
-          {(s.stageKey === "rider" || s.stageKey === "on_the_way") && (
+          {s.stageKey === "out_for_delivery" && (
             <div className="animate-pop-in glass rounded-3xl p-5">
               <div className="flex items-center gap-3.5">
                 <span className="relative grid size-12 place-items-center rounded-2xl bg-gradient-to-b from-ember-400/30 to-chili-600/20 text-ember-300 ring-1 ring-ember-400/30">
@@ -180,12 +246,12 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
                   </span>
                 </span>
                 <div className="min-w-0 flex-1">
-                  <p className="text-sm font-bold text-cream-50">{order.riderName}</p>
-                  <p className="text-xs text-cream-500">Your delivery partner · 4.9 ★</p>
+                  <p className="text-sm font-bold text-cream-50">{order.riderName ?? "Your rider"}</p>
+                  <p className="text-xs text-cream-500">Your delivery partner · en route</p>
                 </div>
                 <button
                   type="button"
-                  aria-label={`Call ${order.riderName}`}
+                  aria-label={`Call ${order.riderName ?? "your rider"}`}
                   className="press glass-strong grid size-10 place-items-center rounded-full text-mint-400 transition-colors hover:bg-white/15"
                 >
                   <Phone className="size-4" />
@@ -225,11 +291,22 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
             <h2 className="font-display text-base font-bold text-cream-50">Order summary</h2>
             <ul className="mt-4 space-y-2.5 text-sm">
               {order.items.map((i) => (
-                <li key={i.menuItemId} className="flex items-center justify-between gap-3">
-                  <span className="min-w-0 truncate text-cream-300">
-                    <span className="font-semibold text-cream-500">{i.quantity}×</span> {i.name}
+                <li key={i.menuItemId} className="flex items-start justify-between gap-3">
+                  <span className="min-w-0">
+                    <span className="block truncate text-cream-300">
+                      <span className="font-semibold text-cream-500">{i.quantity}×</span> {i.name}
+                    </span>
+                    {i.modifiers?.length ? (
+                      <span className="mt-0.5 block truncate text-xs text-cream-500">
+                        {i.modifiers
+                          .map((m) => `${m.quantity > 1 ? `${m.quantity}× ` : ""}${m.name}`)
+                          .join(", ")}
+                      </span>
+                    ) : null}
                   </span>
-                  <span className="shrink-0 text-cream-50 tabular-nums">{formatINR(i.priceCents * i.quantity)}</span>
+                  <span className="shrink-0 text-cream-50 tabular-nums">
+                    {formatINR(orderItemLineTotalCents(i))}
+                  </span>
                 </li>
               ))}
             </ul>
@@ -255,7 +332,7 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
                 <dd className="text-cream-50 tabular-nums">{formatINR(order.platformFeeCents)}</dd>
               </div>
               <div className="flex justify-between border-t border-white/10 pt-3 font-display text-base font-bold">
-                <dt className="text-cream-50">Paid via {order.paymentMethod.toUpperCase()}</dt>
+                <dt className="text-cream-50">{paymentLine(order)}</dt>
                 <dd className="text-cream-50 tabular-nums">{formatINR(order.totalCents)}</dd>
               </div>
             </dl>
@@ -272,6 +349,89 @@ export function TrackingView({ initialOrder }: { initialOrder: OrderDto }) {
   );
 }
 
+/* ------------------------------ cancel card ------------------------------ */
+
+/**
+ * The total line must never claim money that was not taken. An order awaiting
+ * payment says so, and says who collects it.
+ */
+function paymentLine(order: PublicOrder): string {
+  const method = order.paymentMethod.toUpperCase();
+  const status = order.paymentStatus.toUpperCase();
+  if (status === "PAID" || status === "CAPTURED") return `Paid via ${method}`;
+  if (status === "REFUNDED") return `Refunded · ${method}`;
+  if (status === "FAILED") return `Payment failed · ${method}`;
+  if (method === "COD") return "Cash due on delivery";
+  return "Payment pending";
+}
+
+function CancelCard({
+  state,
+  disabled,
+  reason,
+  onCancel,
+}: {
+  state: CancelState;
+  disabled: boolean;
+  reason: string | null;
+  onCancel: () => void;
+}) {
+  if (state.kind === "pending") {
+    return (
+      <div className="animate-pop-in glass rounded-3xl p-5">
+        <p className="flex items-center gap-2 font-display text-base font-bold text-ember-300">
+          <Ban className="size-5" /> Cancellation requested
+        </p>
+        <p className="mt-1 text-sm leading-relaxed text-cream-400">
+          We&apos;ve forwarded your request to the restaurant. It&apos;s normally confirmed within a minute —
+          keep this page open and we&apos;ll update it automatically.
+        </p>
+      </div>
+    );
+  }
+
+  if (state.kind === "error") {
+    return (
+      <div className="animate-pop-in glass rounded-3xl p-5 ring-1 ring-chili-400/30">
+        <p className="flex items-center gap-2 font-display text-base font-bold text-chili-300">
+          <XCircle className="size-5" /> Couldn&apos;t cancel
+        </p>
+        <p className="mt-1 text-sm leading-relaxed text-cream-400">{state.message}</p>
+        <button
+          type="button"
+          onClick={onCancel}
+          className="press mt-3 rounded-xl bg-white/8 px-4 py-2 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          Try again
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="glass rounded-3xl p-5">
+      <p className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+        <Ban className="size-5 text-chili-400" /> Changed your mind?
+      </p>
+      <p className="mt-1 text-sm leading-relaxed text-cream-400">
+        You can cancel while the restaurant is still preparing. The restaurant decides instantly, so no
+        back-and-forth.
+      </p>
+      {!disabled && (
+        <button
+          type="button"
+          onClick={onCancel}
+          disabled={state.kind === "sending"}
+          className="press mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-b from-chili-400 to-red-700 px-4 py-2.5 text-sm font-bold text-white transition-opacity disabled:opacity-60"
+        >
+          {state.kind === "sending" ? "Requesting…" : "Cancel order"}
+        </button>
+      )}
+      {disabled && reason && <p className="mt-3 text-xs text-cream-600">{reason}</p>}
+    </div>
+  );
+}
+
 /* ------------------------------ courier map ------------------------------ */
 
 const ROUTE_D = "M 52 236 C 110 178 148 226 196 178 C 244 130 268 168 308 118 C 330 92 344 84 352 78";
@@ -280,7 +440,7 @@ const ROUTE_D = "M 52 236 C 110 178 148 226 196 178 C 244 130 268 168 308 118 C 
 const TRAIL_LERP = [0.34, 0.22, 0.13];
 const TRAIL_RADIUS = [7, 5.5, 4];
 
-function CourierMap({ order }: { order: OrderDto }) {
+function CourierMap({ order }: { order: PublicOrder }) {
   const pathRef = useRef<SVGPathElement>(null);
   const [len, setLen] = useState(0);
   const [rider, setRider] = useState<Pt | null>(null);

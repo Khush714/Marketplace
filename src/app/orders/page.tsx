@@ -6,24 +6,34 @@ import { useEffect, useState } from "react";
 import { ArrowRight, ChevronRight, Clock3, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
+import type { PublicOrder } from "@/lib/order-public";
 import { useProfile } from "@/lib/profile";
-import type { OrderDto } from "@/lib/types";
 
 export default function OrdersPage() {
-  const { orderCodes, hydrated } = useProfile();
-  const [orders, setOrders] = useState<OrderDto[] | null>(null);
+  const { orders: stored, hydrated } = useProfile();
+  const [orders, setOrders] = useState<PublicOrder[] | null>(null);
 
+  /**
+   * Order history is read through the token-authenticated bulk lookup — a code
+   * on its own grants nothing, so this is also what stops the list from ever
+   * showing somebody else's order.
+   */
   useEffect(() => {
     if (!hydrated) return;
-    if (!orderCodes.length) {
+    if (!stored.length) {
       setOrders([]);
       return;
     }
     let cancelled = false;
     const load = () => {
-      fetch(`/api/orders?codes=${orderCodes.join(",")}`, { cache: "no-store" })
-        .then((r) => r.json())
-        .then((d) => {
+      fetch("/api/orders/lookup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
+        cache: "no-store",
+      })
+        .then((r) => (r.ok ? r.json() : { orders: [] }))
+        .then((d: { orders?: PublicOrder[] }) => {
           if (!cancelled) setOrders(d.orders ?? []);
         })
         .catch(() => {
@@ -36,7 +46,7 @@ export default function OrdersPage() {
       cancelled = true;
       window.clearInterval(t);
     };
-  }, [hydrated, orderCodes]);
+  }, [hydrated, stored]);
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-12 pt-6 md:px-6 md:pt-9">
@@ -92,7 +102,9 @@ export default function OrdersPage() {
                         <span className="shrink-0 font-mono text-[11px] font-semibold uppercase text-cream-500">{o.code}</span>
                       </div>
                       <p className="mt-0.5 truncate text-[13px] text-cream-500">
-                        {o.items.map((i) => `${i.quantity}× ${i.name}`).join(", ")}
+                        {o.items
+                          .map((i) => `${i.quantity}× ${i.name}`)
+                          .join(", ")}
                       </p>
                       <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-1.5">
                         <span

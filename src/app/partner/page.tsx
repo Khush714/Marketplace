@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import {
   BadgeCheck,
   Check,
@@ -13,14 +13,14 @@ import {
   Plus,
   Power,
   RefreshCw,
+  ShieldAlert,
   Store,
   Trash2,
   TriangleAlert,
-  UserRoundCheck,
 } from "lucide-react";
 import { cn, DEFAULT_LOCALITY, LOCALITIES } from "@/lib/domain";
 import { useToast } from "@/lib/toast";
-import type { ConnectionCodeDto, RestaurantDto, RestaurantManageDto } from "@/lib/types";
+import type { RestaurantDto, RestaurantManageDto } from "@/lib/types";
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const res = await fetch(url, init);
@@ -44,157 +44,26 @@ export default function PartnerPage() {
         Marketplace ops mints single-use connection codes. A restaurant enters its code to be
         onboarded onto the platform.
       </p>
+      <div className="mt-4 flex flex-wrap gap-2.5">
+        <Link
+          href="/partner/integrations"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <Handshake className="size-3.5" /> POS integration
+        </Link>
+        <Link
+          href="/ops"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <ShieldAlert className="size-3.5" /> Ops console (mint codes)
+        </Link>
+      </div>
 
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
-        <MintPanel />
         <ConnectPanel />
+        <ManagePanel />
       </div>
-
-      <ManagePanel />
     </div>
-  );
-}
-
-/* -------------------------------- minting -------------------------------- */
-
-function MintPanel() {
-  const { toast } = useToast();
-  const [codes, setCodes] = useState<ConnectionCodeDto[]>([]);
-  const [last, setLast] = useState<ConnectionCodeDto | null>(null);
-  const [minting, setMinting] = useState(false);
-  const [copied, setCopied] = useState(false);
-
-  const load = useCallback(async () => {
-    try {
-      const d = await json<{ codes: ConnectionCodeDto[] }>("/api/partner/codes");
-      setCodes(d.codes ?? []);
-    } catch {
-      setCodes([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/partner/codes")
-      .then((r) => r.json() as Promise<{ codes: ConnectionCodeDto[] }>)
-      .then((d) => {
-        if (!cancelled) setCodes(d.codes ?? []);
-      })
-      .catch(() => {
-        if (!cancelled) setCodes([]);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const mint = async () => {
-    setMinting(true);
-    try {
-      const d = await json<{ code: ConnectionCodeDto }>("/api/partner/codes", { method: "POST" });
-      setLast(d.code);
-      setCopied(false);
-      toast("Connection code minted");
-      void load();
-    } catch {
-      toast("Could not mint a code", { kind: "error" });
-    } finally {
-      setMinting(false);
-    }
-  };
-
-  const copy = async () => {
-    if (!last) return;
-    try {
-      await navigator.clipboard.writeText(last.code);
-      setCopied(true);
-      toast("Code copied to clipboard");
-    } catch {
-      toast("Copy failed", { kind: "error" });
-    }
-  };
-
-  return (
-    <section className="glass flex flex-col rounded-3xl p-5 md:p-6">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
-            <KeyRound className="size-4.5 text-mint-400" /> Mint connection codes
-          </h2>
-          <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-            Generate a one-time invite. Share it with a restaurant so it can onboard itself.
-          </p>
-        </div>
-        <button
-          type="button"
-          onClick={mint}
-          disabled={minting}
-          className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-b from-mint-400 to-mint-600 px-4 py-2.5 text-sm font-bold text-emerald-950 transition-opacity disabled:opacity-60"
-        >
-          <RefreshCw className={cn("size-4", minting && "animate-spin")} />
-          Mint
-        </button>
-      </div>
-
-      {last && (
-        <div className="mt-5 rounded-2xl border border-mint-400/25 bg-mint-500/10 p-4">
-          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-mint-400">Latest code</p>
-          <div className="mt-2 flex items-center gap-3">
-            <span className="font-display text-3xl font-bold tracking-tight text-cream-50 tabular-nums">
-              {last.code}
-            </span>
-            <button
-              type="button"
-              onClick={copy}
-              className={cn(
-                "press flex items-center gap-1.5 rounded-xl px-3 py-2 text-xs font-semibold transition-colors",
-                copied ? "bg-mint-500/20 text-mint-300" : "bg-white/8 text-cream-200 hover:bg-white/12",
-              )}
-            >
-              {copied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
-              {copied ? "Copied" : "Copy"}
-            </button>
-          </div>
-          {last.expiresAt && (
-            <p className="mt-1.5 text-xs text-cream-500">Valid through {formatWhen(last.expiresAt)}</p>
-          )}
-        </div>
-      )}
-
-      <div className="mt-5">
-        <p className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500">History</p>
-        {codes.length === 0 ? (
-          <p className="rounded-xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-center text-xs text-cream-500">
-            Nothing minted yet.
-          </p>
-        ) : (
-          <ul className="space-y-2">
-            {codes.map((c) => (
-              <li key={c.id} className="flex items-center gap-3 rounded-xl bg-white/[0.045] px-3.5 py-2.5">
-                <span className="font-mono text-sm font-bold text-cream-100 tabular-nums">{c.code}</span>
-                <span className="ml-auto flex items-center gap-2">
-                  {c.status === "used" ? (
-                    <>
-                      <span className="max-w-[9rem] truncate text-xs text-cream-400">{c.restaurantName}</span>
-                      <span className="flex items-center gap-1 rounded-full bg-mint-500/12 px-2 py-0.5 text-[10px] font-bold text-mint-400">
-                        <UserRoundCheck className="size-3" /> Used
-                      </span>
-                    </>
-                  ) : (
-                    <span className="flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-300">
-                      <BadgeCheck className="size-3" /> Unused
-                    </span>
-                  )}
-                </span>
-                <span className="hidden shrink-0 text-[11px] text-cream-600 sm:block">
-                  {formatWhen(c.createdAt)}
-                </span>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-    </section>
   );
 }
 
@@ -210,24 +79,9 @@ function ConnectPanel() {
   const [externalId, setExternalId] = useState("");
   const [imageUrl, setImageUrl] = useState("");
   const [busy, setBusy] = useState(false);
-  const [codeHint, setCodeHint] = useState<ConnectionCodeDto | null>(null);
   const [connected, setConnected] = useState<RestaurantDto | null>(null);
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
-
-  const checkCode = async (value: string) => {
-    const trimmed = value.trim().toUpperCase();
-    if (!/^CNX-[A-Z0-9]{5}$/.test(trimmed)) {
-      setCodeHint(null);
-      return;
-    }
-    try {
-      const d = await json<{ code: ConnectionCodeDto }>(`/api/partner/codes/${trimmed}`);
-      setCodeHint(d.code);
-    } catch {
-      setCodeHint(null);
-    }
-  };
 
   const submit = async (e: FormEvent) => {
     e.preventDefault();
@@ -264,7 +118,6 @@ function ConnectPanel() {
       setCuisines("");
       setExternalId("");
       setImageUrl("");
-      setCodeHint(null);
     } catch {
       toast("Something went wrong", { kind: "error" });
     } finally {
@@ -302,25 +155,10 @@ function ConnectPanel() {
           </label>
           <input
             value={code}
-            onChange={(e) => {
-              const v = e.target.value.toUpperCase();
-              setCode(v);
-              void checkCode(v);
-            }}
+            onChange={(e) => setCode(e.target.value.toUpperCase())}
             placeholder="CNX-HD6K2"
             className={cn(inputCls, "font-mono font-bold tabular-nums uppercase")}
           />
-          {codeHint && (
-            <p className="mt-1.5 flex items-center gap-1.5 text-xs">
-              {codeHint.status === "unused" ? (
-                <span className="flex items-center gap-1 font-semibold text-mint-400">
-                  <BadgeCheck className="size-3.5" /> Valid — can be redeemed
-                </span>
-              ) : (
-                <span className="font-semibold text-chili-400">Already used</span>
-              )}
-            </p>
-          )}
         </div>
 
         <div>
@@ -464,7 +302,8 @@ function ManagePanel() {
     setLoading(true);
     try {
       const d = await json<{ ok: boolean; error?: string; restaurant?: RestaurantManageDto }>(
-        `/api/partner/restaurant?ownerKey=${encodeURIComponent(trimmed)}`,
+        `/api/partner/restaurant`,
+        { headers: { "x-owner-key": trimmed } },
       );
       if (!d.ok || !d.restaurant) {
         setRestaurant(null);
