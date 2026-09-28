@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   BadgeCheck,
   Check,
@@ -52,6 +52,24 @@ class OpsError extends Error {
 export default function OpsPage() {
   const { toast } = useToast();
   const [token, setToken] = useState("");
+  // null = still asking the server. See /api/ops/status for why we ask.
+  const [open, setOpen] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/ops/status", { cache: "no-store" });
+        const d = (await res.json()) as { open?: boolean };
+        if (!cancelled) setOpen(d.open === true);
+      } catch {
+        if (!cancelled) setOpen(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const call = useCallback(
     async <T,>(url: string, init?: RequestInit): Promise<T> => {
@@ -76,6 +94,13 @@ export default function OpsPage() {
     [token],
   );
 
+  /**
+   * Mirrors `requireOpsToken`: a pasted token always works, and on a deployment
+   * with no token configured the server accepts the caller anyway, so the
+   * console must not sit there refusing to try.
+   */
+  const canAct = token.trim().length > 0 || open === true;
+
   return (
     <div className="mx-auto max-w-5xl px-4 pb-16 pt-8 md:px-6 md:pt-11">
       <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">
@@ -89,10 +114,15 @@ export default function OpsPage() {
         server answers 401.
       </p>
 
-      <TokenGate token={token} onSave={setToken} onTest={() => testToken(call, toast)} />
-      <CodesPanel token={token} call={call} />
-      <ConnectionsPanel token={token} call={call} />
-      <WorkersPanel token={token} call={call} />
+      <TokenGate
+        token={token}
+        open={open}
+        onSave={setToken}
+        onTest={() => testToken(call, toast, open)}
+      />
+      <CodesPanel token={token} canAct={canAct} call={call} />
+      <ConnectionsPanel token={token} canAct={canAct} call={call} />
+      <WorkersPanel token={token} canAct={canAct} call={call} />
 
       <Link
         href="/partner"
@@ -107,11 +137,15 @@ export default function OpsPage() {
 function testToken(
   call: <T>(url: string, init?: RequestInit) => Promise<T>,
   toast: ReturnType<typeof useToast>["toast"],
+  open: boolean | null,
 ) {
   void (async () => {
     try {
       await call<{ codes: unknown[] }>("/api/partner/codes");
-      toast("Ops token accepted", { kind: "success" });
+      // With no token configured there is nothing to verify, so say that
+      // instead of implying a pasted secret just passed a check.
+      if (open) toast("No ops token required on this deployment", { kind: "success" });
+      else toast("Ops token accepted", { kind: "success" });
     } catch (e) {
       toast(e instanceof Error ? e.message : "Could not verify the token", { kind: "error" });
     }
@@ -122,13 +156,19 @@ function testToken(
 
 function TokenGate({
   token,
+  open,
   onSave,
   onTest,
 }: {
   token: string;
+  open: boolean | null;
   onSave: (value: string) => void;
   onTest: () => void;
 }) {
+  // Worth trying once the server has answered: a pasted token is verifiable, and
+  // on an open deployment the call succeeds too (it just verifies nothing).
+  const canActVerify = token.trim().length > 0 || open === true;
+
   return (
     <section className="glass mt-7 rounded-3xl p-5 md:p-6">
       <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
@@ -152,16 +192,31 @@ function TokenGate({
         <button
           type="button"
           onClick={onTest}
-          disabled={!token}
+          disabled={!canActVerify}
           className="press shrink-0 rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
         >
           Verify
         </button>
       </div>
-      {!token && (
+      {open === null && (
         <p className="mt-2.5 text-xs text-cream-500">
-          On a deployment with no token configured these endpoints are open in development and
-          closed in production.
+          Checking whether this deployment requires an ops token…
+        </p>
+      )}
+      {open === true && (
+        <p className="mt-2.5 rounded-xl border border-ember-500/25 bg-ember-500/8 px-3.5 py-2.5 text-xs leading-relaxed text-ember-200">
+          <span className="font-bold">No ops token on this deployment.</span> POS_DELIVERY_OPS_TOKEN
+          is unset and this is not a production build, so the server accepts privileged calls from
+          anyone who can reach it. Leave the field empty — the buttons below work as-is. Set the
+          variable before deploying anywhere reachable.
+        </p>
+      )}
+      {open === false && !token && (
+        <p className="mt-2.5 rounded-xl border border-ember-500/25 bg-ember-500/8 px-3.5 py-2.5 text-xs leading-relaxed text-ember-200">
+          <span className="font-bold">Paste the ops token to enable actions.</span> It must match{" "}
+          <span className="font-mono">POS_DELIVERY_OPS_TOKEN</span> on the server. Without it this
+          deployment answers 503 for every privileged route — nobody, including a restaurant, can
+          mint an onboarding code.
         </p>
       )}
     </section>
@@ -172,7 +227,15 @@ function TokenGate({
 
 type OpsCall = <T>(url: string, init?: RequestInit) => Promise<T>;
 
-function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
+function CodesPanel({
+  token,
+  canAct,
+  call,
+}: {
+  token: string;
+  canAct: boolean;
+  call: OpsCall;
+}) {
   const { toast } = useToast();
   const [codes, setCodes] = useState<ConnectionCodeDto[]>([]);
   const [last, setLast] = useState<ConnectionCodeDto | null>(null);
@@ -182,7 +245,7 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!canAct) return;
     try {
       const d = await call<{ codes: ConnectionCodeDto[] }>("/api/partner/codes");
       setCodes(d.codes ?? []);
@@ -192,7 +255,7 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
       setCodes([]);
       setError(e instanceof Error ? e.message : "Could not load codes");
     }
-  }, [call, token]);
+  }, [call, canAct]);
 
   const mint = async () => {
     setBusy(true);
@@ -234,7 +297,7 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
           <button
             type="button"
             onClick={() => void load()}
-            disabled={!token || busy}
+            disabled={!canAct || busy}
             className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
           >
             <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
@@ -243,7 +306,7 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
           <button
             type="button"
             onClick={mint}
-            disabled={!token || busy}
+            disabled={!canAct || busy}
             className="press flex items-center gap-1.5 rounded-xl bg-gradient-to-b from-mint-400 to-mint-600 px-4 py-2 text-sm font-bold text-emerald-950 transition-opacity disabled:opacity-60"
           >
             {busy ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
@@ -283,7 +346,7 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
         </div>
       )}
 
-      {token && !error && loaded && (
+      {canAct && !error && loaded && (
         <div className="mt-5">
           <p className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500">History</p>
           {codes.length === 0 ? (
@@ -325,14 +388,22 @@ function CodesPanel({ token, call }: { token: string; call: OpsCall }) {
   );
 }
 
-function ConnectionsPanel({ token, call }: { token: string; call: OpsCall }) {
+function ConnectionsPanel({
+  token,
+  canAct,
+  call,
+}: {
+  token: string;
+  canAct: boolean;
+  call: OpsCall;
+}) {
   const [rows, setRows] = useState<ConnectionDto[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   const load = useCallback(async () => {
-    if (!token) return;
+    if (!canAct) return;
     setBusy(true);
     try {
       const d = await call<{ connections: ConnectionDto[] }>("/api/partner/connect");
@@ -345,7 +416,7 @@ function ConnectionsPanel({ token, call }: { token: string; call: OpsCall }) {
     } finally {
       setBusy(false);
     }
-  }, [call, token]);
+  }, [call, canAct]);
 
   return (
     <section className="glass mt-5 rounded-3xl p-5 md:p-6">
@@ -361,7 +432,7 @@ function ConnectionsPanel({ token, call }: { token: string; call: OpsCall }) {
         <button
           type="button"
           onClick={() => void load()}
-          disabled={!token || busy}
+          disabled={!canAct || busy}
           className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
         >
           <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
@@ -375,7 +446,7 @@ function ConnectionsPanel({ token, call }: { token: string; call: OpsCall }) {
         </p>
       )}
 
-      {token && !error && loaded && (
+      {canAct && !error && loaded && (
         <div className="mt-4">
           {rows.length === 0 ? (
             <p className="rounded-xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-center text-xs text-cream-500">
@@ -419,7 +490,15 @@ interface PosDrainSummary {
   errored: number;
 }
 
-function WorkersPanel({ token, call }: { token: string; call: OpsCall }) {
+function WorkersPanel({
+  token,
+  canAct,
+  call,
+}: {
+  token: string;
+  canAct: boolean;
+  call: OpsCall;
+}) {
   const { toast } = useToast();
   const [pos, setPos] = useState<PosDrainSummary | null>(null);
   const [payments, setPayments] = useState<string | null>(null);
@@ -478,7 +557,7 @@ function WorkersPanel({ token, call }: { token: string; call: OpsCall }) {
         <button
           type="button"
           onClick={drainPos}
-          disabled={!token || busy !== null}
+          disabled={!canAct || busy !== null}
           className="press flex items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-3 text-sm font-bold text-white shadow-glow disabled:opacity-50"
         >
           {busy === "pos" ? <LoaderCircle className="size-4 animate-spin" /> : <Store className="size-4" />}
@@ -487,7 +566,7 @@ function WorkersPanel({ token, call }: { token: string; call: OpsCall }) {
         <button
           type="button"
           onClick={runPayments}
-          disabled={!token || busy !== null}
+          disabled={!canAct || busy !== null}
           className="press flex items-center justify-center gap-2 rounded-2xl bg-white/8 py-3 text-sm font-bold text-cream-50 transition-colors hover:bg-white/12 disabled:opacity-50"
         >
           {busy === "payments" ? (
