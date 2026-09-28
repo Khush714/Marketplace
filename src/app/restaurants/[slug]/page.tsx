@@ -8,7 +8,7 @@ import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
 import { getRestaurant } from "@/db/queries";
-import { formatK, priceSymbol } from "@/lib/domain";
+import { formatK, isUnrated, priceSymbol } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
 
@@ -81,8 +81,10 @@ export default async function RestaurantPage(props: {
                 <p className="mt-1.5 text-sm text-cream-400">{r.tagline}</p>
               </div>
               <div className="flex flex-col items-end gap-1 rounded-2xl bg-white/[0.05] px-3.5 py-2.5">
-                <RatingBadge rating={r.rating} className="text-sm" />
-                <span className="text-[11px] text-cream-500">{formatK(r.ratingsCount)} ratings</span>
+                <RatingBadge rating={r.rating} ratingsCount={r.ratingsCount} className="text-sm" />
+                <span className="text-[11px] text-cream-500">
+                  {isUnrated(r.ratingsCount) ? "New on crave" : `${formatK(r.ratingsCount)} ratings`}
+                </span>
               </div>
             </div>
 

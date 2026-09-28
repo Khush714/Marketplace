@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { House, Search, ReceiptText, CircleUserRound, type LucideIcon } from "lucide-react";
+import { House, Search, ReceiptText, CircleUserRound, Handshake, type LucideIcon } from "lucide-react";
 import { useSearch } from "@/components/search-overlay";
 import { cn } from "@/lib/domain";
 
@@ -16,10 +16,16 @@ interface Tab {
 const TABS: Tab[] = [
   { href: "/", label: "Home", icon: House, match: (p) => p === "/" },
   { href: "/orders", label: "Orders", icon: ReceiptText, match: (p) => p.startsWith("/orders") || p.startsWith("/order") },
+  { href: "/partner", label: "Partner", icon: Handshake, match: (p) => p.startsWith("/partner") },
   { href: "/profile", label: "Profile", icon: CircleUserRound, match: (p) => p.startsWith("/profile") },
 ];
 
-const COLUMN_OF = [0, 2, 3];
+/**
+ * Visual column for each tab, in the order they are laid out in the bar:
+ * Home, Search, Orders, Partner, Profile. Search is a button rather than a
+ * TABS entry, so the columns are not simply the tab indices.
+ */
+const COLUMN_OF = [0, 2, 3, 4];
 
 export function BottomNav() {
   const pathname = usePathname();
@@ -36,11 +42,11 @@ export function BottomNav() {
       className="fixed inset-x-3 bottom-3 z-50 md:hidden"
       style={{ paddingBottom: "env(safe-area-inset-bottom)" }}
     >
-      <div className="glass-strong relative mx-auto grid max-w-sm grid-cols-4 items-center overflow-hidden rounded-3xl">
-        {/* sliding liquid indicator — 1/4 width, translated by column */}
+      <div className="glass-strong relative mx-auto grid max-w-sm grid-cols-5 items-center overflow-hidden rounded-3xl">
+        {/* sliding liquid indicator — 1/5 width, translated by column */}
         <span
           aria-hidden
-          className="absolute inset-y-1.5 left-0 w-1/4 px-1 transition-transform duration-[520ms] ease-[cubic-bezier(0.34,1.4,0.64,1)]"
+          className="absolute inset-y-1.5 left-0 w-1/5 px-1 transition-transform duration-[520ms] ease-[cubic-bezier(0.34,1.4,0.64,1)]"
           style={{ transform: `translateX(${Math.max(0, activeColumn) * 100}%)`, opacity: activeColumn === -1 ? 0 : 1 }}
         >
           <span className="block h-full rounded-2xl bg-gradient-to-b from-white/10 to-white/[0.04] ring-1 ring-white/10" />
@@ -50,6 +56,7 @@ export function BottomNav() {
         <NavButton icon={Search} label="Search" active={isOpen} onClick={open} />
         <NavItem tab={TABS[1]} active={TABS[1].match(pathname)} />
         <NavItem tab={TABS[2]} active={TABS[2].match(pathname)} />
+        <NavItem tab={TABS[3]} active={TABS[3].match(pathname)} />
       </div>
     </nav>
   );

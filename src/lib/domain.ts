@@ -26,6 +26,16 @@ export function formatK(count: number): string {
   return count >= 1000 ? `${(count / 1000).toFixed(1).replace(/\.0$/, "")}k` : `${count}`;
 }
 
+/**
+ * A listing with no ratings must never render a star score: `rating` carries a
+ * schema default purely so seeded rows are sortable, so a brand-new listing
+ * would otherwise launch to customers as a fabricated "4.2 (1k ratings)".
+ * Everything customer-facing gates on this instead of on `rating` alone.
+ */
+export function isUnrated(ratingsCount: number | null | undefined): boolean {
+  return !ratingsCount || ratingsCount <= 0;
+}
+
 export function formatClock(date: Date): string {
   return date.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
 }
@@ -127,6 +137,27 @@ export const DEFAULT_RESTAURANT_IMAGE =
   "https://images.pexels.com/photos/28674660/pexels-photo-28674660.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
 export const DEFAULT_RESTAURANT_HERO =
   "https://images.pexels.com/photos/24554391/pexels-photo-24554391.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=1200";
+/** Fallback artwork for a dish authored in the partner menu editor. */
+export const DEFAULT_DISH_IMAGE =
+  "https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=800";
+
+/**
+ * Accept only absolute http(s) image URLs. Partner-authored rows feed straight
+ * into `next/image`, so a `javascript:`/`data:`/relative value would either
+ * throw at render time or widen the optimizer's fetch surface.
+ */
+export function sanitizeImageUrl(raw: unknown, fallback: string): string {
+  const value = String(raw ?? "").trim();
+  if (!value) return fallback;
+  let parsed: URL;
+  try {
+    parsed = new URL(value);
+  } catch {
+    return fallback;
+  }
+  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return fallback;
+  return parsed.toString();
+}
 
 export const DELIVERY_FREE_ABOVE_CENTS = 49900;
 export const DELIVERY_FEE_CENTS = 3900;

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Clock3, Heart, Percent, Sparkles, Star } from "lucide-react";
 import { BLUR_DATA } from "@/components/atoms";
 import { Reveal, TiltCard } from "@/components/motion-primitives";
-import { cn, priceSymbol } from "@/lib/domain";
+import { cn, isUnrated, priceSymbol } from "@/lib/domain";
 import { useProfile } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
@@ -98,10 +98,19 @@ export function RestaurantCard({
               />
             </button>
 
-            {/* rating chip */}
+            {/* rating chip — a "New" pill until the listing has any reviews */}
             <div className="absolute left-3 top-3 flex items-center gap-1 rounded-full bg-black/55 px-2 py-1 backdrop-blur-md transition-transform duration-500 group-hover:-translate-y-0.5">
-              <Star className="size-3 fill-gold-400 text-gold-400" />
-              <span className="text-xs font-bold text-white">{r.rating.toFixed(1)}</span>
+              {isUnrated(r.ratingsCount) ? (
+                <>
+                  <Sparkles className="size-3 fill-ember-400 text-ember-400" />
+                  <span className="text-xs font-bold text-white">New</span>
+                </>
+              ) : (
+                <>
+                  <Star className="size-3 fill-gold-400 text-gold-400" />
+                  <span className="text-xs font-bold text-white">{r.rating.toFixed(1)}</span>
+                </>
+              )}
             </div>
 
             {/* offer ribbon */}

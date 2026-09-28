@@ -1,11 +1,33 @@
-import { ChevronRight, Leaf, Star } from "lucide-react";
+import { ChevronRight, Leaf, Sparkles, Star } from "lucide-react";
 import type { ReactNode } from "react";
-import { cn } from "@/lib/domain";
+import { cn, isUnrated } from "@/lib/domain";
 
 export const BLUR_DATA =
   "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFklEQVR4nGP8//8/AzGAiShVDAwMAAA5/wH/AO3zbwAAAABJRU5ErkJggg==";
 
-export function RatingBadge({ rating, className }: { rating: number; className?: string }) {
+export function RatingBadge({
+  rating,
+  ratingsCount,
+  className,
+}: {
+  rating: number;
+  ratingsCount: number;
+  className?: string;
+}) {
+  // No reviews yet — a "New" pill is honest, a star score would not be.
+  if (isUnrated(ratingsCount)) {
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 rounded-full bg-ember-500/15 px-2 py-0.5 text-xs font-bold text-ember-300",
+          className,
+        )}
+      >
+        <Sparkles className="size-3 fill-current" />
+        New
+      </span>
+    );
+  }
   return (
     <span
       className={cn(

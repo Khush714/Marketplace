@@ -19,6 +19,21 @@ function toInt(v: unknown): number | null {
   return Number.isInteger(n) ? n : null;
 }
 
+/**
+ * Read an id that addresses one of our own rows (`pos_*` ids, or the
+ * `marketplace_*` ids a POS echoes back) — these must be positive integers.
+ *
+ * `modifier_groups.pos_group_id` and `modifier_options.pos_option_id` are NOT
+ * NULL, so partner-authored rows (see `db/partner-menu.ts`) carry negative
+ * synthetic ids. Every upsert below matches on those columns, so a POS that
+ * sent a non-positive id would collide with — and overwrite — a partner row.
+ * Rejecting anything <= 0 keeps the two id spaces disjoint.
+ */
+function readPosId(v: unknown): number | null {
+  const n = toInt(v);
+  return n !== null && n > 0 ? n : null;
+}
+
 /** POS price (numeric rupees, 10,2) → Marketplace priceCents (int paise). */
 function cents(v: unknown): number | null {
   const n = Number(v);
@@ -257,7 +272,7 @@ async function applyMenuSync(
   const catIds = new Map<number, number>();
 
   for (const c of asArray(body.categories)) {
-    const posCatId = toInt(c.pos_category_id);
+    const posCatId = readPosId(c.pos_category_id);
     if (posCatId === null) continue;
     const name = str(c.name) ?? "Uncategorized";
     const [row] = await tx
@@ -304,11 +319,11 @@ async function applyMenuSync(
   const itemIds = new Map<number, number>();
 
   for (const it of asArray(body.items)) {
-    const posItemId = toInt(it.pos_item_id);
+    const posItemId = readPosId(it.pos_item_id);
     if (posItemId === null) continue;
     const name = str(it.name) ?? "Untitled";
     const price = cents(it.price);
-    const posCategoryId = toInt(it.category_id) ?? null;
+    const posCategoryId = readPosId(it.category_id) ?? null;
     const categoryId = posCategoryId !== null ? catIds.get(posCategoryId) : undefined;
     const displayCategory = str(it.category) ?? null;
 
@@ -365,7 +380,7 @@ async function applyMenuSync(
   }
 
   for (const g of asArray(body.modifier_groups)) {
-    const posGroupId = toInt(g.pos_group_id);
+    const posGroupId = readPosId(g.pos_group_id);
     if (posGroupId === null) continue;
     const name = str(g.name) ?? "Modifiers";
     const [row] = await tx
@@ -425,8 +440,8 @@ async function applyMenuSync(
     }
 
     for (const md of asArray(g.modifiers)) {
-      const posOptionId = toInt(md.pos_modifier_id);
-      if (posOptionId === null) continue;
+    const posOptionId = readPosId(md.pos_modifier_id);
+    if (posOptionId === null) continue;
       const optName = str(md.name) ?? "Option";
       const price = cents(md.price);
       const [optRow] = await tx
@@ -491,8 +506,8 @@ async function applyItemEvent(
   body: JsonObject,
   now: Date,
 ): Promise<{ mappings: MenuMappings; mintedEntityId: number | null; item?: JsonObject | null }> {
-  const posItemId = toInt(body.pos_item_id);
-  const marketplaceItemId = toInt(body.marketplace_item_id);
+  const posItemId = readPosId(body.pos_item_id);
+  const marketplaceItemId = readPosId(body.marketplace_item_id);
   const byPos = posItemId !== null
     ? await tx
         .select({ id: menuItems.id })
@@ -538,7 +553,7 @@ async function applyItemEvent(
   if (imageUrl !== null) patch.imageUrl = imageUrl;
   if (typeof body.description === "string") patch.description = body.description;
   if (posItemId !== null) patch.posItemId = posItemId;
-  const posCategoryId = toInt(body.category_id);
+  const posCategoryId = readPosId(body.category_id);
   if (posCategoryId !== null) patch.posCategoryId = posCategoryId;
   const categoryName = str(body.category);
   if (categoryName !== null) patch.category = categoryName;
@@ -592,7 +607,7 @@ async function applyCategoryEvent(
   body: JsonObject,
   now: Date,
 ): Promise<{ mappings: MenuMappings; mintedEntityId: number | null }> {
-  const posCategoryId = toInt(body.pos_category_id) ?? toInt(body.marketplace_category_id);
+  const posCategoryId = readPosId(body.pos_category_id) ?? readPosId(body.marketplace_category_id);
   if (posCategoryId === null) {
     return { mappings: {}, mintedEntityId: null };
   }
@@ -646,7 +661,7 @@ async function applyModifierGroupEvent(
   body: JsonObject,
   now: Date,
 ): Promise<{ mappings: MenuMappings; mintedEntityId: number | null }> {
-  const posGroupId = toInt(body.pos_group_id) ?? toInt(body.marketplace_modifier_group_id);
+  const posGroupId = readPosId(body.pos_group_id) ?? readPosId(body.marketplace_modifier_group_id);
   if (posGroupId === null) {
     return { mappings: {}, mintedEntityId: null };
   }
@@ -679,8 +694,8 @@ async function applyModifierGroupEvent(
         .delete(menuItemModifierGroups)
         .where(eq(menuItemModifierGroups.modifierGroupId, id));
       for (const rawPosItemId of body.items) {
-        const posItemId = toInt(rawPosItemId);
-        if (posItemId === null) continue;
+    const posItemId = readPosId(rawPosItemId);
+    if (posItemId === null) continue;
         const [lk] = await tx
           .select({ id: menuItems.id })
           .from(menuItems)
@@ -731,8 +746,8 @@ async function applyModifierEvent(
   body: JsonObject,
   now: Date,
 ): Promise<{ mappings: MenuMappings; mintedEntityId: number | null }> {
-  const posGroupId = toInt(body.pos_modifier_group_id) ?? toInt(body.marketplace_modifier_group_id);
-  const posOptionId = toInt(body.pos_modifier_id) ?? toInt(body.marketplace_modifier_id);
+  const posGroupId = readPosId(body.pos_modifier_group_id) ?? readPosId(body.marketplace_modifier_group_id);
+  const posOptionId = readPosId(body.pos_modifier_id) ?? readPosId(body.marketplace_modifier_id);
   if (posOptionId === null) {
     return { mappings: {}, mintedEntityId: null };
   }

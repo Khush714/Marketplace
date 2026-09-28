@@ -410,6 +410,7 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     name: r.name,
     cuisines: r.cuisines,
     rating: r.rating,
+    ratingsCount: r.ratingsCount,
     deliveryMinutes: r.deliveryMinutes,
     imageUrl: r.imageUrl,
     offer: r.offer,
@@ -683,6 +684,12 @@ export async function redeemConnectionCode(
           ownerKeyHash,
           imageUrl: String(input.imageUrl ?? "").trim() || DEFAULT_RESTAURANT_IMAGE,
           heroUrl: String(input.heroUrl ?? "").trim() || DEFAULT_RESTAURANT_HERO,
+          // A newly connected listing has no reviews. The schema default of
+          // 4.2/1000 exists so seeded rows sort, but inheriting it here would
+          // put invented social proof in front of customers. Customer surfaces
+          // render "New" while ratingsCount is 0 (see isUnrated).
+          rating: 0,
+          ratingsCount: 0,
         })
         .returning();
 

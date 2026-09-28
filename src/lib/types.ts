@@ -52,8 +52,61 @@ export interface MenuItemDto {
   imageUrl: string;
   isVeg: boolean;
   isBestseller: boolean;
-  /** POS-synced modifier groups offered for this dish. Absent when it has none. */
+  /** Modifier groups offered for this dish. Absent when it has none. */
   modifierGroups?: ModifierGroupDto[];
+}
+
+/* ------------------------- partner menu editor (P0) ------------------------ */
+
+export interface PartnerMenuItemDto {
+  id: number;
+  category: string;
+  name: string;
+  description: string;
+  priceCents: number;
+  imageUrl: string;
+  isVeg: boolean;
+  isBestseller: boolean;
+  available: boolean;
+  sort: number;
+  /** Modifier group ids currently attached to this dish. */
+  modifierGroupIds: number[];
+  /** True when the row is POS-owned, so the editor must not offer destructive edits. */
+  posSynced: boolean;
+}
+
+export interface PartnerModifierOptionDto {
+  id: number;
+  name: string;
+  priceCents: number;
+  isVeg: boolean;
+  available: boolean;
+  posSynced: boolean;
+}
+
+export interface PartnerModifierGroupDto {
+  id: number;
+  name: string;
+  minSelect: number;
+  maxSelect: number;
+  isActive: boolean;
+  options: PartnerModifierOptionDto[];
+  /** How many of the owner's dishes currently offer this group. */
+  itemCount: number;
+  posSynced: boolean;
+}
+
+export interface PartnerMenuDto {
+  restaurant: {
+    id: number;
+    name: string;
+    slug: string;
+    isActive: boolean;
+    /** Set when a POS owns this menu; the editor still works, rows coexist. */
+    posConnected: boolean;
+  };
+  items: PartnerMenuItemDto[];
+  modifierGroups: PartnerModifierGroupDto[];
 }
 
 export interface MenuSection {
@@ -133,6 +186,8 @@ export interface RestaurantSearchResult {
   name: string;
   cuisines: string[];
   rating: number;
+  /** Drives the "New" pill — a search hit must not show a score it never earned. */
+  ratingsCount: number;
   deliveryMinutes: number;
   imageUrl: string;
   offer: string | null;

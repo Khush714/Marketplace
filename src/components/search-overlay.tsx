@@ -19,11 +19,12 @@ import {
   Leaf,
   Percent,
   Search,
+  Sparkles,
   Star,
   TrendingUp,
   X,
 } from "lucide-react";
-import { cn, formatINR, withLoc } from "@/lib/domain";
+import { cn, formatINR, isUnrated, withLoc } from "@/lib/domain";
 import { useLocation } from "@/lib/location";
 import { cssVars } from "@/components/motion-primitives";
 import { useProfile } from "@/lib/profile";
@@ -359,7 +360,15 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
                                 )}
                               </span>
                               <span className="mt-0.5 flex items-center gap-1.5 text-xs text-cream-500">
-                                <Star className="size-3 fill-gold-400 text-gold-400" /> {r.rating.toFixed(1)}
+                                {isUnrated(r.ratingsCount) ? (
+                                  <>
+                                    <Sparkles className="size-3 fill-ember-400 text-ember-400" /> New
+                                  </>
+                                ) : (
+                                  <>
+                                    <Star className="size-3 fill-gold-400 text-gold-400" /> {r.rating.toFixed(1)}
+                                  </>
+                                )}
                                 <span aria-hidden>·</span> {r.deliveryMinutes} min
                                 <span aria-hidden>·</span> {r.cuisines.slice(0, 2).join(", ")}
                               </span>

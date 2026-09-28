@@ -17,8 +17,10 @@ import {
   Store,
   Trash2,
   TriangleAlert,
+  Utensils,
 } from "lucide-react";
 import { cn, DEFAULT_LOCALITY, LOCALITIES } from "@/lib/domain";
+import { storeOwnerKey } from "@/lib/owner-key-store";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto, RestaurantManageDto } from "@/lib/types";
 
@@ -45,6 +47,12 @@ export default function PartnerPage() {
         onboarded onto the platform.
       </p>
       <div className="mt-4 flex flex-wrap gap-2.5">
+        <Link
+          href="/partner/menu"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <Utensils className="size-3.5" /> Menu editor
+        </Link>
         <Link
           href="/partner/integrations"
           className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
@@ -111,6 +119,9 @@ function ConnectPanel() {
       setConnected(d.restaurant);
       setOwnerKey(d.ownerKey);
       setKeyCopied(false);
+      // Cache the key for this tab so the menu editor is one click away — it is
+      // never recoverable if the restaurant loses it.
+      storeOwnerKey(d.ownerKey);
       toast("Restaurant connected", { sub: `${d.restaurant.name} is now live` });
       setCode("");
       setName("");
@@ -248,8 +259,14 @@ function ConnectPanel() {
             <BadgeCheck className="size-4" /> {connected.name} is live
           </p>
           <Link
+            href="/partner/menu"
+            className="press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2 text-xs font-bold text-white transition-opacity"
+          >
+            <Utensils className="size-3.5" /> Add your first dish
+          </Link>
+          <Link
             href={`/restaurants/${connected.slug}`}
-            className="press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+            className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
           >
             <Store className="size-3.5" /> View restaurant page
           </Link>
@@ -312,6 +329,9 @@ function ManagePanel() {
       }
       setRestaurant(d.restaurant);
       setOwnerKey(trimmed);
+      // Remember the verified key for this tab so /partner/menu opens straight
+      // into the editor — the key is unrecoverable if it is ever lost.
+      storeOwnerKey(trimmed);
       setConfirmName("");
       toast("Restaurant loaded", { sub: d.restaurant.name });
     } catch {
@@ -468,6 +488,12 @@ function ManagePanel() {
                     ? "Pause restaurant"
                     : "Bring back online"}
               </button>
+              <Link
+                href="/partner/menu"
+                className="press inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2 text-xs font-bold text-white transition-opacity"
+              >
+                <Utensils className="size-3.5" /> Edit menu
+              </Link>
               <Link
                 href={`/restaurants/${restaurant.slug}`}
                 className="press inline-flex shrink-0 items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
