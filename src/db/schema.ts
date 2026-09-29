@@ -52,7 +52,17 @@ export const restaurants = pgTable("restaurants", {
   ratingsCount: integer("ratings_count").notNull().default(1000),
   priceLevel: integer("price_level").notNull().default(2),
   deliveryMinutes: integer("delivery_minutes").notNull().default(30),
-  distanceKm: real("distance_km").notNull().default(2),
+  /**
+   * Distance from the customer's locality, when the platform actually knows it.
+   *
+   * NULL is the honest "we have not measured this" — it is what a newly
+   * onboarded restaurant gets, because onboarding never measured it. The schema
+   * default of 2 existed so seeded demo rows sort; inheriting it at redemption
+   * (as `rating` used to) printed an invented "2.0 km" on every new listing and
+   * made `sort=near` rank by a constant. Customer surfaces render "Nearby"
+   * instead while this is null — see `hasDistance` in lib/domain.ts.
+   */
+  distanceKm: real("distance_km"),
   offer: text("offer"),
   offerPercent: integer("offer_percent").notNull().default(0),
   offerMaxCents: integer("offer_max_cents").notNull().default(0),
@@ -70,6 +80,19 @@ export const restaurants = pgTable("restaurants", {
    */
   marketplaceId: text("marketplace_id").unique(),
   ownerKeyHash: text("owner_key_hash"),
+  /**
+   * The POS passkey, hashed. Deliberately a SEPARATE credential from
+   * `ownerKeyHash`: passkey rotation writes only this column, so rotating the
+   * integration secret can never invalidate the key the restaurant holds for
+   * /partner, /partner/menu and /partner/integrations.
+   *
+   * NULL means "never separated" — rows onboarded before this column existed
+   * (and listings ops provisioned for the POS) fall back to `ownerKeyHash` at
+   * authentication time. A non-null value here SHADOWS the owner key: after the
+   * first rotation the old shared key stops being a valid passkey, which is the
+   * entire point of rotating.
+   */
+  integrationPasskeyHash: text("integration_passkey_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
@@ -264,6 +287,18 @@ export const orders = pgTable(
     externalOrderId: text("external_order_id"),
     /** The POS order id echoed back on successful delivery (marketplace_order_ingest). */
     posOrderId: integer("pos_order_id"),
+    /**
+     * Was this order admitted while the restaurant had an ACTIVE POS
+     * integration? Stamped at creation rather than re-derived, because the
+     * tracking view must keep showing the lifecycle the order was actually
+     * admitted into even if the integration is disabled mid-flight.
+     *
+     * FALSE is the honest answer for a seeded/demo restaurant, which restores
+     * the elapsed-time demo timeline the tracking view was written for.
+     * Deriving this from `external_order_id` does NOT work: that column is
+     * stamped on every order unconditionally, so it is true for all of them.
+     */
+    posConnected: boolean("pos_connected").notNull().default(false),
     /** Snapshot of the delivery journal row: PENDING → DELIVERED | FAILED. */
     posDeliveryStatus: text("pos_delivery_status").notNull().default("PENDING"),
     /**

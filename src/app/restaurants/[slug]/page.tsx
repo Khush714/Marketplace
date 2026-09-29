@@ -2,13 +2,14 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronLeft, Clock3, MapPin, Percent, Star } from "lucide-react";
+import { ChevronLeft, Clock3, MapPin, Percent, PlugZap, Star } from "lucide-react";
 import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
-import { getRestaurant } from "@/db/queries";
-import { formatK, isUnrated, priceSymbol } from "@/lib/domain";
+import { getRestaurant, hasActiveIntegration } from "@/db/queries";
+import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
+import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
 export const dynamic = "force-dynamic";
 
@@ -30,6 +31,13 @@ export default async function RestaurantPage(props: {
   if (!data) notFound();
 
   const { restaurant: r, sections } = data;
+
+  // Same predicate checkout enforces, so the page never advertises an order
+  // button that the checkout is about to reject. `orderingGateEnforced()` is
+  // consulted first so the banner cannot disagree with the gate by appearing
+  // locally on seeded demo listings that are meant to stay orderable.
+  const orderingClosed =
+    orderingGateEnforced() && !(await hasActiveIntegration(r.id));
 
   return (
     <div className="pb-10">
@@ -95,7 +103,7 @@ export default async function RestaurantPage(props: {
               </span>
               <span className="flex items-center gap-1.5">
                 <MapPin className="size-4 text-chili-400" />
-                {r.distanceKm.toFixed(1)} km · {r.locality}
+                {formatDistance(r.distanceKm)} · {r.locality}
               </span>
               <span className="flex items-center gap-1.5">
                 <Star className="size-4 text-gold-400" />
@@ -120,12 +128,28 @@ export default async function RestaurantPage(props: {
 
       {/* ------------------------- menu + side cart ------------------------ */}
       <div className="mx-auto mt-6 max-w-5xl px-4 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-8">
-        <MenuBrowser
-          sections={sections}
-          restaurantSlug={r.slug}
-          restaurantName={r.name}
-          highlightId={dish ? Number(dish) || null : null}
-        />
+        <div>
+          {orderingClosed && (
+            <div className="mb-5 flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-500/[0.07] px-4 py-3.5">
+              <PlugZap className="mt-0.5 size-4.5 shrink-0 text-ember-400" />
+              <div>
+                <p className="text-sm font-semibold text-ember-300">
+                  {ORDERING_CLOSED_MESSAGE}
+                </p>
+                <p className="mt-0.5 text-xs leading-relaxed text-cream-500">
+                  You can still browse the menu. This restaurant is not connected to its kitchen
+                  point-of-sale right now, so orders cannot be sent.
+                </p>
+              </div>
+            </div>
+          )}
+          <MenuBrowser
+            sections={sections}
+            restaurantSlug={r.slug}
+            restaurantName={r.name}
+            highlightId={dish ? Number(dish) || null : null}
+          />
+        </div>
         <aside className="hidden lg:block">
           <MiniCart restaurantSlug={r.slug} restaurantName={r.name} />
         </aside>

@@ -16,6 +16,10 @@ import {
   isAbsorbedAccepted,
   mapPosStatusToMarketplaceStatus,
 } from "@/integrations/pos/order-status";
+import {
+  initiateProviderRefund,
+  settleCancelledOrderPayment,
+} from "@/integrations/payments/refund";
 
 export const MAX_POS_DELIVERY_ATTEMPTS = 5;
 const BACKOFF_BASE_MS = 4000;
@@ -35,6 +39,15 @@ export function externalOrderIdFor(orderId: number): string {
  * integration is ACTIVE — demo/legacy restaurants with no live connection
  * never spawn delivery rows. Returns the row id when newly created, or null
  * when skipped or already known.
+ *
+ * Note this gate is deliberately LOOSER than `hasActiveIntegration`, which the
+ * checkout gate uses. Checkout decides what may be *sold*, so it demands the
+ * full deliverable set (ACTIVE + a POS restaurant id + a sealed webhook
+ * secret). This decides whether an already-admitted order gets a journal row,
+ * and a row that later finds the integration not-ready is recorded as a
+ * retryable failure by `attemptPosDelivery` — so an order placed seconds before
+ * the secret lands still goes out, instead of being silently dropped for want
+ * of a row.
  */
 export async function enqueueOrderDelivery(orderId: number): Promise<number | null> {
   const [orderRow] = await db
@@ -203,10 +216,43 @@ export async function recordPosDeliveryFailure(
     })
     .where(eq(posOrderDeliveries.id, deliveryId));
   if (terminal) {
-    await db
+    // Mark the order first — the customer-facing "we couldn't reach the
+    // kitchen" state reads this column, so it must not wait on the refund.
+    const [failed] = await db
       .update(orders)
       .set({ posDeliveryStatus: "FAILED" })
-      .where(eq(orders.id, marketplaceOrderId));
+      .where(eq(orders.id, marketplaceOrderId))
+      .returning({
+        restaurantId: orders.restaurantId,
+        externalOrderId: orders.externalOrderId,
+      });
+
+    // An order the kitchen never saw is an order nobody will deliver. If the
+    // customer already paid, that money has to come back - otherwise a charged
+    // order is stranded with a fictional courier on the tracking page.
+    //
+    // The settlement (REFUND_PENDING / PAYMENT_CANCELLED write) is AWAITED
+    // before `recordPosDeliveryFailure` returns, so a process exit at any
+    // later instant can never silently lose the refund intent: the row is
+    // durably REFUND_PENDING and the reconciliation job's REFUND_STUCK check
+    // surfaces whatever the provider never confirmed. Only the provider HTTP
+    // call is fire-and-forget - it is idempotent via the audit ledger and its
+    // own errors are recorded inside refund.ts. Covers every captured state
+    // (PAID / PARTIAL / PARTIALLY_REFUNDED), not just PAID; an UNPAID (COD)
+    // order simply closes its pending payment row.
+    if (failed?.externalOrderId) {
+      const payment = await settleCancelledOrderPayment(
+        failed.restaurantId,
+        failed.externalOrderId,
+        "order could not be delivered to the restaurant",
+      );
+      if (payment) {
+        void initiateProviderRefund(
+          payment,
+          "order could not be delivered to the restaurant",
+        ).catch((e) => console.error("[pos-delivery] provider refund initiation errored", e));
+      }
+    }
   }
   return terminal;
 }

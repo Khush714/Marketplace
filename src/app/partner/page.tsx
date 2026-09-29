@@ -19,7 +19,7 @@ import {
   TriangleAlert,
   Utensils,
 } from "lucide-react";
-import { cn, DEFAULT_LOCALITY, LOCALITIES } from "@/lib/domain";
+import { cn, CUISINES, DEFAULT_LOCALITY, LOCALITIES } from "@/lib/domain";
 import { storeOwnerKey } from "@/lib/owner-key-store";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto, RestaurantManageDto } from "@/lib/types";
@@ -86,6 +86,7 @@ function ConnectPanel() {
   const [locality, setLocality] = useState(DEFAULT_LOCALITY.name);
   const [externalId, setExternalId] = useState("");
   const [imageUrl, setImageUrl] = useState("");
+  const [heroUrl, setHeroUrl] = useState("");
   const [busy, setBusy] = useState(false);
   const [connected, setConnected] = useState<RestaurantDto | null>(null);
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
@@ -110,6 +111,7 @@ function ConnectPanel() {
           locality,
           externalId,
           imageUrl,
+          heroUrl,
         }),
       });
       if (!d.ok || !d.restaurant || !d.ownerKey) {
@@ -129,6 +131,7 @@ function ConnectPanel() {
       setCuisines("");
       setExternalId("");
       setImageUrl("");
+      setHeroUrl("");
     } catch {
       toast("Something went wrong", { kind: "error" });
     } finally {
@@ -241,6 +244,25 @@ function ConnectPanel() {
             placeholder="https://…"
             className={inputCls}
           />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-cream-600">
+            Square card image used in listings and search. Falls back to a
+            placeholder until your POS menu syncs.
+          </p>
+        </div>
+
+        <div>
+          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+            Cover image URL <span className="normal-case text-cream-600">(optional)</span>
+          </label>
+          <input
+            value={heroUrl}
+            onChange={(e) => setHeroUrl(e.target.value)}
+            placeholder="https://…"
+            className={inputCls}
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-cream-600">
+            Wide banner across the top of your restaurant page.
+          </p>
         </div>
 
         <button
@@ -269,6 +291,17 @@ function ConnectPanel() {
             className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
           >
             <Store className="size-3.5" /> View restaurant page
+          </Link>
+          {/*
+            The POS handshake lives on /partner/integrations, which now picks the
+            owner key up from sessionStorage on its own. Without this link the
+            operator finishes onboarding and has no signpost to the connect step.
+          */}
+          <Link
+            href="/partner/integrations"
+            className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+          >
+            <Handshake className="size-3.5" /> Connect your POS
           </Link>
 
           {ownerKey && (
@@ -305,12 +338,24 @@ function ConnectPanel() {
 
 /* --------------------------------- manage -------------------------------- */
 
+interface ProfileDraft {
+  name: string;
+  tagline: string;
+  cuisines: string;
+  locality: string;
+  imageUrl: string;
+  heroUrl: string;
+  pureVeg: boolean;
+}
+
 function ManagePanel() {
   const { toast } = useToast();
   const [ownerKey, setOwnerKey] = useState("");
   const [restaurant, setRestaurant] = useState<RestaurantManageDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [toggling, setToggling] = useState(false);
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profile, setProfile] = useState<ProfileDraft | null>(null);
   const [confirmName, setConfirmName] = useState("");
   const [deleting, setDeleting] = useState(false);
 
@@ -329,6 +374,15 @@ function ManagePanel() {
       }
       setRestaurant(d.restaurant);
       setOwnerKey(trimmed);
+      setProfile({
+        name: d.restaurant.name,
+        tagline: d.restaurant.tagline,
+        cuisines: d.restaurant.cuisines.join(", "),
+        locality: d.restaurant.locality,
+        imageUrl: d.restaurant.imageUrl,
+        heroUrl: d.restaurant.heroUrl,
+        pureVeg: d.restaurant.pureVeg,
+      });
       // Remember the verified key for this tab so /partner/menu opens straight
       // into the editor — the key is unrecoverable if it is ever lost.
       storeOwnerKey(trimmed);
@@ -366,6 +420,43 @@ function ManagePanel() {
       toast("Update failed", { kind: "error" });
     } finally {
       setToggling(false);
+    }
+  };
+
+  const saveProfile = async () => {
+    if (!profile) return;
+    setSavingProfile(true);
+    try {
+      const d = await json<{ ok: boolean; error?: string; restaurant?: RestaurantManageDto }>(
+        "/api/partner/restaurant",
+        {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            ownerKey,
+            profile: {
+              name: profile.name,
+              tagline: profile.tagline,
+              cuisines: profile.cuisines.split(",").map((c) => c.trim()).filter(Boolean),
+              locality: profile.locality,
+              imageUrl: profile.imageUrl,
+              heroUrl: profile.heroUrl,
+              pureVeg: profile.pureVeg,
+            },
+          }),
+        },
+      );
+      if (!d.ok || !d.restaurant) {
+        toast(d.error ?? "Could not save your listing", { kind: "error" });
+        return;
+      }
+      setRestaurant(d.restaurant);
+      setConfirmName("");
+      toast("Listing updated", { sub: "Your changes are live in the marketplace" });
+    } catch {
+      toast("Could not save your listing", { kind: "error" });
+    } finally {
+      setSavingProfile(false);
     }
   };
 
@@ -435,7 +526,7 @@ function ManagePanel() {
         </button>
       </div>
 
-      {restaurant && (
+      {restaurant && profile && (
         <div className="animate-pop-in mt-5 space-y-4">
           <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-4">
             <div className="flex flex-wrap items-center gap-2">
@@ -500,6 +591,115 @@ function ManagePanel() {
               >
                 <Store className="size-3.5" /> View listing
               </Link>
+            </div>
+          </div>
+
+          <div className="rounded-2xl border border-white/10 bg-white/[0.045] p-4">
+            <h3 className="text-[11px] font-bold uppercase tracking-[0.16em] text-ember-400">
+              Listing details
+            </h3>
+            <p className="mt-1 text-xs leading-relaxed text-cream-500">
+              Onboarding is one shot, so fix anything that was wrong here. Your
+              address and distance are set by the marketplace, not editable.
+            </p>
+            <div className="mt-3.5 space-y-3">
+              <div>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  Restaurant name
+                </label>
+                <input
+                  value={profile.name}
+                  onChange={(e) => setProfile({ ...profile, name: e.target.value })}
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  Tagline
+                </label>
+                <input
+                  value={profile.tagline}
+                  onChange={(e) => setProfile({ ...profile, tagline: e.target.value })}
+                  placeholder="e.g. Coastal classics, wood-fired"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  Cuisines <span className="normal-case text-cream-600">(comma separated)</span>
+                </label>
+                <input
+                  value={profile.cuisines}
+                  onChange={(e) => setProfile({ ...profile, cuisines: e.target.value })}
+                  className={inputCls}
+                />
+                <p className="mt-1.5 text-[11px] leading-relaxed text-cream-600">
+                  Must match the marketplace filter: {CUISINES.join(", ")}.
+                  An unrecognised tag makes your listing unfindable by cuisine.
+                </p>
+              </div>
+              <div>
+                <label className="mb-1.5 flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  <MapPin className="size-3" /> Locality
+                </label>
+                <select
+                  value={profile.locality}
+                  onChange={(e) => setProfile({ ...profile, locality: e.target.value })}
+                  className={inputCls}
+                >
+                  {LOCALITIES.map((l) => (
+                    <option key={l.key} value={l.name} className="bg-coal">
+                      {l.name} · {l.city}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  Image URL
+                </label>
+                <input
+                  value={profile.imageUrl}
+                  onChange={(e) => setProfile({ ...profile, imageUrl: e.target.value })}
+                  placeholder="https://…"
+                  className={inputCls}
+                />
+              </div>
+              <div>
+                <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+                  Cover image URL
+                </label>
+                <input
+                  value={profile.heroUrl}
+                  onChange={(e) => setProfile({ ...profile, heroUrl: e.target.value })}
+                  placeholder="https://…"
+                  className={inputCls}
+                />
+              </div>
+              <label className="flex items-center gap-2.5 text-xs font-semibold text-cream-300">
+                <input
+                  type="checkbox"
+                  checked={profile.pureVeg}
+                  onChange={(e) => setProfile({ ...profile, pureVeg: e.target.checked })}
+                  className="size-4 accent-mint-400"
+                />
+                Pure vegetarian kitchen
+              </label>
+            </div>
+            <div className="mt-4 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void saveProfile()}
+                disabled={savingProfile || !profile.name.trim()}
+                className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-xs font-bold text-white transition-opacity disabled:opacity-60"
+              >
+                {savingProfile ? (
+                  <RefreshCw className="size-3.5 animate-spin" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                {savingProfile ? "Saving…" : "Save changes"}
+              </button>
             </div>
           </div>
 

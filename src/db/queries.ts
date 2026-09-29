@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gt, ilike, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
@@ -18,6 +18,7 @@ import {
 } from "@/db/schema";
 import {
   billFor,
+  CUISINES,
   DEFAULT_LOCALITY,
   DEFAULT_RESTAURANT_HERO,
   DEFAULT_RESTAURANT_IMAGE,
@@ -27,9 +28,12 @@ import {
   makeOrderCode,
   orderProgress,
   ORDER_STAGES,
+  sanitizeImageUrl,
   type BillBreakdown,
 } from "@/lib/domain";
-import { hashOwnerKey, hashToken, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
+import { hashOwnerKey, hashToken, integrationPasskeyMatches, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
+import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
+import { discoverableRestaurant } from "@/lib/discoverability";
 import { statusRank } from "@/integrations/pos/order-status";
 import { OUTLET_ERROR_MESSAGES, resolveOutletForRestaurant } from "@/integrations/pos/resolve-outlet";
 import type {
@@ -209,7 +213,12 @@ const INTEGRATION_ETA_SECONDS: Record<string, number> = {
 };
 
 function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
-  const integrated = o.externalOrderId != null || o.posOrderId != null;
+  // `posConnected`, not `externalOrderId` — see the column comment. Only an
+  // order admitted through a live POS integration is driven by POS events; a
+  // seeded/demo order keeps the elapsed-time timeline it was always meant to
+  // have, instead of sitting at "waiting for the restaurant to accept" forever
+  // behind an ETA that resets on every poll.
+  const integrated = o.posConnected;
   const status = integrated ? integrationOrderStatus(o) : demoOrderStatus(o);
   return {
     id: o.id,
@@ -225,6 +234,8 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
     phone: o.phone,
     paymentMethod: o.paymentMethod,
     paymentStatus: o.paymentStatus,
+    posDeliveryStatus: o.posDeliveryStatus,
+    posConnected: integrated,
     instructions: o.instructions,
     riderName: o.riderName,
     subtotalCents: o.subtotalCents,
@@ -284,6 +295,44 @@ function integrationOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
 
 /* ---------------------------- restaurant reads --------------------------- */
 
+/**
+ * Whether a restaurant can actually receive an order from the Marketplace.
+ *
+ * Single source of truth for "is this restaurant wired to a POS": the ordering
+ * gate reads it at checkout, and `createOrder` records the answer on the order
+ * so tracking keeps the right lifecycle even if the integration is later
+ * disabled. `resolveOutletForRestaurant` is deliberately not reused here — it
+ * also validates an outlet claim, which checkout has not got at this point.
+ *
+ * `status = 'active'` alone is NOT sufficient and treating it as such was a
+ * money bug: the claim flow could set ACTIVE without a webhook secret (it only
+ * seals one when the POS sends it), and `enqueueOrderDelivery` gates on this
+ * same predicate but `attemptPosDelivery` additionally refuses to POST without
+ * a secret. The result was an order the customer was charged for and the
+ * journal retried forever with "webhook secret missing". So readiness is
+ * asserted from all three facts delivery actually needs, matching
+ * `notReadyReason` in the order bridge:
+ *
+ *   - an ACTIVE integration record
+ *   - a POS restaurant id to route `order.restaurant_id` on
+ *   - a sealed webhook secret to sign the payload with
+ */
+export async function hasActiveIntegration(restaurantId: number): Promise<boolean> {
+  const [rec] = await db
+    .select({ id: integrationRecords.id })
+    .from(integrationRecords)
+    .where(
+      and(
+        eq(integrationRecords.restaurantId, restaurantId),
+        eq(integrationRecords.status, "active"),
+        isNotNull(integrationRecords.posRestaurantId),
+        isNotNull(integrationRecords.webhookSecret),
+      ),
+    )
+    .limit(1);
+  return !!rec;
+}
+
 export interface BrowseFilters {
   q?: string;
   cuisine?: string;
@@ -295,7 +344,7 @@ export interface BrowseFilters {
 }
 
 export async function browseRestaurants(filters: BrowseFilters = {}): Promise<RestaurantDto[]> {
-  const conditions: (SQL | undefined)[] = [eq(restaurants.isActive, true)];
+  const conditions: (SQL | undefined)[] = [discoverableRestaurant];
   if (filters.q) {
     const like = `%${filters.q}%`;
     conditions.push(
@@ -324,7 +373,10 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
           : filters.sort === "price-high"
             ? [desc(restaurants.priceLevel)]
             : filters.sort === "near"
-              ? [asc(restaurants.distanceKm)]
+              // Explicit NULLS LAST: a listing with no measured distance has no
+              // place in a "nearest" ranking, and Postgres only guarantees this
+              // implicitly for ASC.
+              ? [sql`${restaurants.distanceKm} asc nulls last`]
               : [desc(restaurants.featured), desc(restaurants.rating)];
 
   const rows = await db
@@ -336,7 +388,7 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
 }
 
 export async function featuredRestaurants(locality?: string): Promise<RestaurantDto[]> {
-  const conditions = [eq(restaurants.isActive, true), eq(restaurants.featured, true)];
+  const conditions = [discoverableRestaurant, eq(restaurants.featured, true)];
   if (locality) conditions.push(eq(restaurants.locality, locality));
   const rows = await db
     .select()
@@ -390,7 +442,7 @@ export async function getRestaurant(slug: string) {
 export async function searchAll(q: string, locality?: string): Promise<SearchResult[]> {
   const like = `%${q}%`;
   const restaurantCondition = and(
-    eq(restaurants.isActive, true),
+    discoverableRestaurant,
     or(
       ilike(restaurants.name, like),
       ilike(restaurants.tagline, like),
@@ -624,11 +676,11 @@ export async function redeemConnectionCode(
   const externalId = String(input.externalId ?? "").trim().slice(0, 64);
   if (!externalId) return { ok: false, error: "Marketplace store ID is required" };
 
-  const cuisines = (Array.isArray(input.cuisines) ? input.cuisines : [])
-    .map((c) => String(c).trim().slice(0, 24))
-    .filter(Boolean)
-    .slice(0, 4);
-  if (!cuisines.length) return { ok: false, error: "At least one cuisine is required" };
+  // Cuisines are validated against the marketplace vocabulary rather than
+  // stored verbatim: the browse filter rail is a fixed list and matches with
+  // `= any(cuisines)`, so an off-list tag makes a listing unfindable by cuisine.
+  const normalizedCuisines = normalizeCuisines(input.cuisines);
+  if (!normalizedCuisines.ok) return { ok: false, error: normalizedCuisines.error };
 
   const locality = LOCALITIES.some((l) => l.name === input.locality) ? input.locality : DEFAULT_LOCALITY.name;
 
@@ -643,6 +695,9 @@ export async function redeemConnectionCode(
 
   const ownerKey = makeOwnerKey();
   const ownerKeyHash = hashOwnerKey(ownerKey);
+  // The one-time key the restaurant is shown doubles as its initial POS passkey,
+  // so both credentials start identical and only diverge on rotation.
+  const integrationPasskeyHash = ownerKeyHash;
 
   try {
     const restaurant = await db.transaction(async (tx) => {
@@ -677,13 +732,16 @@ export async function redeemConnectionCode(
           slug,
           name,
           tagline: String(input.tagline ?? "").trim().slice(0, 80),
-          cuisines,
+          cuisines: normalizedCuisines.cuisines,
           locality,
           externalId,
           marketplaceId: makeMarketplaceId(),
           ownerKeyHash,
-          imageUrl: String(input.imageUrl ?? "").trim() || DEFAULT_RESTAURANT_IMAGE,
-          heroUrl: String(input.heroUrl ?? "").trim() || DEFAULT_RESTAURANT_HERO,
+          integrationPasskeyHash,
+          // Sanitised the same way partner-authored dish images are: an
+          // unvalidated restaurant image URL feeds next/image directly.
+          imageUrl: sanitizeImageUrl(input.imageUrl, DEFAULT_RESTAURANT_IMAGE),
+          heroUrl: sanitizeImageUrl(input.heroUrl, DEFAULT_RESTAURANT_HERO),
           // A newly connected listing has no reviews. The schema default of
           // 4.2/1000 exists so seeded rows sort, but inheriting it here would
           // put invented social proof in front of customers. Customer surfaces
@@ -758,6 +816,111 @@ export async function setRestaurantActive(
 }
 
 /**
+ * Normalise a free-text cuisine list onto the marketplace's published
+ * vocabulary, case- and whitespace-insensitively.
+ *
+ * Onboarding and the profile editor both accept free text, but the browse
+ * filter rail is a fixed 12-chip list (`CUISINES` in lib/domain.ts) and the
+ * filter query is an exact `= any(cuisines)` match. A listing tagged
+ * "kashmiri" or "Biryani " is therefore stored fine and then unfindable by
+ * cuisine — so unknown values are rejected here, with the valid set in the
+ * error, rather than silently creating an orphan tag.
+ */
+export function normalizeCuisines(
+  raw: unknown,
+): { ok: true; cuisines: string[] } | { ok: false; error: string } {
+  const input = Array.isArray(raw) ? raw : String(raw ?? "").split(",");
+  const byKey = new Map(CUISINES.map((c) => [c.toLowerCase(), c]));
+
+  const cuisines: string[] = [];
+  const unknown: string[] = [];
+  for (const entry of input) {
+    const trimmed = String(entry ?? "").trim();
+    if (!trimmed) continue;
+    const canonical = byKey.get(trimmed.toLowerCase());
+    if (canonical) {
+      if (!cuisines.includes(canonical)) cuisines.push(canonical);
+    } else if (!unknown.includes(trimmed)) {
+      unknown.push(trimmed);
+    }
+  }
+
+  if (unknown.length) {
+    return {
+      ok: false,
+      error: `Unknown cuisine${unknown.length > 1 ? "s" : ""}: ${unknown.join(", ")}. Choose from: ${CUISINES.join(", ")}`,
+    };
+  }
+  if (!cuisines.length) return { ok: false, error: "At least one cuisine is required" };
+  return { ok: true, cuisines: cuisines.slice(0, 4) };
+}
+
+export interface RestaurantProfileInput {
+  name: string;
+  tagline: string;
+  cuisines: string[];
+  locality: string;
+  imageUrl?: string;
+  heroUrl?: string;
+  pureVeg?: boolean;
+}
+
+/**
+ * Edit the parts of a listing a partner owns.
+ *
+ * Onboarding is otherwise write-once: nothing in the partner surface can fix a
+ * mistyped name, a wrong locality or a tag that is not on the filter rail, and
+ * the only escape was deleting the listing and redeeming a new code.
+ *
+ * The tenant is resolved from the owner key and NEVER taken from the request
+ * body — the same rule the menu editor follows (see db/partner-menu.ts). Ids
+ * that are not partner-editable (slug, rating, distanceKm, featured, offer,
+ * externalId, marketplaceId) are deliberately absent from the patch set.
+ *
+ * `slug` is intentionally NOT regenerated: it is already in shared links and
+ * order history, so a rename leaves the old address working.
+ */
+export async function updateRestaurantProfile(
+  ownerKey: string,
+  input: RestaurantProfileInput,
+): Promise<{ ok: true; restaurant: RestaurantManageDto } | { ok: false; error: string }> {
+  const key = String(ownerKey ?? "").trim();
+  if (!key) return { ok: false, error: "Owner key is required" };
+  const [r] = await db
+    .select()
+    .from(restaurants)
+    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
+    .limit(1);
+  if (!r) return { ok: false, error: "Invalid owner key" };
+
+  const name = String(input.name ?? "").trim().slice(0, 80);
+  if (!name) return { ok: false, error: "Restaurant name is required" };
+
+  const normalized = normalizeCuisines(input.cuisines);
+  if (!normalized.ok) return normalized;
+
+  // A locality outside the served set would hide the listing from every
+  // browse query, so reject it loudly instead of silently filing it under the
+  // default locality the way redemption used to.
+  const locality = String(input.locality ?? "").trim();
+  if (!LOCALITIES.some((l) => l.name === locality)) {
+    return { ok: false, error: `Choose a served locality: ${LOCALITIES.map((l) => l.name).join(", ")}` };
+  }
+
+  const tagline = String(input.tagline ?? "").trim().slice(0, 80);
+  const imageUrl = sanitizeImageUrl(input.imageUrl, r.imageUrl);
+  const heroUrl = sanitizeImageUrl(input.heroUrl, r.heroUrl);
+  const pureVeg = Boolean(input.pureVeg);
+
+  const [updated] = await db
+    .update(restaurants)
+    .set({ name, tagline, cuisines: normalized.cuisines, locality, imageUrl, heroUrl, pureVeg })
+    .where(eq(restaurants.id, r.id))
+    .returning();
+  return { ok: true, restaurant: toRestaurantManageDto(updated) };
+}
+
+/**
  * Permanently remove an owner's listing together with its menu, connection,
  * integration sessions and order history. Requires the exact restaurant name
  * as an explicit, typed confirmation.
@@ -798,6 +961,10 @@ export interface IntegrationIdentity {
  * The restaurant's "API key + secret" handshake: the minted connection code
  * acts as the login ID and the passkey (owner key) as the password. Both must
  * match the code -> connection -> restaurant chain.
+ *
+ * The password half is checked against `integration_passkey_hash`, falling back
+ * to `owner_key_hash` for listings that predate the split — see
+ * `integrationPasskeyMatches`.
  */
 export async function authenticateIntegration(
   code: string,
@@ -818,7 +985,7 @@ export async function authenticateIntegration(
     .where(eq(connectionCodes.code, c))
     .limit(1);
   if (!row) return null;
-  if (!ownerKeyMatches(row.r.ownerKeyHash, p)) return null;
+  if (!integrationPasskeyMatches(row.r, p)) return null;
   return { restaurant: toRestaurantDto(row.r), codeId: row.c.id };
 }
 
@@ -875,9 +1042,11 @@ export async function rotatePasskey(
   const identity = await authenticateIntegration(code, currentPasskey);
   if (!identity) return { ok: false, error: "Invalid credentials" };
   const next = makeOwnerKey();
+  // Only the POS credential moves. The restaurant's owner key is untouched, so
+  // rotating the integration secret no longer locks the owner out of /partner.
   await db
     .update(restaurants)
-    .set({ ownerKeyHash: hashOwnerKey(next) })
+    .set({ integrationPasskeyHash: hashOwnerKey(next) })
     .where(eq(restaurants.id, identity.restaurant.id));
   return { ok: true, passkey: next };
 }
@@ -907,12 +1076,29 @@ export async function getOrCreateMarketplaceId(restaurantId: number): Promise<st
   throw new Error("Could not assign a marketplace id");
 }
 
+/** Raised when a POS-supplied external id is already spoken for by another listing. */
+export class MarketplaceIdTakenError extends Error {
+  readonly ownedByRestaurantId: number;
+  constructor(ownedByRestaurantId: number) {
+    super(`marketplace id is already assigned to restaurant ${ownedByRestaurantId}`);
+    this.name = "MarketplaceIdTakenError";
+    this.ownedByRestaurantId = ownedByRestaurantId;
+  }
+}
+
 /**
  * Reconcile the shared external identity once a POS claims the connection: the
  * Marketplace restaurant's marketplace_id (rst_…) and the POS's own
  * external_restaurant_id must be THE SAME value — order payloads route on it
  * (`order.restaurant_id`) and webhook receivers verify X-Integration-ID
  * against it. Returns the reconciled id.
+ *
+ * `marketplace_id` is UNIQUE, so a POS id that some other listing already holds
+ * is a real conflict rather than a lost update. It is detected up front and
+ * raised as `MarketplaceIdTakenError` instead of letting Postgres throw 23505 on
+ * the UPDATE: the claim route calls this immediately AFTER the POS has consumed
+ * the connection code, so a bare unique violation there surfaced as a generic
+ * 500 and left the operator with a burned code and no way to retry.
  */
 export async function syncMarketplaceId(restaurantId: number, rstId: string): Promise<string> {
   const id = String(rstId ?? "").trim().slice(0, 64);
@@ -923,6 +1109,12 @@ export async function syncMarketplaceId(restaurantId: number, rstId: string): Pr
     .where(eq(restaurants.id, restaurantId))
     .limit(1);
   if (r?.marketplaceId === id) return id;
+  const [owner] = await db
+    .select({ id: restaurants.id })
+    .from(restaurants)
+    .where(and(eq(restaurants.marketplaceId, id), ne(restaurants.id, restaurantId)))
+    .limit(1);
+  if (owner) throw new MarketplaceIdTakenError(owner.id);
   const [u] = await db
     .update(restaurants)
     .set({ marketplaceId: id })
@@ -1038,7 +1230,8 @@ export async function upsertIntegrationIdentity(
 /* -------------------------------- audit ---------------------------------- */
 
 export type IntegrationAuditContext = {
-  actor: "restaurant" | "partner" | "system";
+  /** `ops` is an operator acting through the privileged surface, not the restaurant. */
+  actor: "restaurant" | "partner" | "system" | "ops";
   ipAddress?: string | null;
 };
 
@@ -1073,6 +1266,10 @@ export async function revokeIntegrationSessions(restaurantId: number): Promise<v
 /**
  * Rotate the passkey for an already-authenticated restaurant. Requires the
  * current passkey as proof so session theft cannot silently rotate credentials.
+ *
+ * Writes `integration_passkey_hash` only. `owner_key_hash` is a different
+ * credential now and is left alone — a rotated integration must never strand
+ * the restaurant owner with a dead /partner key.
  */
 export async function rotatePasskeyAsRestaurant(
   restaurantId: number,
@@ -1081,10 +1278,216 @@ export async function rotatePasskeyAsRestaurant(
   const p = String(currentPasskey ?? "");
   if (!p) return { ok: false, error: "Current passkey is required" };
   const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
-  if (!r || !ownerKeyMatches(r.ownerKeyHash, p)) return { ok: false, error: "Invalid passkey" };
+  if (!r || !integrationPasskeyMatches(r, p)) return { ok: false, error: "Invalid passkey" };
   const next = makeOwnerKey();
-  await db.update(restaurants).set({ ownerKeyHash: hashOwnerKey(next) }).where(eq(restaurants.id, restaurantId));
+  await db
+    .update(restaurants)
+    .set({ integrationPasskeyHash: hashOwnerKey(next) })
+    .where(eq(restaurants.id, restaurantId));
   return { ok: true, passkey: next };
+}
+
+/* ---------------------------- ops provisioning --------------------------- */
+
+/**
+ * Per-listing readiness for the POS handshake, as ops sees it.
+ *
+ * A listing can only complete /partner/integrations when it has BOTH:
+ *   - ownerKeyHash  : proves ownership on the Marketplace side
+ *   - externalId    : the stable id the POS is matched on
+ * Listings seeded straight into the database have neither, which is why they
+ * cannot be connected without an operator provisioning them first.
+ */
+export interface ListingSetupDto {
+  id: number;
+  name: string;
+  slug: string;
+  externalId: string | null;
+  hasOwnerKey: boolean;
+  posLinked: boolean;
+  posRestaurantId: string | null;
+  recordStatus: string | null;
+  /** True when a single ops call would make the listing connectable. */
+  needsSetup: boolean;
+  /** Merchandising state: drives the home page "Featured tonight" rail. */
+  featured: boolean;
+  isActive: boolean;
+}
+
+export async function listListingSetup(): Promise<ListingSetupDto[]> {
+  const rows = await db
+    .select({
+      id: restaurants.id,
+      name: restaurants.name,
+      slug: restaurants.slug,
+      externalId: restaurants.externalId,
+      ownerKeyHash: restaurants.ownerKeyHash,
+      featured: restaurants.featured,
+      isActive: restaurants.isActive,
+      posRestaurantId: integrationRecords.posRestaurantId,
+      recordStatus: integrationRecords.status,
+    })
+    .from(restaurants)
+    .leftJoin(integrationRecords, eq(integrationRecords.restaurantId, restaurants.id))
+    .orderBy(restaurants.id);
+
+  return rows.map((r) => ({
+    id: r.id,
+    name: r.name,
+    slug: r.slug,
+    externalId: r.externalId ?? null,
+    hasOwnerKey: !!r.ownerKeyHash,
+    posLinked: !!r.posRestaurantId,
+    posRestaurantId: r.posRestaurantId ?? null,
+    recordStatus: r.recordStatus ?? null,
+    needsSetup: !r.ownerKeyHash || !r.externalId,
+    featured: r.featured,
+    isActive: r.isActive,
+  }));
+}
+
+/**
+ * Ops-only merchandising toggle for the home page "Featured tonight" rail.
+ *
+ * `featured` used to be settable only by the seed script, so the rail — the
+ * single most valuable slot on the home page — was whatever the database
+ * happened to say at seed time, with no way for an operator to change it. It
+ * is also the tiebreaker in the default browse sort
+ * (`desc(featured), desc(rating)`), so a newly onboarded restaurant that
+ * nobody can feature is permanently last in the default listing.
+ *
+ * Ops-gated rather than partner-gated: featuring is a platform merchandising
+ * decision, not something a restaurant should be able to grant itself.
+ */
+export async function setFeaturedAsOps(
+  restaurantId: number,
+  featured: boolean,
+): Promise<{ ok: true; restaurant: { id: number; name: string; featured: boolean } } | { ok: false; error: string; code?: string }> {
+  const next = Boolean(featured);
+  const [row] = await db
+    .update(restaurants)
+    .set({ featured: next })
+    .where(eq(restaurants.id, restaurantId))
+    .returning({ id: restaurants.id, name: restaurants.name, featured: restaurants.featured });
+  if (!row) return { ok: false, error: "Listing not found", code: "NOT_FOUND" };
+  return { ok: true, restaurant: row };
+}
+
+export interface ProvisionListingInput {
+  restaurantId: number;
+  /** Optional. Only honoured when the listing has no external id yet. */
+  externalId?: string | null;
+  /**
+   * Replace an existing owner key. Off by default: backfilling a missing
+   * external id on a connected listing must not invalidate the key that
+   * restaurant already holds.
+   */
+  rotateOwnerKey?: boolean;
+}
+
+/**
+ * Ops-only bootstrap for a listing that cannot complete the POS handshake:
+ * backfills `external_id` if it is missing and issues a fresh owner key.
+ *
+ * Why this exists instead of reusing rotatePasskey: rotation requires the
+ * CURRENT key, so a lost key is unrecoverable by design. Seeded listings never
+ * had a key at all, and the /partner redemption flow that normally issues one
+ * requires an `external_id` they also never had. Without an ops path, every such
+ * listing is stranded and has to be repaired by hand-editing the database.
+ *
+ * The new key is returned exactly once, like every other owner key.
+ */
+export async function provisionListingAsOps(input: ProvisionListingInput):
+  Promise<
+    | {
+        ok: true;
+        restaurantId: number;
+        /** The new plaintext key, or null when an existing one was preserved. */
+        ownerKey: string | null;
+        externalId: string;
+        /** Set when an existing key was replaced, so ops can warn the operator. */
+        rotated: boolean;
+        /** Set when nothing needed changing. */
+        unchanged?: boolean;
+      }
+    | { ok: false; error: string; code: string }
+  > {
+  const id = Math.floor(Number(input?.restaurantId));
+  if (!Number.isInteger(id) || id <= 0) {
+    return { ok: false, error: "A valid restaurant id is required", code: "INVALID_RESTAURANT_ID" };
+  }
+
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, id)).limit(1);
+  if (!r) return { ok: false, error: "Listing not found", code: "NOT_FOUND" };
+
+  // An existing key is PRESERVED unless the caller explicitly asks to replace
+  // it. Backfilling a missing external id must not silently invalidate a key the
+  // restaurant has already stored, which is the common ops case for listings
+  // that are connected but were seeded without an external id.
+  const hadKey = !!r.ownerKeyHash;
+  const rotate = hadKey && input?.rotateOwnerKey === true;
+  const ownerKey = hadKey && !rotate ? null : makeOwnerKey();
+  const patch: { ownerKeyHash?: string; externalId?: string; integrationPasskeyHash?: string } = {};
+  if (ownerKey) {
+    patch.ownerKeyHash = hashOwnerKey(ownerKey);
+    // Seed the POS passkey only while it is still unset. An ops-issued owner key
+    // is the only credential a seeded listing has, so the POS has to be able to
+    // log in with it — but once the listing has its own passkey (i.e. the POS
+    // has rotated at least once) the owner key must stop working as one, or
+    // rotation would be reversible by anyone holding the key ops just minted.
+    if (!r.integrationPasskeyHash) patch.integrationPasskeyHash = patch.ownerKeyHash;
+  }
+
+  let externalId = r.externalId ?? "";
+  if (!externalId) {
+    const requested = String(input?.externalId ?? "").trim().slice(0, 64);
+    if (!requested) {
+      return {
+        ok: false,
+        error: "This listing has no external id; supply one to provision it",
+        code: "EXTERNAL_ID_REQUIRED",
+      };
+    }
+    if (!/^[A-Za-z0-9_-]{3,64}$/.test(requested)) {
+      return { ok: false, error: "External id must be 3-64 letters, digits, dash or underscore", code: "INVALID_EXTERNAL_ID" };
+    }
+    const [clash] = await db
+      .select({ id: restaurants.id })
+      .from(restaurants)
+      .where(eq(restaurants.externalId, requested))
+      .limit(1);
+    if (clash) {
+      return { ok: false, error: `External id already used by listing ${clash.id}`, code: "EXTERNAL_ID_TAKEN" };
+    }
+    externalId = requested;
+    patch.externalId = requested;
+  }
+
+  // Nothing to do: the listing is already fully provisioned and no rotation was
+  // requested. Say so rather than issuing a pointless new key.
+  if (!ownerKey && !patch.externalId) {
+    return {
+      ok: true,
+      restaurantId: id,
+      ownerKey: null,
+      externalId,
+      rotated: false,
+      unchanged: true,
+    };
+  }
+
+  try {
+    await db.update(restaurants).set(patch).where(eq(restaurants.id, id));
+  } catch (e) {
+    // A concurrent provision can win the unique external_id race between the
+    // check above and this write; surface it as a retryable conflict.
+    if (isUniqueViolation(e)) {
+      return { ok: false, error: "External id was just taken by another listing", code: "EXTERNAL_ID_TAKEN" };
+    }
+    throw e;
+  }
+
+  return { ok: true, restaurantId: id, ownerKey, externalId, rotated: rotate };
 }
 
 /* --------------------------------- orders -------------------------------- */
@@ -1164,7 +1567,7 @@ export async function computeBill(
       bill: BillBreakdown;
       dropped: DroppedCartItem[];
     }
-  | { ok: false; error: string }
+  | { ok: false; error: string; code?: string }
 > {
   const [r] = await db
     .select()
@@ -1174,6 +1577,17 @@ export async function computeBill(
   if (!r) return { ok: false, error: "Restaurant not found" };
   if (!r.isActive) return { ok: false, error: `${r.name} is temporarily closed` };
   if (!items.length) return { ok: false, error: "Cart is empty" };
+
+  // Ordering gate. Enforced before any line is priced so the bill preview and
+  // the order itself agree — the customer is told at the estimate, not after
+  // entering payment details.
+  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id))) {
+    return {
+      ok: false,
+      error: ORDERING_CLOSED_MESSAGE,
+      code: "INTEGRATION_NOT_CONNECTED",
+    };
+  }
 
   const ids = items.map((i) => i.menuItemId);
   const rows = await db.select().from(menuItems).where(inArray(menuItems.id, ids));
@@ -1366,8 +1780,13 @@ export async function createOrder(
   }
 
   const computed = await computeBill(input.restaurantSlug, input.items);
-  if (!computed.ok) return { ok: false, error: computed.error };
+  if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
+
+  // The gate decision is stamped on the order rather than re-derived later, so
+  // tracking shows the POS lifecycle this order was actually admitted into even
+  // if the restaurant's integration is disabled while the order is in flight.
+  const posConnected = await hasActiveIntegration(r.id);
 
   // Phase 7 — validate the optional outlet claim against the integration
   // record BEFORE the order is created (fail-closed; no silent fallback).
@@ -1419,6 +1838,7 @@ export async function createOrder(
         discountCents: bill.discountCents,
         totalCents: bill.totalCents,
         clientRequestId,
+        posConnected,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
       })
       .returning();

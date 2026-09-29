@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useState, type FormEvent } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   BadgeCheck,
   Blocks,
@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { cn } from "@/lib/domain";
 import { useToast } from "@/lib/toast";
+import { readStoredOwnerKey, storeOwnerKey } from "@/lib/owner-key-store";
 
 interface PosIdentity {
   provider: string;
@@ -65,7 +66,10 @@ function formatWhen(iso: string): string {
 export default function PartnerIntegrationsPage() {
   const { toast } = useToast();
 
-  const [ownerKey, setOwnerKey] = useState("");
+  // The owner key is unrecoverable and /partner already stashes it in
+  // sessionStorage, so seed the field from there instead of making the operator
+  // paste a secret the tab is holding one page away.
+  const [ownerKey, setOwnerKey] = useState(() => readStoredOwnerKey());
   const [listing, setListing] = useState<ManageRestaurant | null>(null);
   const [record, setRecord] = useState<IntegrationRecord | null>(null);
   const [loading, setLoading] = useState(false);
@@ -98,6 +102,7 @@ export default function PartnerIntegrationsPage() {
         setOwnerKey(trimmed);
         setListing(d.restaurant);
         setRecord(d.record ?? null);
+        storeOwnerKey(trimmed);
         toast("Listing loaded", { sub: d.restaurant.name });
       } catch {
         toast("Could not load listing", { kind: "error" });
@@ -107,6 +112,24 @@ export default function PartnerIntegrationsPage() {
     },
     [toast],
   );
+
+  // Auto-load once when a key is already in sessionStorage, so arriving from
+  // /partner lands on the listing instead of an empty paste box. Runs a single
+  // time; the ref guards against React 18 StrictMode's double effect.
+  const autoLoadDone = useRef(false);
+  useEffect(() => {
+    if (autoLoadDone.current) return;
+    const stored = readStoredOwnerKey();
+    if (!stored) return;
+    autoLoadDone.current = true;
+    // Deferred to a macrotask so the fetch happens after the first paint and
+    // load()'s setState runs in a callback instead of synchronously in the
+    // effect body (react-hooks/set-state-in-effect).
+    const timer = window.setTimeout(() => {
+      void load(stored);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [load]);
 
   const verify = async () => {
     const trimmed = code.trim();
@@ -134,14 +157,19 @@ export default function PartnerIntegrationsPage() {
     e.preventDefault();
     setConnecting(true);
     try {
-      const d = await json<{ ok: boolean; error?: string; record?: IntegrationRecord; already?: boolean }>(
-        "/api/partner/integrations",
-        {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ownerKey, connection_code: code.trim() }),
-        },
-      );
+      const d = await json<{
+        ok: boolean;
+        error?: string;
+        record?: IntegrationRecord;
+        already?: boolean;
+        connected?: boolean;
+      }>("/api/partner/integrations", {
+        method: "POST",
+        // Header rather than body, matching the route's preferred transport. The
+        // key is a full-control credential and must not end up in an access log.
+        headers: { "Content-Type": "application/json", "x-owner-key": ownerKey.trim() },
+        body: JSON.stringify({ connection_code: code.trim() }),
+      });
       if (!d.ok || !d.record) {
         toast(d.error ?? "Could not connect the POS", { kind: "error" });
         return;
@@ -149,6 +177,16 @@ export default function PartnerIntegrationsPage() {
       setRecord(d.record);
       setCode("");
       setVerdict(null);
+      if (d.connected === false) {
+        // The claim landed but the POS did not hand over everything delivery
+        // needs, so the record is pending and checkout stays closed. Say why
+        // rather than showing a bare "Disconnected" badge.
+        toast(d.error ?? "POS linked, but not ready to take orders yet", {
+          kind: "info",
+          sub: `Gateway: ${d.record.posRestaurantId ?? "—"}`,
+        });
+        return;
+      }
       toast(d.already ? "Already connected" : "POS connected", {
         sub: `Gateway: ${d.record.posRestaurantId ?? "—"}`,
       });
@@ -163,19 +201,18 @@ export default function PartnerIntegrationsPage() {
     if (!ownerKey) return;
     setDisconnecting(true);
     try {
-      const d = await json<{ ok: boolean; error?: string; record?: IntegrationRecord }>(
+      const d = await json<{ ok: boolean; error?: string; record?: IntegrationRecord | null }>(
         "/api/partner/integrations",
         {
           method: "DELETE",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ ownerKey }),
+          headers: { "Content-Type": "application/json", "x-owner-key": ownerKey.trim() },
         },
       );
-      if (!d.ok || !d.record) {
+      if (!d.ok) {
         toast(d.error ?? "Could not disconnect", { kind: "error" });
         return;
       }
-      setRecord(d.record);
+      setRecord(d.record ?? null);
       toast("POS disconnected", { kind: "info", sub: "Orders, identity and audit history are preserved" });
     } catch {
       toast("Disconnect failed", { kind: "error" });
@@ -185,6 +222,10 @@ export default function PartnerIntegrationsPage() {
   };
 
   const connected = record && record.status === "active";
+  // A record exists but is not deliverable yet: the POS has not shared a webhook
+  // secret, so orders cannot be signed and sent. Distinct from "disabled",
+  // which means the owner turned the connection off.
+  const pending = !!record && record.status === "pending";
 
   const inputCls =
     "w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-mint-400/60 focus:outline-none";
@@ -226,12 +267,19 @@ export default function PartnerIntegrationsPage() {
           <KeyRound className="size-4.5 text-ember-400" /> Your listing
         </h2>
         <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-          Enter the owner key you received when connecting your restaurant.
-        </p>
-        <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-          <input
-            value={ownerKey}
-            onChange={(e) => setOwnerKey(e.target.value)}
+            Enter the owner key you received when connecting your restaurant. If you
+            onboarded in this tab it is filled in already.
+          </p>
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+            <input
+              value={ownerKey}
+              onChange={(e) => {
+                const next = e.target.value;
+                setOwnerKey(next);
+                // Drop the stored key the moment it is edited, so a stale
+                // sessionStorage entry cannot silently reappear on a later visit.
+                storeOwnerKey(next);
+              }}
             onKeyDown={(e) => {
               if (e.key === "Enter") void load(ownerKey);
             }}
@@ -255,12 +303,20 @@ export default function PartnerIntegrationsPage() {
             <span
               className={cn(
                 "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold",
-                connected ? "bg-mint-500/12 text-mint-400" : "bg-white/8 text-cream-300",
+                connected
+                  ? "bg-mint-500/12 text-mint-400"
+                  : pending
+                    ? "bg-ember-400/12 text-ember-400"
+                    : "bg-white/8 text-cream-300",
               )}
             >
               {connected ? (
                 <>
                   <BadgeCheck className="size-3" strokeWidth={2.6} /> POS connected
+                </>
+              ) : pending ? (
+                <>
+                  <RefreshCw className="size-3" strokeWidth={2.6} /> Waiting on POS
                 </>
               ) : record ? (
                 <>
@@ -289,10 +345,12 @@ export default function PartnerIntegrationsPage() {
               <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
                 <Waypoints className="size-4.5 text-mint-400" /> Connect the POS
               </h2>
-              <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-                Ask your POS to generate a connection code, then paste it here. The code is verified
-                against the POS before anything is consumed.
-              </p>
+                <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+                  In your POS, open Settings → Integrations → Marketplace and choose{" "}
+                  <span className="font-semibold text-cream-300">Create connection code</span>, then
+                  paste the code it shows here. Codes are issued by the POS, not here, and are
+                  verified against it before anything is consumed.
+                </p>
 
               <form onSubmit={connect} className="mt-5 space-y-3">
                 <div>

@@ -22,6 +22,7 @@ export type PublicOrder = Pick<
   | "riderName"
   | "paymentMethod"
   | "paymentStatus"
+  | "posDeliveryStatus"
   | "subtotalCents"
   | "deliveryFeeCents"
   | "platformFeeCents"
@@ -31,6 +32,14 @@ export type PublicOrder = Pick<
   | "status"
 >;
 
+/**
+ * `posDeliveryStatus` is included deliberately: it is the only signal the
+ * customer has that the order never reached the kitchen, and hiding it would
+ * leave a charged order displaying a confident but fictional courier. It
+ * carries no internal identifiers, so it is safe on the public projection.
+ * `posConnected` is NOT — it only distinguishes which tracking timeline the
+ * view should draw and has no meaning for the customer.
+ */
 export function toPublicOrder(o: OrderDto): PublicOrder {
   return {
     code: o.code,
@@ -44,6 +53,7 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
     riderName: o.riderName,
     paymentMethod: o.paymentMethod,
     paymentStatus: o.paymentStatus,
+    posDeliveryStatus: o.posDeliveryStatus,
     subtotalCents: o.subtotalCents,
     deliveryFeeCents: o.deliveryFeeCents,
     platformFeeCents: o.platformFeeCents,

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import { Clock3, Heart, Percent, Sparkles, Star } from "lucide-react";
 import { BLUR_DATA } from "@/components/atoms";
 import { Reveal, TiltCard } from "@/components/motion-primitives";
-import { cn, isUnrated, priceSymbol } from "@/lib/domain";
+import { cn, formatDistance, isUnrated, priceSymbol } from "@/lib/domain";
 import { useProfile } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
@@ -144,7 +144,7 @@ export function RestaurantCard({
                 {r.deliveryMinutes} min
               </span>
               <span aria-hidden className="text-cream-600">•</span>
-              <span>{r.distanceKm.toFixed(1)} km</span>
+              <span>{formatDistance(r.distanceKm)}</span>
               <span aria-hidden className="text-cream-600">•</span>
               <span className="truncate">{r.locality}</span>
             </div>

@@ -35,3 +35,21 @@ export function ownerKeyMatches(hash: string | null, ownerKey: string): boolean 
   const b = Buffer.from(hashOwnerKey(ownerKey));
   return a.length === b.length && Buffer.compare(a, b) === 0;
 }
+
+/**
+ * Match a POS login passkey against the right hash.
+ *
+ * `integrationPasskeyHash` is the POS credential. When it is NULL the listing
+ * predates the split (or was ops-provisioned) and its owner key is still the
+ * shared secret, so it is the fallback. Once the split column is populated it
+ * SHADOWS the owner key — that is what makes rotation actually revoke the old
+ * passkey, and what stops a rotated integration from being re-authenticated
+ * with the key the restaurant holds in its browser.
+ */
+export function integrationPasskeyMatches(
+  hashes: { ownerKeyHash: string | null; integrationPasskeyHash: string | null },
+  passkey: string,
+): boolean {
+  const hash = hashes.integrationPasskeyHash ?? hashes.ownerKeyHash;
+  return ownerKeyMatches(hash, passkey);
+}

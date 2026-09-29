@@ -36,6 +36,21 @@ export function isUnrated(ratingsCount: number | null | undefined): boolean {
   return !ratingsCount || ratingsCount <= 0;
 }
 
+/**
+ * Whether a listing has a real measured distance, as opposed to the platform
+ * simply not knowing. The counterpart to `isUnrated`: a newly onboarded
+ * restaurant has no distance, and printing the schema's demo default for it
+ * would put an invented "2.0 km" in front of customers.
+ */
+export function hasDistance(distanceKm: number | null | undefined): boolean {
+  return typeof distanceKm === "number" && Number.isFinite(distanceKm) && distanceKm >= 0;
+}
+
+/** Customer-facing distance text, or "Nearby" when unmeasured. */
+export function formatDistance(distanceKm: number | null | undefined): string {
+  return hasDistance(distanceKm) ? `${(distanceKm as number).toFixed(1)} km` : "Nearby";
+}
+
 export function formatClock(date: Date): string {
   return date.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
 }

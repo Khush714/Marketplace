@@ -20,12 +20,18 @@ export const OUTLET_ERROR_MESSAGES: Record<string, string> = {
 /**
  * Resolve a client-claimed outlet against the restaurant's POS integration
  * record. Deterministic, tenant-scoped, fail-closed — only stable codes escape:
- *   - no ACTIVE record            → INTEGRATION_NOT_CONNECTED
+ *   - no deliverable record         → INTEGRATION_NOT_CONNECTED
  *   - claim with no matching outlet → OUTLET_NOT_MAPPED (never silently fall
  *     back to the restaurant-level row — a mistyped/foreign outlet is a hard
  *     rejection, the POS enforces the same rule at ingest time)
  *   - no claim                     → legacy store-level routing (branch/outlet
  *     may be null and are filled by the delivery path from the record).
+ *
+ * "Deliverable" is the same three facts `notReadyReason` in the order bridge
+ * and `hasActiveIntegration` in the db layer require: ACTIVE, a POS restaurant id
+ * to route on, and a sealed webhook secret to sign with. Treating a bare
+ * `status = 'active'` as connected let a half-claimed integration accept an
+ * order it had no way to deliver.
  */
 export async function resolveOutletForRestaurant(
   restaurantId: number,
@@ -34,14 +40,21 @@ export async function resolveOutletForRestaurant(
   const [record] = await db
     .select({
       status: integrationRecords.status,
+      posRestaurantId: integrationRecords.posRestaurantId,
       posOutletId: integrationRecords.posOutletId,
       posBranchId: integrationRecords.posBranchId,
+      webhookSecret: integrationRecords.webhookSecret,
     })
     .from(integrationRecords)
     .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
 
-  if (!record || record.status !== "active") {
+  if (
+    !record ||
+    record.status !== "active" ||
+    !record.posRestaurantId ||
+    !record.webhookSecret
+  ) {
     return { ok: false, code: "INTEGRATION_NOT_CONNECTED" };
   }
 

@@ -14,6 +14,7 @@ import {
   ReceiptText,
   RefreshCcw,
   Star,
+  TriangleAlert,
   Store,
   XCircle,
   type LucideIcon,
@@ -92,12 +93,22 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
   const s = order.status;
   const etaMin = Math.max(1, Math.ceil(s.etaSeconds / 60));
   const settled = s.stageKey === "cancelled" || s.stageKey === "rejected";
+  /**
+   * The Marketplace could not hand this order to the kitchen — the POS
+   * delivery journal gave up. Distinct from cancelled/rejected: the restaurant
+   * never saw the order at all, so there is no kitchen-side cancellation to
+   * report and, if the payment was captured, money is owed back.
+   */
+  const neverDelivered = order.posDeliveryStatus === "FAILED" && !s.delivered;
   const mainline = Array.isArray(s.stages) ? s.stages : [];
   const terminal = settled ? s : null;
   const steps = terminal ? [...mainline, terminal] : mainline;
   const currentIndex = terminal
     ? s.stageIndex
     : (steps.filter((st) => st.delivered).at(-1)?.stageIndex ?? -1);
+  /** No live pulse, no ETA, no courier animation once the order is unreachable. */
+  const inFlight = !s.delivered && !settled && !neverDelivered;
+  const refunded = order.paymentStatus === "REFUNDED" || order.paymentStatus === "REFUND_PENDING";
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-12 pt-6 md:px-6 md:pt-9">
@@ -105,18 +116,23 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
       <header className="flex flex-wrap items-end justify-between gap-4">
         <div>
           <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">
-            {!s.delivered && !settled && (
+            {inFlight && (
               <span className="relative flex size-2">
                 <span className="animate-dot-ping absolute inline-flex h-full w-full rounded-full bg-ember-400" />
                 <span className="relative inline-flex size-2 rounded-full bg-ember-400" />
               </span>
             )}
-            {s.delivered ? "Completed" : settled ? "Closed" : "Live tracking"}
+            {s.delivered ? "Completed" : settled || neverDelivered ? "Closed" : "Live tracking"}
           </p>
           <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-4xl">
             {s.delivered ? (
               <>
                 Delivered<span className="text-gradient">.</span> Enjoy
+              </>
+            ) : neverDelivered ? (
+              <>
+                We couldn&rsquo;t reach{" "}
+                <span className="text-gradient">{order.restaurantName}</span>
               </>
             ) : s.stageKey === "cancelled" ? (
               <>
@@ -141,7 +157,7 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
           </p>
         </div>
 
-        {!s.delivered && !settled && (
+        {inFlight && (
           <div className="glass rounded-2xl px-4 py-3">
             <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">Current status</p>
             <p key={s.stageKey} className="animate-jelly mt-0.5 font-display text-base font-bold text-ember-300">
@@ -151,9 +167,43 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
         )}
       </header>
 
+      {neverDelivered && (
+        <div className="mt-6 rounded-3xl border border-chili-500/30 bg-chili-500/8 p-5 md:p-6">
+          <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+            <TriangleAlert className="size-4 text-chili-400" /> This order never reached the kitchen
+          </h2>
+          <p className="mt-1.5 text-sm leading-relaxed text-cream-400">
+            We were unable to hand this order to {order.restaurantName}, so it has not been
+            prepared and no rider has been assigned. Nothing is being cooked.
+          </p>
+          <p className="mt-2 text-sm leading-relaxed text-cream-300">
+            {order.paymentMethod === "cod" ? (
+              <>No payment was taken, so there is nothing to return.</>
+            ) : refunded ? (
+              <>
+                Your payment of{" "}
+                <span className="font-semibold text-cream-50">
+                  {formatINR(order.totalCents)}
+                </span>{" "}
+                is on its way back to your original payment method. Banks usually take a few
+                working days to post it.
+              </>
+            ) : (
+              <>
+                We have started a refund of{" "}
+                <span className="font-semibold text-cream-50">{formatINR(order.totalCents)}</span>{" "}
+                to your original payment method. It usually reaches your account within a few
+                working days.
+              </>
+            )}
+          </p>
+        </div>
+      )}
+
       <div className="mt-7 grid gap-6 lg:grid-cols-[1.15fr_1fr]">
-        {/* courier map */}
-        <CourierMap order={order} />
+        {/* courier map — hidden when the order never reached the restaurant, since
+            an animated rider would be a fiction */}
+        {!neverDelivered && <CourierMap order={order} />}
 
         {/* timeline + summary */}
         <div className="space-y-6">
@@ -190,7 +240,7 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
                             : "bg-white/6 text-cream-600",
                       )}
                     >
-                      {current && !s.delivered && !settled && (
+                      {current && inFlight && (
                         <span className="animate-ripple absolute inset-0 rounded-full border border-ember-400/60" />
                       )}
                       <Icon className="size-4" strokeWidth={done || current ? 2.4 : 2} />
@@ -219,8 +269,9 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
             </ol>
           </div>
 
-          {/* cancel order */}
-          {!settled && !s.delivered && cancel.kind !== "cancelled" && (
+          {/* cancel order — not offered once the order never reached the kitchen,
+              where there is nothing to cancel and a refund is already under way */}
+          {inFlight && cancel.kind !== "cancelled" && (
             <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
           )}
           {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (

@@ -30,22 +30,44 @@ export async function handleCancelledOrderPayment(
   externalOrderId: string,
   reason: string,
 ): Promise<void> {
+  const payment = await settleCancelledOrderPayment(restaurantId, externalOrderId, reason);
+  if (payment) await initiateProviderRefund(payment, reason);
+}
+
+/**
+ * Durable part of a cancelled-order settlement: all DB writes, no network.
+ * Closes a never-captured payment (PAYMENT_PENDING / UNPAID) or marks captured
+ * money REFUND_PENDING. Returns the payment a provider refund is owed to, or
+ * null when there is nothing to return. Idempotent: a payment already
+ * REFUND_PENDING or fully refunded yields null (no double refund).
+ *
+ * Deliberately separated from `initiateProviderRefund` so a terminal
+ * POS-delivery failure can persist the refund intent BEFORE returning — a
+ * process exit at any later instant leaves REFUND_PENDING on the row, which
+ * the reconciliation job's REFUND_STUCK check surfaces instead of the money
+ * silently vanishing with the data centre.
+ */
+export async function settleCancelledOrderPayment(
+  restaurantId: number,
+  externalOrderId: string,
+  reason: string,
+): Promise<PaymentRecordView | null> {
   const [order] = await db
     .select()
     .from(orders)
     .where(and(eq(orders.restaurantId, restaurantId), eq(orders.externalOrderId, externalOrderId)))
     .limit(1);
-  if (!order) return;
+  if (!order) return null;
 
   const live = await getActivePaymentByOrder(order.id);
   if (live && (live.status === "PAYMENT_PENDING" || live.status === "UNPAID")) {
     await cancelPendingPayment(order);
-    return;
+    return null;
   }
 
   const refundable = await markRefundRequested(order.id, reason);
-  if (!refundable || refundable.status !== "REFUND_PENDING") return;
-  await initiateProviderRefund(refundable, reason);
+  if (!refundable || refundable.status !== "REFUND_PENDING") return null;
+  return refundable;
 }
 
 /**

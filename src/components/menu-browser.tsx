@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { ChefHat } from "lucide-react";
 import { DishCard } from "@/components/dish-card";
 import { cn } from "@/lib/domain";
 import type { MenuSection } from "@/lib/types";
@@ -72,6 +73,25 @@ export function MenuBrowser({
       spying.current = false;
     }, 700);
   };
+
+  // A listing can legitimately have no dishes yet: a POS-connected restaurant
+  // whose menu has not synced, or a brand new partner who has not added a dish.
+  // Rendering an empty tab rail above a blank column reads as a broken page, so
+  // say what is actually true instead.
+  if (sections.length === 0) {
+    return (
+      <div className="min-w-0">
+        <div className="flex flex-col items-center rounded-3xl border border-dashed border-white/12 bg-white/[0.02] px-6 py-14 text-center">
+          <ChefHat className="size-7 text-cream-600" />
+          <h3 className="mt-3.5 font-display text-lg font-bold text-cream-100">Menu being prepared</h3>
+          <p className="mt-1.5 max-w-sm text-sm leading-relaxed text-cream-500">
+            This kitchen has not published its dishes yet. Check back shortly — the menu appears
+            here as soon as it is available.
+          </p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-w-0">

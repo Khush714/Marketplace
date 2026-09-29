@@ -51,6 +51,13 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await computeBill(restaurantSlug, items);
-  if (!result.ok) return Response.json({ ok: false, error: result.error }, { status: 400 });
+  if (!result.ok) {
+    // Same status mapping as POST /api/orders: an integration/outlet refusal is
+    // 422 (the client's request named a restaurant that cannot take the order),
+    // everything else stays a client 400.
+    const status =
+      result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
+    return Response.json({ ok: false, error: result.error, code: result.code }, { status });
+  }
   return Response.json({ ok: true, bill: result.bill });
 }

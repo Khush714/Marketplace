@@ -12,7 +12,8 @@ export interface RestaurantDto {
   ratingsCount: number;
   priceLevel: number;
   deliveryMinutes: number;
-  distanceKm: number;
+  /** Null when the platform has not measured this — render "Nearby", never a guess. */
+  distanceKm: number | null;
   offer: string | null;
   imageUrl: string;
   heroUrl: string;
@@ -147,6 +148,15 @@ export interface OrderDto {
   phone: string;
   paymentMethod: string;
   paymentStatus: string;
+  /**
+   * Snapshot of the Marketplace -> POS delivery journal: PENDING → DELIVERED |
+   * FAILED. FAILED means the order never reached the kitchen, which for a
+   * captured payment means the customer is owed a refund — the tracking view
+   * must be able to say so rather than showing a stalled courier.
+   */
+  posDeliveryStatus: string;
+  /** Whether this order was admitted while the restaurant had a live POS. */
+  posConnected: boolean;
   instructions: string;
   riderName: string;
   subtotalCents: number;
