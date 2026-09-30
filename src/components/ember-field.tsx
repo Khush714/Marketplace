@@ -45,8 +45,9 @@ interface Budget {
   /**
    * Whether the canvas blends with what is behind it. Blend modes force the
    * compositor to read back the backdrop on every frame, which is one of the
-   * more expensive things on this screen. Dropped only on the low-power tier,
-   * where the field is already a deliberate downgrade.
+   * more expensive things on this screen. Kept only where the backdrop work is
+   * already cheap (desktop/tablet); dropped on phones and the low-power tier,
+   * where the field sits at low opacity over a near-black base.
    */
   blend: boolean;
 }
@@ -54,7 +55,13 @@ interface Budget {
 const BUDGETS = {
   desktop: { fps: 60, maxDpr: 2, density: 27000, maxEmbers: 66, blend: true },
   tablet: { fps: 30, maxDpr: 1.5, density: 38000, maxEmbers: 38, blend: true },
-  mobile: { fps: 30, maxDpr: 1.5, density: 46000, maxEmbers: 26, blend: true },
+  // Blend dropped on phones too, not just lowPower. This canvas is global, and
+  // `mix-blend-screen` makes the compositor read the backdrop back on every
+  // frame at 30fps on every route — the residual heat source left after the
+  // Phase 1-15 program. Without the blend the layer still clears and draws 26
+  // soft sprites at opacity 0.8 over a near-black base, which is visually the
+  // same field without the per-frame readback.
+  mobile: { fps: 30, maxDpr: 1.5, density: 46000, maxEmbers: 26, blend: false },
   lowPower: { fps: 12, maxDpr: 1, density: 62000, maxEmbers: 16, blend: false },
 } as const satisfies Record<string, Budget>;
 
