@@ -15,3 +15,12 @@ import OpsConsole from "./ops-console";
 export default function OpsPage() {
   return <OpsConsole open={opsTokenOptional()} />;
 }
+
+/**
+ * `open` reads the environment, so this page cannot be prerendered: built
+ * static, the boolean is frozen at build time and the console advertises the
+ * wrong auth model on the deployment it actually runs on. `open` is a
+ * not-a-secret environment read rather than a data fetch, so this costs one
+ * render and no extra I/O.
+ */
+export const dynamic = "force-dynamic";
