@@ -32,7 +32,7 @@ import {
 } from "@/components/motion-primitives";
 import { cn, greetingFor, withLoc } from "@/lib/domain";
 import { useLocation } from "@/lib/location";
-import { useProfile } from "@/lib/profile";
+import { useProfileIdentity } from "@/lib/profile";
 
 const CRAVINGS = ["extraordinary", "fiery", "handmade", "midnight-worthy", "indulgent"];
 
@@ -53,7 +53,7 @@ const CATEGORIES: Array<{ label: string; q: string; Icon: LucideIcon; tint: stri
 
 export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
   const { open } = useSearch();
-  const { name } = useProfile();
+  const { name } = useProfileIdentity();
   const { locality } = useLocation();
   const [greeting, setGreeting] = useState("Good evening");
 
@@ -63,16 +63,26 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
 
   return (
     <section className="relative mx-auto max-w-7xl px-4 pt-10 md:px-6 md:pt-16">
-      {/* local aurora — brighter than the page ambience, parallax on scroll */}
+      {/* Focal glow — a brightness accent, not a second motion source.
+          This was a second full-width morphing aurora field, running the same
+          `animate-morph`/`animate-aurora` pair as the global ambience with a
+          near-identical gradient, so the home route carried two competing
+          backgrounds instead of one. `morph` also animated border-radius, so
+          every frame repainted both blobs and re-ran the blur and the blend
+          behind them, and `parallax-far` re-composited that blend again on
+          every scroll frame.
+
+          What is left is the hero's actual job: making the headline sit in
+          brighter light than the rest of the page. It still moves, on
+          `aurora` alone, which is transform-only and therefore promoted to its
+          own layer and rastered once. Blur, blend and phone behaviour are in
+          CSS ("hero glow" in globals.css), alongside the ambient modes. */}
       <div
         aria-hidden
-        className="parallax-far pointer-events-none absolute -top-24 left-1/2 -z-10 h-[420px] w-[860px] max-w-[110vw] -translate-x-1/2"
+        className="hero-glow pointer-events-none absolute -top-24 left-1/2 -z-10 h-[420px] w-[860px] max-w-[110vw] -translate-x-1/2"
       >
-        <div className="animate-morph animate-aurora absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,120,70,0.22),transparent_72%)] mix-blend-screen blur-2xl" />
-        <div
-          className="animate-morph animate-aurora absolute -right-10 top-16 h-64 w-64 bg-[radial-gradient(closest-side,rgba(196,161,255,0.16),transparent_70%)] mix-blend-screen blur-2xl"
-          style={cssVars({ animationDelay: "-7s, -12s" })}
-        />
+        <div className="hero-glow-blob hero-glow-blob--a absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,120,70,0.22),transparent_72%)]" />
+        <div className="hero-glow-blob absolute -right-10 top-16 h-64 w-64 bg-[radial-gradient(closest-side,rgba(196,161,255,0.16),transparent_70%)]" />
       </div>
 
       {/* greeting */}

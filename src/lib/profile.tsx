@@ -7,6 +7,7 @@ import {
   useEffect,
   useMemo,
   useState,
+  type Context,
   type ReactNode,
 } from "react";
 
@@ -36,19 +37,71 @@ interface ProfileState {
   recentSearches: string[];
 }
 
-interface ProfileContextValue extends ProfileState {
+/* ------------------------------------------------------------------ */
+/*  Per-slice contexts                                                 */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Phase 8 — why this file publishes five contexts instead of one.
+ *
+ * Everything below is a single `ProfileState` object on purpose: it is one
+ * localStorage record, and splitting the *state* would mean several writes that
+ * could disagree with each other. But publishing it through one context meant
+ * that writing any single field invalidated the value for every reader, because
+ * the value is rebuilt from the whole object:
+ *
+ *   pushRecentSearch()  ->  new `state`  ->  new context value  ->  every
+ *   useProfile() consumer re-renders, including every restaurant card on the
+ *   page — all because a search string was appended.
+ *
+ * `pushRecentSearch` runs on every search commit, `rememberOrder` on every
+ * placed order and `toggleFavorite` on every heart tap, while the consumers are
+ * card grids (each one wrapped in a rAF-driven `TiltCard`) and the sticky
+ * header. So the cost was paid by the largest subtrees in the app, on writes
+ * that had nothing to do with them.
+ *
+ * The fix is to publish each slice under its own context, so React only notifies
+ * the readers of the slice that actually changed. `useProfile()` still exists
+ * and still returns everything, for the one page that genuinely needs the lot.
+ */
+
+interface ProfileReadyValue {
   hydrated: boolean;
-  /** Codes only, for counters and links. Reading an order needs its token. */
-  orderCodes: string[];
+}
+
+interface ProfileIdentityValue {
+  name: string;
+  phone: string;
+  addresses: Address[];
   setIdentity: (name: string, phone: string) => void;
   addAddress: (label: string, text: string) => Address;
   removeAddress: (id: string) => void;
-  toggleFavorite: (slug: string) => void;
+}
+
+interface FavoritesValue {
+  favorites: string[];
   isFavorite: (slug: string) => boolean;
+  toggleFavorite: (slug: string) => void;
+}
+
+interface ProfileOrdersValue {
+  orders: StoredOrder[];
+  /** Codes only, for counters and links. Reading an order needs its token. */
+  orderCodes: string[];
   rememberOrder: (code: string, token: string) => void;
+}
+
+interface SearchHistoryValue {
+  recentSearches: string[];
   pushRecentSearch: (q: string) => void;
   clearRecentSearches: () => void;
 }
+
+type ProfileContextValue = ProfileReadyValue &
+  ProfileIdentityValue &
+  FavoritesValue &
+  ProfileOrdersValue &
+  SearchHistoryValue;
 
 const KEY = "crave.profile.v1";
 const EMPTY: ProfileState = {
@@ -66,7 +119,11 @@ const EMPTY: ProfileState = {
   recentSearches: [],
 };
 
-const ProfileContext = createContext<ProfileContextValue | null>(null);
+const ProfileReadyContext = createContext<ProfileReadyValue | null>(null);
+const ProfileIdentityContext = createContext<ProfileIdentityValue | null>(null);
+const FavoritesContext = createContext<FavoritesValue | null>(null);
+const ProfileOrdersContext = createContext<ProfileOrdersValue | null>(null);
+const SearchHistoryContext = createContext<SearchHistoryValue | null>(null);
 
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ProfileState>(EMPTY);
@@ -152,28 +209,83 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, recentSearches: [] }));
   }, []);
 
-  const value = useMemo<ProfileContextValue>(
-    () => ({
-      ...state,
-      hydrated,
-      orderCodes: state.orders.map((o) => o.code),
-      setIdentity,
-      addAddress,
-      removeAddress,
-      toggleFavorite,
-      isFavorite,
-      rememberOrder,
-      pushRecentSearch,
-      clearRecentSearches,
-    }),
-    [state, hydrated, setIdentity, addAddress, removeAddress, toggleFavorite, isFavorite, rememberOrder, pushRecentSearch, clearRecentSearches],
+  // Each value is memoised on its own slice only, so a write to one slice
+  // cannot invalidate the context of another.
+  const readyValue = useMemo<ProfileReadyValue>(() => ({ hydrated }), [hydrated]);
+
+  const identityValue = useMemo<ProfileIdentityValue>(
+    () => ({ name: state.name, phone: state.phone, addresses: state.addresses, setIdentity, addAddress, removeAddress }),
+    [state.name, state.phone, state.addresses, setIdentity, addAddress, removeAddress],
   );
 
-  return <ProfileContext.Provider value={value}>{children}</ProfileContext.Provider>;
+  const favoritesValue = useMemo<FavoritesValue>(
+    () => ({ favorites: state.favorites, isFavorite, toggleFavorite }),
+    [state.favorites, isFavorite, toggleFavorite],
+  );
+
+  const orderCodes = useMemo(() => state.orders.map((o) => o.code), [state.orders]);
+  const ordersValue = useMemo<ProfileOrdersValue>(
+    () => ({ orders: state.orders, orderCodes, rememberOrder }),
+    [state.orders, orderCodes, rememberOrder],
+  );
+
+  const searchValue = useMemo<SearchHistoryValue>(
+    () => ({ recentSearches: state.recentSearches, pushRecentSearch, clearRecentSearches }),
+    [state.recentSearches, pushRecentSearch, clearRecentSearches],
+  );
+
+  return (
+    <ProfileReadyContext.Provider value={readyValue}>
+      <ProfileIdentityContext.Provider value={identityValue}>
+        <FavoritesContext.Provider value={favoritesValue}>
+          <ProfileOrdersContext.Provider value={ordersValue}>
+            <SearchHistoryContext.Provider value={searchValue}>{children}</SearchHistoryContext.Provider>
+          </ProfileOrdersContext.Provider>
+        </FavoritesContext.Provider>
+      </ProfileIdentityContext.Provider>
+    </ProfileReadyContext.Provider>
+  );
 }
 
+function useSlice<T>(ctx: Context<T | null>, name: string): T {
+  const value = useContext(ctx);
+  if (!value) throw new Error(`${name} must be used within ProfileProvider`);
+  return value;
+}
+
+/** Hydration gate only. Settles once, so subscribers effectively stop rendering. */
+export function useProfileReady(): boolean {
+  return useSlice(ProfileReadyContext, "useProfileReady").hydrated;
+}
+
+export function useProfileIdentity(): ProfileIdentityValue {
+  return useSlice(ProfileIdentityContext, "useProfileIdentity");
+}
+
+export function useFavorites(): FavoritesValue {
+  return useSlice(FavoritesContext, "useFavorites");
+}
+
+export function useProfileOrders(): ProfileOrdersValue {
+  return useSlice(ProfileOrdersContext, "useProfileOrders");
+}
+
+export function useSearchHistory(): SearchHistoryValue {
+  return useSlice(SearchHistoryContext, "useSearchHistory");
+}
+
+/**
+ * Everything, for screens that legitimately need the whole profile (the profile
+ * page). Subscribes to all five slices, so it re-renders on any profile change —
+ * which is correct for that page, but why leaf consumers should prefer the
+ * narrow hooks above.
+ */
 export function useProfile(): ProfileContextValue {
-  const ctx = useContext(ProfileContext);
-  if (!ctx) throw new Error("useProfile must be used within ProfileProvider");
-  return ctx;
+  return {
+    ...useSlice(ProfileReadyContext, "useProfile"),
+    ...useSlice(ProfileIdentityContext, "useProfile"),
+    ...useSlice(FavoritesContext, "useProfile"),
+    ...useSlice(ProfileOrdersContext, "useProfile"),
+    ...useSlice(SearchHistoryContext, "useProfile"),
+  };
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useProfile } from "@/lib/profile";
+import { useProfileReady } from "@/lib/profile";
 import { usePublicOrder } from "@/lib/order-access";
 import { TrackingView } from "@/components/tracking-view";
 
@@ -11,7 +11,7 @@ import { TrackingView } from "@/components/tracking-view";
  * with an unauthenticated read.
  */
 export function OrderTracker({ code }: { code: string }) {
-  const { hydrated } = useProfile();
+  const hydrated = useProfileReady();
   const { order, access, token } = usePublicOrder(code);
 
   if (!hydrated || access === "loading" || (access === "ready" && order && !token)) {

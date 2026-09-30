@@ -1,13 +1,15 @@
 "use client";
 
 import { useEffect, useRef } from "react";
+import { usePerformanceMode } from "@/lib/performance-mode";
 
 /** Slim scroll-progress rail along the very top of the viewport. */
 export function ScrollProgress() {
   const ref = useRef<HTMLDivElement>(null);
+  const { reducedMotion } = usePerformanceMode();
 
   useEffect(() => {
-    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    if (reducedMotion) return;
     const el = ref.current;
     if (!el) return;
 
@@ -41,7 +43,7 @@ export function ScrollProgress() {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
     };
-  }, []);
+  }, [reducedMotion]);
 
   return (
     <div aria-hidden className="pointer-events-none fixed inset-x-0 top-0 z-[70] h-[2px]">

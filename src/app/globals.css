@@ -283,6 +283,21 @@
   background-clip: text;
   color: transparent;
   animation: var(--animate-gradient-flow);
+
+  /* Category C — see "animation budget". This animates background-position,
+     which cannot be composited, so the headline repaints in full on every frame
+     of a 6.5s loop, forever, for a sweep nobody looks at twice. It is the last
+     continuous repaint left in the app: everything else in this class is
+     transform- or opacity-only and runs on the compositor.
+
+     Stopping it also means fitting the gradient to the box. The sweep is built
+     for a 220%-wide background, so a stopped animation would otherwise freeze
+     on the first ~45% of the ramp and lose the pink. At 100% the full ramp
+     shows, statically. */
+  @media (pointer: coarse) and (max-width: 699.98px) {
+    animation: none;
+    background-size: 100% 100%;
+  }
 }
 
 @utility no-scrollbar {
@@ -410,10 +425,14 @@
 /* ------------------------------ film grain -------------------------------- */
 
 @layer components {
+  /* Sized to the viewport, not overscanned. This was `inset: -50%` — 200% of
+     the viewport on each axis, so four times the pixels, rasterizing a
+     3-octave feTurbulence over a surface twice as wide and twice as tall as the
+     screen it sits on. The noise tiles, so the overscan bought nothing. */
   .grain::after {
     content: "";
     position: fixed;
-    inset: -50%;
+    inset: 0;
     z-index: 1;
     pointer-events: none;
     opacity: 0.042;
@@ -421,8 +440,220 @@
   }
 }
 
-/* ---------------------------- reduced motion ------------------------------- */
+/* ------------------------------ ambient modes --------------------------------
 
+  The ambient field is the one decoration that sits under every route, so its
+  idle cost is paid on every screen in the app — and it is idle cost: nothing
+  here changes while the customer reads a menu. Three properties carry it:
+
+    filter: blur()   re-runs a 64px Gaussian over the blob every time it
+                     repaints, on a surface up to 720x560
+    mix-blend-mode   forces the compositor to read the backdrop back
+    `morph`          animates border-radius, which no compositor can promote,
+                     so the blob repaints in full every frame and drags the
+                     blur and the blend along with it
+
+  `aurora` animates transform only, so a blob that drops `morph` is promoted to
+  its own layer, rasterized once, and thereafter merely moved on the GPU. That
+  single removal is where most of the idle saving is.
+
+  Modes are picked by media query rather than by a client-side tier read, so the
+  right treatment is applied at first paint instead of a frame later, and
+  nothing has to hydrate before the expensive version is torn down.
+
+  The 700px boundary here is deliberately lower than the 820px one in
+  `detectTier()` (src/components/ember-field.tsx). The two answer different
+  questions: this one has to catch every iPad, including the iPad mini in
+  portrait at 744px, whereas that one sizes a particle budget from viewport
+  area. A wide phone held in landscape therefore lands in medium rather than
+  light, which mildly over-provisions it.
+
+  An input reporting neither `fine` nor `coarse` matches no mode and keeps the
+  unconditioned base — the cheapest treatment, which is the right default for a
+  device we cannot classify.
+------------------------------------------------------------------------------ */
+
+@layer components {
+  /* Light — the base, and all a phone gets. Static gradients: no blur, no
+     blend, nothing moving except the single layer added below. */
+  .ambient-aurora,
+  .ambient-drift {
+    animation: none;
+  }
+
+  /* Per-layer phase. Held in custom properties so a mode can replace the whole
+     `animation` shorthand without restating the delays, and so a mode that runs
+     only one of the two desktop animations still reads a sensible phase. Blob
+     `--a` was undelayed in the original and is left that way. */
+  .ambient-aurora--a { --ambient-delay: 0s, 0s; --ambient-duration: 26s, 17s; }
+  .ambient-aurora--b { --ambient-delay: -6s, -9s; --ambient-duration: 31s, 21s; }
+  .ambient-aurora--c { --ambient-delay: -11s, -4s; --ambient-duration: 37s, 26s; }
+  .ambient-aurora--d { --ambient-delay: -3s, -14s; --ambient-duration: 29s, 24s; }
+  .ambient-drift--a { --ambient-delay: 0s; --ambient-duration: 16s; }
+  .ambient-drift--b { --ambient-delay: -8s; --ambient-duration: 16s; }
+
+  /* Phone — the light base plus one animated layer. `--a` is transform-only
+     with no filter and no blend, so it promotes, rasters once, and costs
+     nothing per frame. The other five decorations stay put as gradients. */
+  @media (pointer: coarse) and (max-width: 699.98px) {
+    .ambient-aurora--a {
+      animation: var(--animate-aurora);
+      animation-delay: var(--ambient-delay, 0s, 0s);
+      animation-duration: var(--ambient-duration, 26s, 17s);
+    }
+  }
+
+  /* Medium — iPad and other large touch screens. `morph` goes, and with it the
+     per-frame repaint; the blur stays, because a transform-only blob is
+     rasterized once and the blur is baked into that layer. The blend is not
+     baked — a moving blended layer re-composites against the backdrop every
+     frame — which is why only half the field is left moving here. */
+  @media (pointer: coarse) and (min-width: 700px) {
+    .ambient-aurora {
+      filter: blur(64px);
+      mix-blend-mode: screen;
+      animation: var(--animate-aurora);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 26s);
+    }
+    .ambient-aurora--c,
+    .ambient-aurora--d {
+      animation: none;
+    }
+    .ambient-drift {
+      filter: blur(24px);
+      animation: var(--animate-drift);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 16s);
+    }
+  }
+
+  /* Full — desktop. The original treatment, unchanged. */
+  @media (pointer: fine) {
+    .ambient-aurora {
+      filter: blur(64px);
+      mix-blend-mode: screen;
+      animation: var(--animate-aurora), var(--animate-morph);
+      animation-delay: var(--ambient-delay, 0s, 0s);
+      animation-duration: var(--ambient-duration, 26s, 17s);
+    }
+    .ambient-drift {
+      filter: blur(24px);
+      animation: var(--animate-drift);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 16s);
+    }
+  }
+}
+
+/* -------------------------------- hero glow ---------------------------------
+
+  The hero's focal glow, tiered on the same boundaries as the ambient field
+  above. It is a static gradient with one transform-only animation, so it rasters
+  once and then costs a composited layer — which is why the blur and the blend
+  can stay on anything but the cheapest mode.
+
+  On a phone it goes fully static, so the app has exactly one moving background
+  layer on that device: the ambient `--a` blob. Two slow glowing things drifting
+  in the same 700px of screen is not a look anyone can name, and the phone tier
+  exists to spend as little as possible on the backdrop.
+------------------------------------------------------------------------------ */
+
+@layer components {
+  /* Light — the base, and all a phone gets. */
+  .hero-glow-blob {
+    animation: none;
+  }
+
+  @media (pointer: coarse) and (min-width: 700px) {
+    .hero-glow-blob {
+      filter: blur(24px);
+      mix-blend-mode: screen;
+    }
+    .hero-glow-blob--a {
+      animation: var(--animate-aurora);
+      animation-delay: -7s;
+    }
+  }
+
+  @media (pointer: fine) {
+    .hero-glow-blob {
+      filter: blur(24px);
+      mix-blend-mode: screen;
+    }
+    .hero-glow-blob--a {
+      animation: var(--animate-aurora);
+      animation-delay: -7s;
+    }
+  }
+}
+
+/* ----------------------------- animation budget -----------------------------
+
+  Every animation in the app, sorted by what it costs rather than by where it
+  lives. The distinction that matters is not duration — it is whether the
+  animated property can be composited. `transform` and `opacity` are handed to
+  the compositor and cost a layer. `border-radius` and `background-position`
+  cannot be, so the element is repainted in full, every frame, for as long as
+  the animation runs, whether or not anything on screen has changed.
+
+  A — KEEP. Short, finite, load-bearing feedback. Each runs once, on a user
+     action, and stops. There is nothing to win here and only UI clarity to
+     lose:
+       press, pop-in, panel-in, fade-in, rise, rise-3d, word-up, char-in, jelly,
+       scale-bump, count-pop, overlay-in, sheet-up, page-in, page-cinema,
+       btn-ripple, sweep-line, check-draw, circle-draw, sheen, spin / spin-slow
+       and shimmer (both only render while something is loading)
+
+  B — REDUCE. Decorative, composited, so cheap per frame — but continuous, and
+     a cheap thing left running for ten minutes is not free. Kept where the
+     motion carries information, thinned where it is only atmosphere:
+       dot-ping      live status dots — keep, and it is informational
+       radar         tracking map pings — keep, two instances, transform+opacity
+       ripple        current stage, order success — keep, composited
+       blink         scramble caret — keep, one instance, opacity only
+       marquee       home ticker — keep, transform-only, one instance
+       glow-breathe  bottom nav, hero sparkles, tracking rider — keep, composited
+       aurora+drift  the ambient field — thinned per device by the modes above
+       sheen         card hover sweep — finite, so category A in practice
+
+  C — DISABLE where the device cannot afford it. Each animates a property that
+     forces a repaint, continuously, on a large surface. There is no cheap
+     version of these; the only lever is to stop, and stopping is why they are
+     worth listing separately from B:
+       morph             border-radius       — confined to desktop by the modes above
+       gradient-flow     background-position — the last one standing, gated below
+       ember canvas      full-viewport clear + composite at 30-60fps
+                                             — tiered in ember-field.tsx
+       decorative blur   64px Gaussian behind the backdrop, re-run on every
+                         repaint              — already off on phones above
+
+  Note for whoever adds the next one: `--animate-float-slow` is defined in the
+  motion tokens and referenced by nothing. It was presumably meant for a hover
+  float. Deleting it is free.
+------------------------------------------------------------------------------ */
+
+/* ---------------------------- reduced motion -------------------------------
+
+  Two layers, deliberately.
+
+  The blanket clamp below is what handles category A. It shortens every
+  animation and transition to nothing, so a `pop-in` still completes and the
+  element still lands visible — a user who asks for reduced motion wants the
+  interface to appear, not to be stuck at frame zero. `animation-iteration-count`
+  is what makes it terminate: an infinite animation clamped to a 0.01ms duration
+  still runs, just once.
+
+  The explicit list after it is what handles everything the clamp cannot reach.
+  A 0.01ms duration is enough to neutralise a time-driven animation, but not a
+  scroll-driven one, which stays live against the scroll timeline regardless of
+  how short its duration is — hence `animation-timeline: auto`, plus naming the
+  known cases so a new one is visibly missing from the list rather than silently
+  still moving.
+
+  Note this block is unlayered on purpose. Tailwind emits utilities into
+  `@layer utilities`, and an unlayered rule outranks every layer, which is what
+  lets this override a utility that sets its own animation. */
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -431,14 +662,29 @@
     animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
+    /* Scroll-driven animations ignore duration. Neutralise the timeline too, so
+       an effect added later cannot outlive this block by being scroll-driven. */
+    animation-timeline: auto !important;
   }
   html.js [data-reveal] {
     opacity: 1 !important;
     transform: none !important;
   }
+
+  /* Killed outright rather than shortened: a stopped sweep would freeze on the
+     first 45% of its ramp, so the gradient is also refitted to the box. Without
+     this the headline loses its pink under reduced motion. */
+  .text-gradient-flow {
+    animation: none !important;
+    background-size: 100% 100% !important;
+  }
+
   .parallax-far,
   .parallax-near,
-  .zoom-on-scroll {
+  .zoom-on-scroll,
+  .ambient-aurora,
+  .ambient-drift,
+  .hero-glow-blob {
     animation: none !important;
   }
 }

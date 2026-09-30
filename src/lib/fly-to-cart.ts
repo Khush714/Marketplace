@@ -6,6 +6,8 @@
  * state, no re-renders, and it never touches cart logic.
  */
 
+import { isReducedMotion } from "@/lib/performance-mode";
+
 interface Point {
   x: number;
   y: number;
@@ -13,7 +15,7 @@ interface Point {
 
 export function flyToCart(from: Point, imageUrl?: string): void {
   if (typeof window === "undefined") return;
-  if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+  if (isReducedMotion()) return;
 
   const anchor = document.querySelector<HTMLElement>("[data-cart-anchor]");
   if (!anchor) return;

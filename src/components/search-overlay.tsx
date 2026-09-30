@@ -27,7 +27,7 @@ import {
 import { cn, formatINR, isUnrated, withLoc } from "@/lib/domain";
 import { useLocation } from "@/lib/location";
 import { cssVars } from "@/components/motion-primitives";
-import { useProfile } from "@/lib/profile";
+import { useSearchHistory } from "@/lib/profile";
 import type { DishSearchResult, RestaurantDto, RestaurantSearchResult, SearchResult } from "@/lib/types";
 
 /* ------------------------------ context ---------------------------------- */
@@ -90,7 +90,7 @@ function SearchOverlay({ onClose }: { onClose: () => void }) {
   const [q, setQ] = useState("");
   const [results, setResults] = useState<SearchResult[] | null>(null);
   const [featured, setFeatured] = useState<RestaurantDto[]>([]);
-  const { recentSearches, pushRecentSearch, clearRecentSearches } = useProfile();
+  const { recentSearches, pushRecentSearch, clearRecentSearches } = useSearchHistory();
   const { locality } = useLocation();
 
   useEffect(() => {

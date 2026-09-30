@@ -2,12 +2,13 @@
 
 import { Heart } from "lucide-react";
 import { cn } from "@/lib/domain";
-import { useProfile } from "@/lib/profile";
+import { useFavorites, useProfileReady } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
 
 export function FavoriteHeroButton({ restaurant }: { restaurant: RestaurantDto }) {
-  const { isFavorite, toggleFavorite, hydrated } = useProfile();
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const hydrated = useProfileReady();
   const { toast } = useToast();
   const fav = hydrated && isFavorite(restaurant.slug);
 

@@ -51,8 +51,15 @@ function rateLimited(ip: string): boolean {
   const now = Date.now();
   const cutoff = now - WEBHOOK_WINDOW_MS;
   const times = (requestWindows.get(ip) ?? []).filter((t) => t > cutoff);
-  if (times.length >= WEBHOOK_MAX_PER_WINDOW) {
+  // Drop the entry when an IP has gone quiet, so the map cannot grow without
+  // bound over a long-running process (Phase 11 — mount → allocate → never
+  // reclaimed). Windows are otherwise capped at WEBHOOK_MAX_PER_WINDOW.
+  if (times.length === 0) {
+    requestWindows.delete(ip);
+  } else {
     requestWindows.set(ip, times);
+  }
+  if (times.length >= WEBHOOK_MAX_PER_WINDOW) {
     return true;
   }
   times.push(now);

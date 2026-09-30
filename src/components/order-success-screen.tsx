@@ -4,13 +4,13 @@ import Link from "next/link";
 import { useState } from "react";
 import { OrderSuccess } from "@/components/order-success";
 import { PaymentStage } from "@/components/payment-stage";
-import { useProfile } from "@/lib/profile";
+import { useProfileReady } from "@/lib/profile";
 import { usePublicOrder } from "@/lib/order-access";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 
 /** Client entry for /order/[code]/success — token-gated like tracking. */
 export function OrderSuccessScreen({ code }: { code: string }) {
-  const { hydrated } = useProfile();
+  const hydrated = useProfileReady();
   const { order, access, token, refresh } = usePublicOrder(code);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [payError, setPayError] = useState<string | null>(null);

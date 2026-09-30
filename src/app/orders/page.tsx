@@ -2,15 +2,17 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { ArrowRight, ChevronRight, Clock3, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
-import type { PublicOrder } from "@/lib/order-public";
-import { useProfile } from "@/lib/profile";
+import { useOrderPoll } from "@/lib/order-access";
+import { isOrderLive, type PublicOrder } from "@/lib/order-public";
+import { useProfileOrders, useProfileReady } from "@/lib/profile";
 
 export default function OrdersPage() {
-  const { orders: stored, hydrated } = useProfile();
+  const { orders: stored } = useProfileOrders();
+  const hydrated = useProfileReady();
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
 
   /**
@@ -18,6 +20,18 @@ export default function OrdersPage() {
    * on its own grants nothing, so this is also what stops the list from ever
    * showing somebody else's order.
    */
+  const loadOrders = useCallback(async (): Promise<PublicOrder[]> => {
+    const res = await fetch("/api/orders/lookup", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
+      cache: "no-store",
+    });
+    const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
+    return data?.orders ?? [];
+  }, [stored]);
+
+  // First paint only. The interval below owns every fetch after this one.
   useEffect(() => {
     if (!hydrated) return;
     if (!stored.length) {
@@ -25,28 +39,29 @@ export default function OrdersPage() {
       return;
     }
     let cancelled = false;
-    const load = () => {
-      fetch("/api/orders/lookup", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
-        cache: "no-store",
+    loadOrders()
+      .then((rows) => {
+        if (!cancelled) setOrders(rows);
       })
-        .then((r) => (r.ok ? r.json() : { orders: [] }))
-        .then((d: { orders?: PublicOrder[] }) => {
-          if (!cancelled) setOrders(d.orders ?? []);
-        })
-        .catch(() => {
-          if (!cancelled) setOrders([]);
-        });
-    };
-    load();
-    const t = window.setInterval(load, 6000);
+      .catch(() => {
+        if (!cancelled) setOrders([]);
+      });
     return () => {
       cancelled = true;
-      window.clearInterval(t);
     };
-  }, [hydrated, stored]);
+  }, [hydrated, stored, loadOrders]);
+
+  /**
+   * Refreshes only while something on this page can still change. A history
+   * page of settled orders has nothing to re-read, so the loop tears itself down
+   * instead of asking the server about a dozen closed orders every 6 seconds.
+   */
+  useOrderPoll({
+    load: loadOrders,
+    onData: setOrders,
+    intervalMs: 6000,
+    live: (orders ?? []).some(isOrderLive),
+  });
 
   return (
     <div className="mx-auto max-w-3xl px-4 pb-12 pt-6 md:px-6 md:pt-9">
@@ -78,7 +93,7 @@ export default function OrdersPage() {
       ) : (
         <ul className="mt-7 space-y-4">
           {orders.map((o, idx) => {
-            const live = !o.status.delivered;
+            const live = isOrderLive(o);
             return (
               <li key={o.code} style={{ animationDelay: `${idx * 60}ms` }} className="animate-rise">
                 <div className="glass lift rounded-3xl p-4 hover:shadow-lift md:p-5">

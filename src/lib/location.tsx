@@ -61,13 +61,26 @@ interface LocationContextValue {
   setLocality: (key: string) => void;
   /** Ask the browser for fresh GPS and snap to the nearest known locality. */
   detect: () => void;
-  /** Open the Zomato-style area picker. */
+  /**
+   * Open the Zomato-style area picker.
+   *
+   * Only the two stable callbacks live on the main context. `isPickerOpen` —
+   * the actual boolean that flips — sits on a separate context (see below), so
+   * opening the picker re-renders the picker host alone and not every consumer
+   * that just read `locality` (the header, the homepage hero, search).
+   */
   openPicker: () => void;
   closePicker: () => void;
+}
+
+interface LocationPickerValue {
   isPickerOpen: boolean;
+  openPicker: () => void;
+  closePicker: () => void;
 }
 
 const LocationContext = createContext<LocationContextValue | null>(null);
+const LocationPickerContext = createContext<LocationPickerValue | null>(null);
 
 function readUrlLoc(): string | null {
   try {
@@ -224,16 +237,31 @@ export function LocationProvider({ children }: { children: ReactNode }) {
       detect,
       openPicker,
       closePicker,
-      isPickerOpen,
     }),
-    [locality, hydrated, detecting, autoDetected, status, notServed, setLocality, detect, openPicker, closePicker, isPickerOpen],
+    [locality, hydrated, detecting, autoDetected, status, notServed, setLocality, detect, openPicker, closePicker],
   );
 
-  return <LocationContext.Provider value={value}>{children}</LocationContext.Provider>;
+  const pickerValue = useMemo<LocationPickerValue>(
+    () => ({ isPickerOpen, openPicker, closePicker }),
+    [isPickerOpen, openPicker, closePicker],
+  );
+
+  return (
+    <LocationContext.Provider value={value}>
+      <LocationPickerContext.Provider value={pickerValue}>{children}</LocationPickerContext.Provider>
+    </LocationContext.Provider>
+  );
 }
 
 export function useLocation(): LocationContextValue {
   const ctx = useContext(LocationContext);
   if (!ctx) throw new Error("useLocation must be used within LocationProvider");
+  return ctx;
+}
+
+/** Only for the picker host and its trigger buttons — the flapping boolean lives here. */
+export function useLocationPicker(): LocationPickerValue {
+  const ctx = useContext(LocationPickerContext);
+  if (!ctx) throw new Error("useLocationPicker must be used within LocationProvider");
   return ctx;
 }

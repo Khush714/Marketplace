@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -25,7 +25,7 @@ import { AnimatedPrice } from "@/components/motion-primitives";
 import { PaymentStage } from "@/components/payment-stage";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
-import { useProfile, type Address } from "@/lib/profile";
+import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 import { useToast } from "@/lib/toast";
 import type { OrderDto } from "@/lib/types";
@@ -87,7 +87,16 @@ async function postBill(
 
 export default function CheckoutPage() {
   const cart = useCart();
-  const profile = useProfile();
+  // Checkout needs identity, hydration and the order-slot write — and nothing
+  // else. Reading the whole profile used to make a favorite tap or a saved
+  // search re-render the entire payment form.
+  const identity = useProfileIdentity();
+  const hydrated = useProfileReady();
+  const { rememberOrder } = useProfileOrders();
+  const profile = useMemo(
+    () => ({ ...identity, hydrated, rememberOrder }),
+    [identity, hydrated, rememberOrder],
+  );
   const router = useRouter();
   const { toast } = useToast();
 

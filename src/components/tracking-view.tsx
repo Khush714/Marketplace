@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   BadgeCheck,
   Ban,
@@ -22,8 +22,8 @@ import {
 import { RollingNumber } from "@/components/motion-primitives";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatINR } from "@/lib/domain";
-import { fetchPublicOrder } from "@/lib/order-access";
-import type { PublicOrder } from "@/lib/order-public";
+import { fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
+import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 
 /* Canonical Marketplace stage keys — always rendered from the server-provided
    `status.stages`, never re-derived in a component (Phase 5 mapping rule). */
@@ -54,14 +54,15 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
   const [order, setOrder] = useState(initialOrder);
   const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
 
-  /* Live polling — the engine behind status updates */
-  useEffect(() => {
-    const poll = window.setInterval(async () => {
-      const found = await fetchPublicOrder(order.code, token);
-      if (found) setOrder(found);
-    }, 4000);
-    return () => window.clearInterval(poll);
-  }, [order.code, token]);
+  /* Live polling — the engine behind status updates.
+     Stops on its own once the order reaches a terminal stage, and while the tab
+     is hidden; the interval is the only thing that had to keep running before. */
+  const pollLoad = useCallback(
+    () => fetchPublicOrder(order.code, token),
+    [order.code, token],
+  );
+  const pollApply = useCallback((found: PublicOrder) => setOrder(found), []);
+  useOrderPoll({ load: pollLoad, onData: pollApply, intervalMs: 4000, live: isOrderLive(order) });
 
   async function handleCancel() {
     setCancel({ kind: "sending" });
@@ -106,8 +107,9 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
   const currentIndex = terminal
     ? s.stageIndex
     : (steps.filter((st) => st.delivered).at(-1)?.stageIndex ?? -1);
-  /** No live pulse, no ETA, no courier animation once the order is unreachable. */
-  const inFlight = !s.delivered && !settled && !neverDelivered;
+  /** No live pulse, no ETA, no courier animation once the order is unreachable.
+      Also the poller's own stop condition, so the two can never disagree. */
+  const inFlight = isOrderLive(order);
   const refunded = order.paymentStatus === "REFUNDED" || order.paymentStatus === "REFUND_PENDING";
 
   return (
@@ -491,6 +493,27 @@ const ROUTE_D = "M 52 236 C 110 178 148 226 196 178 C 244 130 268 168 308 118 C 
 const TRAIL_LERP = [0.34, 0.22, 0.13];
 const TRAIL_RADIUS = [7, 5.5, 4];
 
+/** Fraction of the remaining gap closed per frame. Unchanged from the original loop. */
+const RIDER_LERP = 0.035;
+/** Remaining gap, as a fraction of route length, below which the rider has arrived. */
+const ARRIVED_EPS = 0.00003;
+
+/** Clamp a route-length lookup to the drawn path. */
+const clamp01 = (v: number) => Math.min(1, Math.max(0, v));
+
+/**
+ * Document visibility as state, so the courier loop can be torn down outright
+ * when the tab is backgrounded and rebuilt when it returns.
+ *
+ * Browsers already throttle rAF in hidden tabs, but the callback stays
+ * scheduled and its state updates still land whenever the tab is restored —
+ * so a dozen queued frames replay at once on return. Gating on this also gives
+ * the effect a dependency it can restart against.
+ *
+ * Reuses `useDocumentVisible` from lib/order-access (which the poller above
+ * already subscribes to), so a visibility change registers a single listener
+ * for this screen instead of two equivalent ones.
+ */
 function CourierMap({ order }: { order: PublicOrder }) {
   const pathRef = useRef<SVGPathElement>(null);
   const [len, setLen] = useState(0);
@@ -499,6 +522,12 @@ function CourierMap({ order }: { order: PublicOrder }) {
   const state = useRef({ t: 0, trail: [] as Pt[], rider: null as Pt | null });
 
   const target = order.status.riderProgress;
+  /** A delivered order has no destination left to animate toward, so the loop is
+   *  not started for it in the first place. Declared here rather than below the
+   *  animation effect because it is a dependency of that effect's dep array,
+   *  which is evaluated during render — reading it below would be a TDZ throw. */
+  const riding = !order.status.delivered;
+  const visible = useDocumentVisible();
 
   /* Measure the route once mounted. */
   useEffect(() => {
@@ -518,44 +547,68 @@ function CourierMap({ order }: { order: PublicOrder }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [order.code]);
 
-  /* Butter-smooth lerp toward the live target, with a lagging comet trail. */
+  /* Butter-smooth lerp toward the live target, with a lagging comet trail.
+   *
+   * Demand-driven: the loop runs only while there is a gap to close and stops on
+   * the frame the rider arrives. It used to reschedule unconditionally, so once
+   * the courier was parked at its destination the component kept re-rendering
+   * every frame at display refresh rate indefinitely — on the one screen the
+   * customer is most likely to leave open and stare at. Nothing on screen
+   * changed; it was pure heat.
+   *
+   * The `riding` and `visible` dependencies are the other two stops: a delivered
+   * order has no destination, and a backgrounded tab should not be animating.
+   * Both also serve as the restart trigger, alongside `target` for a new
+   * courier position. */
   useEffect(() => {
+    const path = pathRef.current;
+    if (!path || len <= 0) return;
+    if (!riding || !visible) return;
+
     let raf = 0;
+
     const tick = () => {
-      const path = pathRef.current;
-      if (path && len > 0) {
-        const st = state.current;
-        const nextT = st.t + (target - st.t) * 0.035;
-        if (Math.abs(nextT - st.t) > 0.00003) {
-          st.t = nextT;
-          const p = path.getPointAtLength(Math.min(1, Math.max(0, st.t)) * len);
-          st.rider = { x: p.x, y: p.y };
+      const st = state.current;
+      const delta = target - st.t;
 
-          // Each follower chases the one ahead of it.
-          let prev = st.rider;
-          st.trail = st.trail.map((pt, i) => {
-            const k = TRAIL_LERP[i];
-            const moved = { x: pt.x + (prev.x - pt.x) * k, y: pt.y + (prev.y - pt.y) * k };
-            prev = moved;
-            return moved;
-          });
-
-          setRider({ x: st.rider.x, y: st.rider.y });
-          setTrail([...st.trail]);
-        } else if (st.t !== target) {
-          st.t = target;
-          const p = path.getPointAtLength(target * len);
-          setRider({ x: p.x, y: p.y });
-        }
+      // Arrived. Land exactly on the target and stop, with no reschedule. The
+      // trail collapses onto the rider because it is a comet tail — left
+      // stranded mid-path it reads as a stuck animation rather than a courier
+      // standing still.
+      if (Math.abs(delta) <= ARRIVED_EPS) {
+        st.t = target;
+        const p = path.getPointAtLength(clamp01(target) * len);
+        st.rider = { x: p.x, y: p.y };
+        st.trail = st.trail.map(() => ({ x: p.x, y: p.y }));
+        setRider({ x: p.x, y: p.y });
+        setTrail([...st.trail]);
+        return;
       }
+
+      st.t = st.t + delta * RIDER_LERP;
+      const p = path.getPointAtLength(clamp01(st.t) * len);
+      st.rider = { x: p.x, y: p.y };
+
+      // Each follower chases the one ahead of it.
+      let prev = st.rider;
+      st.trail = st.trail.map((pt, i) => {
+        const k = TRAIL_LERP[i];
+        const moved = { x: pt.x + (prev.x - pt.x) * k, y: pt.y + (prev.y - pt.y) * k };
+        prev = moved;
+        return moved;
+      });
+
+      setRider({ x: st.rider.x, y: st.rider.y });
+      setTrail([...st.trail]);
+
       raf = requestAnimationFrame(tick);
     };
+
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
-  }, [target, len]);
+  }, [target, len, riding, visible]);
 
   const progress = order.status.riderProgress;
-  const riding = !order.status.delivered;
 
   return (
     <div className="glass-strong relative h-[420px] overflow-hidden rounded-[28px] lg:h-auto lg:min-h-[560px]">

@@ -7,7 +7,7 @@ import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
 import { useLocation } from "@/lib/location";
-import { useProfile } from "@/lib/profile";
+import { useProfileIdentity } from "@/lib/profile";
 import { cn } from "@/lib/domain";
 
 function SearchTrigger({ className }: { className?: string }) {
@@ -39,7 +39,7 @@ function SearchTrigger({ className }: { className?: string }) {
 export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
   const { itemCount, bump } = useCart();
-  const { name } = useProfile();
+  const { name } = useProfileIdentity();
   const { locality, detecting, notServed, openPicker } = useLocation();
   const place = detecting ? "Detecting…" : notServed ? "Select an area" : locality.name;
 

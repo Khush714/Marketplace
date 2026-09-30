@@ -6,7 +6,7 @@ import { Clock3, Heart, Percent, Sparkles, Star } from "lucide-react";
 import { BLUR_DATA } from "@/components/atoms";
 import { Reveal, TiltCard } from "@/components/motion-primitives";
 import { cn, formatDistance, isUnrated, priceSymbol } from "@/lib/domain";
-import { useProfile } from "@/lib/profile";
+import { useFavorites, useProfileReady } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
 
@@ -29,7 +29,8 @@ export function RestaurantCard({
 }) {
   const r = restaurant;
   const router = useRouter();
-  const { isFavorite, toggleFavorite, hydrated } = useProfile();
+  const { isFavorite, toggleFavorite } = useFavorites();
+  const hydrated = useProfileReady();
   const { toast } = useToast();
   const fav = hydrated && isFavorite(r.slug);
 
