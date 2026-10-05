@@ -14,22 +14,72 @@ const IV_LENGTH = 12;
 const MAX_SKEW_MS = 5 * 60 * 1000;
 
 /**
- * AES-256-GCM envelope key derived (with domain separation) from a dedicated
- * secret. Falls back to the Razorpay webhook secret in dev environments that
- * predate the dedicated variable, so sealing/opening never breaks existing
- * deployments.
+ * Envelope keys are per-environment, but the sealed secrets live in a table
+ * that every environment shares. So a key mismatch is not a local bug — it
+ * permanently breaks POS delivery for the shared database, and it does so
+ * silently: the seal succeeds, the open fails, and the only trace is a
+ * `sealed webhook secret could not be opened` delivery error hours later.
+ *
+ * That is exactly what happened in production: INTEGRATION_ENVELOPE_KEY was
+ * never set there, so the fallback below silently bound production to
+ * RAZORPAY_WEBHOOK_SECRET while every other environment used the dedicated
+ * key. Sealing and opening diverged, and every order to the POS failed after
+ * its retries.
+ *
+ * The fallback is kept for existing deployments, but it now announces itself,
+ * and the resolved key is fingerprinted so a mismatch is diagnosable from logs
+ * without ever printing the secret.
  */
+let warnedFallback = false;
+
 function envelopeKey(): Buffer {
-  const raw =
-    process.env.INTEGRATION_ENVELOPE_KEY || process.env.RAZORPAY_WEBHOOK_SECRET || "";
-  if (!raw) {
+  const raw = process.env.INTEGRATION_ENVELOPE_KEY || "";
+  if (raw) return keyFrom(raw);
+
+  const fallback = process.env.RAZORPAY_WEBHOOK_SECRET || "";
+  if (!fallback) {
     throw new Error(
-      "INTEGRATION_ENVELOPE_KEY (or a fallback secret) is required to seal webhook secrets",
+      "INTEGRATION_ENVELOPE_KEY is required to seal/open webhook secrets",
     );
   }
+  if (!warnedFallback) {
+    warnedFallback = true;
+    console.warn(
+      `[webhook-crypto] INTEGRATION_ENVELOPE_KEY is unset; falling back to ` +
+        `RAZORPAY_WEBHOOK_SECRET (fingerprint ${fingerprint(fallback)}). ` +
+        `Every environment sharing this database must derive the same value, ` +
+        `otherwise sealed webhook secrets cannot be opened.`,
+    );
+  }
+  return keyFrom(fallback);
+}
+
+/** Stable, non-reversible id for a key so logs can prove which one is in use. */
+export function envelopeKeyFingerprint(): string {
+  return fingerprint(resolveRawKey());
+}
+
+function resolveRawKey(): string {
+  const raw = process.env.INTEGRATION_ENVELOPE_KEY || process.env.RAZORPAY_WEBHOOK_SECRET || "";
+  if (!raw) {
+    throw new Error(
+      "INTEGRATION_ENVELOPE_KEY is required to seal/open webhook secrets",
+    );
+  }
+  return raw;
+}
+
+function keyFrom(raw: string): Buffer {
   return createHash("sha256")
     .update(`marketplace-menu-webhook-envelope:v1:${raw}`)
     .digest();
+}
+
+function fingerprint(raw: string): string {
+  return createHash("sha256")
+    .update(`marketplace-envelope-fingerprint:v1:${raw}`)
+    .digest("hex")
+    .slice(0, 12);
 }
 
 /** Seal the POS webhook secret at rest; the raw secret is never persisted. */
@@ -54,10 +104,25 @@ export function openWebhookSecret(envelope: string): string {
   }
   const decipher = createDecipheriv("aes-256-gcm", envelopeKey(), Buffer.from(ivB64, "base64"));
   decipher.setAuthTag(Buffer.from(tagB64, "base64"));
-  return Buffer.concat([
-    decipher.update(Buffer.from(encryptedB64, "base64")),
-    decipher.final(),
-  ]).toString("utf8");
+  try {
+    return Buffer.concat([
+      decipher.update(Buffer.from(encryptedB64, "base64")),
+      decipher.final(),
+    ]).toString("utf8");
+  } catch (e) {
+    // GCM cannot tell "wrong key" from "tampered ciphertext" — both fail the
+    // auth tag. In practice a wrong key is the overwhelmingly likely cause, so
+    // say so and name the key in use, which makes a cross-environment mismatch
+    // a two-minute diagnosis instead of a mystery.
+    throw new Error(
+      `Could not open sealed webhook secret using envelope key ` +
+        `${envelopeKeyFingerprint()}. The secret was sealed under a different ` +
+        `INTEGRATION_ENVELOPE_KEY, or the ciphertext was tampered with. Every ` +
+        `environment sharing this database must use the same key; re-claiming ` +
+        `the integration reseals the secret with the current one. ` +
+        `Underlying: ${(e as Error).message}`,
+    );
+  }
 }
 
 /**

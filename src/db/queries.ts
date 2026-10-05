@@ -8,6 +8,7 @@ import {
   integrationAudit,
   integrationRecords,
   integrationSessions,
+  integrationTransferRequests,
   menuItemModifierGroups,
   menuItems,
   modifierGroups,
@@ -34,8 +35,17 @@ import {
 import { hashOwnerKey, hashToken, integrationPasskeyMatches, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
-import { statusRank } from "@/integrations/pos/order-status";
+import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
+import { statusRank, TERMINAL_STATUSES } from "@/integrations/pos/order-status";
+import {
+  OPEN_ORDER_PREDICATE,
+  planTransferApproval,
+  shouldActivateOnApproval,
+  type TransferDecision,
+  type TransferStateSnapshot,
+} from "@/lib/integration-transfer";
 import { OUTLET_ERROR_MESSAGES, resolveOutletForRestaurant } from "@/integrations/pos/resolve-outlet";
+import { canDeliverToPos, integrationReadiness } from "@/integrations/pos/readiness";
 import type {
   ConnectionCodeDto,
   ConnectionDto,
@@ -319,19 +329,26 @@ function integrationOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
  */
 export async function hasActiveIntegration(restaurantId: number): Promise<boolean> {
   const [rec] = await db
-    .select({ id: integrationRecords.id })
+    .select({
+      status: integrationRecords.status,
+      posRestaurantId: integrationRecords.posRestaurantId,
+      webhookSecret: integrationRecords.webhookSecret,
+    })
     .from(integrationRecords)
-    .where(
-      and(
-        eq(integrationRecords.restaurantId, restaurantId),
-        eq(integrationRecords.status, "active"),
-        isNotNull(integrationRecords.posRestaurantId),
-        isNotNull(integrationRecords.webhookSecret),
-      ),
-    )
+    .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
-  return !!rec;
+  return canDeliverToPos(rec ?? {});
 }
+
+/**
+ * The same rule as `hasActiveIntegration`, reported as a reason instead of a
+ * boolean so the partner console can say *why* orders are blocked.
+ *
+ * This used to be a second, hand-rolled copy of the predicate sitting right
+ * here. It now delegates to the shared helper, because the two silently
+ * disagreeing is precisely the failure that shipped a hard-coded "ACTIVE" to a
+ * restaurant whose orders could not be delivered.
+ */
 
 export interface BrowseFilters {
   q?: string;
@@ -398,6 +415,28 @@ export async function featuredRestaurants(locality?: string): Promise<Restaurant
   return rows.map(toRestaurantDto);
 }
 
+/**
+ * Slug + creation date for every listing that may be indexed.
+ *
+ * Deliberately narrow: `browseRestaurants` hydrates the full DTO (menu sections,
+ * modifier groups, image URLs) and `RestaurantDto` carries no timestamp at all,
+ * but sitemap generation needs nothing beyond a slug and an honest
+ * `lastModified`. Selecting the whole row here would make a crawl-triggered
+ * query pay for data no consumer reads.
+ *
+ * Uses the same `discoverableRestaurant` predicate as browse and search, so the
+ * sitemap can never advertise a listing the grid hides — in particular never an
+ * empty-menu listing, whose page renders "Menu being prepared".
+ */
+export async function discoverableRestaurantSlugs(): Promise<{ slug: string; createdAt: Date }[]> {
+  const rows = await db
+    .select({ slug: restaurants.slug, createdAt: restaurants.createdAt })
+    .from(restaurants)
+    .where(discoverableRestaurant)
+    .orderBy(desc(restaurants.createdAt));
+  return rows;
+}
+
 export async function getRestaurant(slug: string) {
   const [r] = await db
     .select()
@@ -440,7 +479,11 @@ export async function getRestaurant(slug: string) {
 /* --------------------------------- search -------------------------------- */
 
 export async function searchAll(q: string, locality?: string): Promise<SearchResult[]> {
-  const like = `%${q}%`;
+  // The term becomes a LIKE pattern, so its wildcards have to be escaped or a
+  // query of "%" matches every row and "_" matches any character — the pattern
+  // stops meaning what the user typed. `.limit()` below still bounds the result
+  // set; this bounds the pattern the planner has to work through.
+  const like = `%${escapeLike(q)}%`;
   const restaurantCondition = and(
     discoverableRestaurant,
     or(
@@ -511,11 +554,16 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
 }
 
 export async function restaurantsBySlugs(slugs: string[]): Promise<RestaurantDto[]> {
-  if (!slugs.length) return [];
+  // Capped here rather than only at the route: this array is spliced straight
+  // into `inArray(...)`, so the statement grows with the caller's input. The
+  // route clamps it too, but a query helper that is safe by construction is the
+  // cheaper thing to rely on than every call site remembering to clamp.
+  const bounded = slugs.slice(0, MAX_SLUGS);
+  if (!bounded.length) return [];
   const rows = await db
     .select()
     .from(restaurants)
-    .where(and(eq(restaurants.isActive, true), inArray(restaurants.slug, slugs)));
+    .where(and(eq(restaurants.isActive, true), inArray(restaurants.slug, bounded)));
   return rows.map(toRestaurantDto);
 }
 
@@ -625,8 +673,119 @@ export interface RedeemConnectionInput {
   heroUrl?: string;
 }
 
+/** The listing fields a restaurant supplies about itself, minus how it got here. */
+export interface ListingProfileInput {
+  name: string;
+  tagline?: string;
+  cuisines: string[];
+  locality: string;
+  externalId: string;
+  imageUrl?: string;
+  heroUrl?: string;
+}
+
 class CodeAlreadyUsedError extends Error {}
 class ExternalIdTakenError extends Error {}
+
+/** The transaction handle `db.transaction` hands its callback. */
+type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
+
+interface NormalizedListing {
+  name: string;
+  tagline: string;
+  cuisines: string[];
+  locality: string;
+  externalId: string;
+  imageUrl: string;
+  heroUrl: string;
+}
+
+/**
+ * Validate and clamp the listing fields shared by code redemption and
+ * self-signup, so the two onboarding paths cannot drift apart.
+ */
+function normalizeListingInput(
+  input: ListingProfileInput,
+): { ok: true; fields: NormalizedListing } | { ok: false; error: string } {
+  const name = String(input.name ?? "").trim().slice(0, 80);
+  if (!name) return { ok: false, error: "Restaurant name is required" };
+
+  const externalId = String(input.externalId ?? "").trim().slice(0, 64);
+  if (!externalId) return { ok: false, error: "Marketplace store ID is required" };
+
+  // Cuisines are validated against the marketplace vocabulary rather than
+  // stored verbatim: the browse filter rail is a fixed list and matches with
+  // `= any(cuisines)`, so an off-list tag makes a listing unfindable by cuisine.
+  const normalizedCuisines = normalizeCuisines(input.cuisines);
+  if (!normalizedCuisines.ok) return { ok: false, error: normalizedCuisines.error };
+
+  const locality = LOCALITIES.some((l) => l.name === input.locality) ? input.locality : DEFAULT_LOCALITY.name;
+
+  return {
+    ok: true,
+    fields: {
+      name,
+      tagline: String(input.tagline ?? "").trim().slice(0, 80),
+      cuisines: normalizedCuisines.cuisines,
+      locality,
+      externalId,
+      // Sanitised the same way partner-authored dish images are: an
+      // unvalidated restaurant image URL feeds next/image directly.
+      imageUrl: sanitizeImageUrl(input.imageUrl, DEFAULT_RESTAURANT_IMAGE),
+      heroUrl: sanitizeImageUrl(input.heroUrl, DEFAULT_RESTAURANT_HERO),
+    },
+  };
+}
+
+/**
+ * Insert a listing row. Caller owns the transaction and any uniqueness
+ * pre-checks; `isActive` is the one behavioural switch between the two paths.
+ */
+async function insertListing(
+  tx: Tx,
+  fields: NormalizedListing,
+  ownerKeyHash: string,
+  opts: { isActive: boolean },
+): Promise<typeof restaurants.$inferSelect> {
+  const slugExists = async (candidate: string) =>
+    (
+      await tx
+        .select({ id: restaurants.id })
+        .from(restaurants)
+        .where(eq(restaurants.slug, candidate))
+        .limit(1)
+    ).length > 0;
+  const slug = await uniqueRestaurantSlug(slugExists, slugify(fields.name));
+
+  const [r] = await tx
+    .insert(restaurants)
+    .values({
+      slug,
+      name: fields.name,
+      tagline: fields.tagline,
+      cuisines: fields.cuisines,
+      locality: fields.locality,
+      externalId: fields.externalId,
+      marketplaceId: makeMarketplaceId(),
+      ownerKeyHash,
+      // The one-time key the restaurant is shown doubles as its initial POS
+      // passkey, so both credentials start identical and only diverge on
+      // rotation.
+      integrationPasskeyHash: ownerKeyHash,
+      isActive: opts.isActive,
+      imageUrl: fields.imageUrl,
+      heroUrl: fields.heroUrl,
+      // A newly connected listing has no reviews. The schema default of
+      // 4.2/1000 exists so seeded rows sort, but inheriting it here would
+      // put invented social proof in front of customers. Customer surfaces
+      // render "New" while ratingsCount is 0 (see isUnrated).
+      rating: 0,
+      ratingsCount: 0,
+    })
+    .returning();
+
+  return r;
+}
 
 function slugify(name: string): string {
   const base = name
@@ -670,19 +829,9 @@ export async function redeemConnectionCode(
   const code = String(input.code ?? "").trim().toUpperCase();
   if (!code) return { ok: false, error: "Enter the connection code" };
 
-  const name = String(input.name ?? "").trim().slice(0, 80);
-  if (!name) return { ok: false, error: "Restaurant name is required" };
-
-  const externalId = String(input.externalId ?? "").trim().slice(0, 64);
-  if (!externalId) return { ok: false, error: "Marketplace store ID is required" };
-
-  // Cuisines are validated against the marketplace vocabulary rather than
-  // stored verbatim: the browse filter rail is a fixed list and matches with
-  // `= any(cuisines)`, so an off-list tag makes a listing unfindable by cuisine.
-  const normalizedCuisines = normalizeCuisines(input.cuisines);
-  if (!normalizedCuisines.ok) return { ok: false, error: normalizedCuisines.error };
-
-  const locality = LOCALITIES.some((l) => l.name === input.locality) ? input.locality : DEFAULT_LOCALITY.name;
+  const normalized = normalizeListingInput(input);
+  if (!normalized.ok) return { ok: false, error: normalized.error };
+  const fields = normalized.fields;
 
   const [c] = await db
     .select()
@@ -695,9 +844,6 @@ export async function redeemConnectionCode(
 
   const ownerKey = makeOwnerKey();
   const ownerKeyHash = hashOwnerKey(ownerKey);
-  // The one-time key the restaurant is shown doubles as its initial POS passkey,
-  // so both credentials start identical and only diverge on rotation.
-  const integrationPasskeyHash = ownerKeyHash;
 
   try {
     const restaurant = await db.transaction(async (tx) => {
@@ -712,45 +858,12 @@ export async function redeemConnectionCode(
       const [existing] = await tx
         .select()
         .from(restaurants)
-        .where(eq(restaurants.externalId, externalId))
+        .where(eq(restaurants.externalId, fields.externalId))
         .limit(1);
       if (existing) throw new ExternalIdTakenError();
 
-      const exists = async (candidate: string) =>
-        (
-          await tx
-            .select({ id: restaurants.id })
-            .from(restaurants)
-            .where(eq(restaurants.slug, candidate))
-            .limit(1)
-        ).length > 0;
-      const slug = await uniqueRestaurantSlug(exists, slugify(name));
-
-      const [r] = await tx
-        .insert(restaurants)
-        .values({
-          slug,
-          name,
-          tagline: String(input.tagline ?? "").trim().slice(0, 80),
-          cuisines: normalizedCuisines.cuisines,
-          locality,
-          externalId,
-          marketplaceId: makeMarketplaceId(),
-          ownerKeyHash,
-          integrationPasskeyHash,
-          // Sanitised the same way partner-authored dish images are: an
-          // unvalidated restaurant image URL feeds next/image directly.
-          imageUrl: sanitizeImageUrl(input.imageUrl, DEFAULT_RESTAURANT_IMAGE),
-          heroUrl: sanitizeImageUrl(input.heroUrl, DEFAULT_RESTAURANT_HERO),
-          // A newly connected listing has no reviews. The schema default of
-          // 4.2/1000 exists so seeded rows sort, but inheriting it here would
-          // put invented social proof in front of customers. Customer surfaces
-          // render "New" while ratingsCount is 0 (see isUnrated).
-          rating: 0,
-          ratingsCount: 0,
-        })
-        .returning();
-
+      // An ops-minted code is an explicit invite, so the listing goes live.
+      const r = await insertListing(tx, fields, ownerKeyHash, { isActive: true });
       await tx.insert(connections).values({ codeId: c.id, restaurantId: r.id });
       return r;
     });
@@ -760,6 +873,62 @@ export async function redeemConnectionCode(
     if (e instanceof CodeAlreadyUsedError) return { ok: false, error: "Connection code already used" };
     if (e instanceof ExternalIdTakenError || isUniqueViolation(e)) {
       return { ok: false, error: "This store ID is already connected to another restaurant" };
+    }
+    throw e;
+  }
+}
+
+/**
+ * Onboard a restaurant with no ops-minted code.
+ *
+ * This is the self-serve path, and it deliberately does NOT hand the caller a
+ * live listing. `is_active` starts false for three reasons:
+ *
+ *   1. Discoverability already requires `is_active` AND a published menu item,
+ *      so an unvetted listing stays out of browse and out of search entirely.
+ *   2. Ordering is separately gated on `hasActiveIntegration`, so nothing can
+ *      be charged or dispatched until a POS is actually claimed — the POS
+ *      connection code is the real proof of ownership, and it is still
+ *      required on /partner/integrations.
+ *   3. It makes junk listings self-limiting: each one is inert until a human
+ *      behind that POS deliberately connects it and publishes a menu.
+ *
+ * The restaurant activates its own listing from /partner once connected, so
+ * there is still no ops step anywhere in the funnel.
+ */
+export async function selfRegisterRestaurant(
+  input: ListingProfileInput,
+): Promise<
+  | { ok: true; restaurant: RestaurantDto; ownerKey: string }
+  | { ok: false; error: string; code?: "STORE_ID_TAKEN" }
+> {
+  const normalized = normalizeListingInput(input);
+  if (!normalized.ok) return { ok: false, error: normalized.error };
+  const fields = normalized.fields;
+
+  const ownerKey = makeOwnerKey();
+  const ownerKeyHash = hashOwnerKey(ownerKey);
+
+  try {
+    const restaurant = await db.transaction(async (tx) => {
+      const [existing] = await tx
+        .select({ id: restaurants.id })
+        .from(restaurants)
+        .where(eq(restaurants.externalId, fields.externalId))
+        .limit(1);
+      if (existing) throw new ExternalIdTakenError();
+
+      return insertListing(tx, fields, ownerKeyHash, { isActive: false });
+    });
+
+    return { ok: true, restaurant: toRestaurantDto(restaurant), ownerKey };
+  } catch (e) {
+    if (e instanceof ExternalIdTakenError || isUniqueViolation(e)) {
+      return {
+        ok: false,
+        error: "This store ID is already connected to another restaurant",
+        code: "STORE_ID_TAKEN",
+      };
     }
     throw e;
   }
@@ -1135,6 +1304,18 @@ export interface IntegrationRecordDto {
   lastHeartbeatAt: string | null;
   lastSyncAt: string | null;
   lastError: string | null;
+  /**
+   * The three facts `attemptPosDelivery` actually needs, evaluated server-side.
+   *
+   * `status === "active"` alone is not the truth — a claim can be ACTIVE with
+   * no sealed webhook secret yet, which is exactly the state where an order is
+   * accepted, charged, and then never delivered. The partner UI renders this
+   * instead of asserting "ACTIVE", so a restaurant is never told it is live
+   * while the bridge would refuse to POST.
+   */
+  ready: boolean;
+  /** Which of the three facts is missing, so the partner can be told why. */
+  notReadyReason: "webhook_secret" | "pos_restaurant_id" | "inactive" | null;
 }
 
 export async function getIntegrationRecord(restaurantId: number): Promise<IntegrationRecordDto | null> {
@@ -1148,6 +1329,7 @@ export async function getIntegrationRecord(restaurantId: number): Promise<Integr
     .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
   if (!row) return null;
+  const { ready, notReadyReason } = integrationReadiness(row.rec);
   return {
     restaurantId: row.rec.restaurantId,
     marketplaceId: row.marketplaceId ?? "",
@@ -1160,6 +1342,8 @@ export async function getIntegrationRecord(restaurantId: number): Promise<Integr
     lastHeartbeatAt: row.rec.lastHeartbeatAt ? new Date(row.rec.lastHeartbeatAt).toISOString() : null,
     lastSyncAt: row.rec.lastSyncAt ? new Date(row.rec.lastSyncAt).toISOString() : null,
     lastError: row.rec.lastError,
+    ready,
+    notReadyReason,
   };
 }
 
@@ -1212,6 +1396,7 @@ export async function upsertIntegrationIdentity(
 
   const record = rec[0];
   const marketplaceId = await getOrCreateMarketplaceId(input.restaurantId);
+  const { ready, notReadyReason } = integrationReadiness(record);
   return {
     restaurantId: input.restaurantId,
     marketplaceId,
@@ -1224,6 +1409,8 @@ export async function upsertIntegrationIdentity(
     lastHeartbeatAt: record.lastHeartbeatAt ? new Date(record.lastHeartbeatAt).toISOString() : null,
     lastSyncAt: record.lastSyncAt ? new Date(record.lastSyncAt).toISOString() : null,
     lastError: record.lastError,
+    ready,
+    notReadyReason,
   };
 }
 
@@ -1263,6 +1450,509 @@ export async function revokeIntegrationSessions(restaurantId: number): Promise<v
     .where(and(eq(integrationSessions.restaurantId, restaurantId), isNull(integrationSessions.revokedAt)));
 }
 
+/* --------------------------- identity transfers --------------------------- */
+
+/**
+ * Who currently holds a POS identity (`restaurants.marketplace_id`).
+ *
+ * Returns null when nobody does. That is a real state, not an error: disconnect
+ * and transfer both clear the column, so "unheld" is how a listing that gave up
+ * an identity looks afterwards.
+ */
+export async function getMarketplaceIdHolder(
+  marketplaceId: string,
+): Promise<{ id: number; name: string; slug: string } | null> {
+  const id = String(marketplaceId ?? "").trim();
+  if (!id) return null;
+  const [row] = await db
+    .select({ id: restaurants.id, name: restaurants.name, slug: restaurants.slug })
+    .from(restaurants)
+    .where(eq(restaurants.marketplaceId, id))
+    .limit(1);
+  return row ?? null;
+}
+
+/** The open request from this listing, if any — the one the UI must not duplicate. */
+export async function findPendingTransferFor(
+  requestedByRestaurantId: number,
+): Promise<{ id: number; status: string; requestedAt: string; heldBy: { id: number; name: string; slug: string } | null } | null> {
+  const [row] = await db
+    .select({
+      id: integrationTransferRequests.id,
+      status: integrationTransferRequests.status,
+      requestedAt: integrationTransferRequests.requestedAt,
+      marketplaceId: integrationTransferRequests.marketplaceId,
+    })
+    .from(integrationTransferRequests)
+    .where(
+      and(
+        eq(integrationTransferRequests.requestedByRestaurantId, requestedByRestaurantId),
+        eq(integrationTransferRequests.status, "pending"),
+      ),
+    )
+    .orderBy(desc(integrationTransferRequests.requestedAt))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    status: row.status,
+    requestedAt: row.requestedAt.toISOString(),
+    heldBy: await getMarketplaceIdHolder(row.marketplaceId),
+  };
+}
+
+/**
+ * Record (or refresh) a listing's request to take a POS identity from another
+ * listing.
+ *
+ * Read-then-write against the partial unique index rather than an
+ * ON CONFLICT target: the index is WHERE status='pending', and spelling that
+ * predicate into a conflict target made the statement depend on the index
+ * definition matching exactly. A duplicate ask is not an error anyway — the
+ * operator pressing the button twice should refresh the note, not 500 — so the
+ * race that can still slip through is caught and folded into the same update.
+ */
+export async function requestIntegrationTransfer(input: {
+  requestedByRestaurantId: number;
+  previousRestaurantId: number;
+  marketplaceId: string;
+  posRestaurantId?: string | null;
+  note?: string | null;
+  ipAddress?: string | null;
+}): Promise<{ id: number; status: string; requestedAt: string; heldBy: { id: number; name: string; slug: string } | null }> {
+  const marketplaceId = String(input.marketplaceId ?? "").trim();
+  if (!marketplaceId) throw new Error("marketplaceId is required");
+
+  const refresh = async () => {
+    const [updated] = await db
+      .update(integrationTransferRequests)
+      .set({
+        posRestaurantId: input.posRestaurantId ?? undefined,
+        note: input.note ?? undefined,
+        requestedByIp: input.ipAddress ?? undefined,
+        requestedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(integrationTransferRequests.marketplaceId, marketplaceId),
+          eq(integrationTransferRequests.requestedByRestaurantId, input.requestedByRestaurantId),
+          eq(integrationTransferRequests.status, "pending"),
+        ),
+      )
+      .returning({ id: integrationTransferRequests.id, status: integrationTransferRequests.status, requestedAt: integrationTransferRequests.requestedAt });
+    if (!updated) throw new Error("transfer request disappeared");
+    return {
+      id: updated.id,
+      status: updated.status,
+      requestedAt: updated.requestedAt.toISOString(),
+      heldBy: await getMarketplaceIdHolder(marketplaceId),
+    };
+  };
+
+  const [existing] = await db
+    .select({ id: integrationTransferRequests.id })
+    .from(integrationTransferRequests)
+    .where(
+      and(
+        eq(integrationTransferRequests.marketplaceId, marketplaceId),
+        eq(integrationTransferRequests.requestedByRestaurantId, input.requestedByRestaurantId),
+        eq(integrationTransferRequests.status, "pending"),
+      ),
+    )
+    .limit(1);
+  if (existing) return refresh();
+
+  try {
+    const [inserted] = await db
+      .insert(integrationTransferRequests)
+      .values({
+        requestedByRestaurantId: input.requestedByRestaurantId,
+        previousRestaurantId: input.previousRestaurantId,
+        marketplaceId,
+        posRestaurantId: input.posRestaurantId ?? null,
+        note: input.note ?? null,
+        requestedByIp: input.ipAddress ?? null,
+      })
+      .returning({ id: integrationTransferRequests.id, status: integrationTransferRequests.status, requestedAt: integrationTransferRequests.requestedAt });
+    return {
+      id: inserted.id,
+      status: inserted.status,
+      requestedAt: inserted.requestedAt.toISOString(),
+      heldBy: await getMarketplaceIdHolder(marketplaceId),
+    };
+  } catch (err) {
+    // 23505: another request landed between the read and the insert. The partial
+    // unique index did its job; fold the loser into the same refresh path.
+    if ((err as { code?: string })?.code === "23505") return refresh();
+    throw err;
+  }
+}
+
+export interface IntegrationTransferDto {
+  id: number;
+  status: string;
+  marketplaceId: string;
+  posRestaurantId: string | null;
+  note: string | null;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  requestedBy: { id: number; name: string; slug: string };
+  heldBy: { id: number; name: string; slug: string } | null;
+  holderRecordStatus: string | null;
+  holderStats: { orders: number; openOrders: number };
+}
+
+/**
+ * The ops transfer queue.
+ *
+ * Batched deliberately: the naive shape (per request, load holder + order counts)
+ * is a handful of queries per row on a queue an operator refreshes constantly.
+ * Order counts are grouped because `orders` is the largest table touched and the
+ * per-listing totals are all that is displayed.
+ */
+export async function listIntegrationTransfers(
+  statuses: string[] = ["pending"],
+): Promise<IntegrationTransferDto[]> {
+  const wanted = statuses.length ? statuses : ["pending"];
+  const requests = await db
+    .select()
+    .from(integrationTransferRequests)
+    .where(inArray(integrationTransferRequests.status, wanted))
+    .orderBy(desc(integrationTransferRequests.requestedAt))
+    .limit(50);
+  if (!requests.length) return [];
+
+  const restaurantIds = [
+    ...new Set(requests.flatMap((r) => [r.requestedByRestaurantId, r.previousRestaurantId])),
+  ];
+
+  const listingRows = await db
+    .select({ id: restaurants.id, name: restaurants.name, slug: restaurants.slug })
+    .from(restaurants)
+    .where(inArray(restaurants.id, restaurantIds));
+  const byId = new Map(listingRows.map((r) => [r.id, r]));
+
+  const orderCounts = await db
+    .select({ restaurantId: orders.restaurantId, total: sql<number>`count(*)::int` })
+    .from(orders)
+    .where(inArray(orders.restaurantId, restaurantIds))
+    .groupBy(orders.restaurantId);
+  const totalById = new Map(orderCounts.map((r) => [r.restaurantId, Number(r.total)]));
+
+  const openRows = await db
+    .select({ restaurantId: orders.restaurantId, total: sql<number>`count(*)::int` })
+    .from(orders)
+    .where(and(inArray(orders.restaurantId, restaurantIds), OPEN_ORDER_PREDICATE))
+    .groupBy(orders.restaurantId);
+  const openById = new Map(openRows.map((r) => [r.restaurantId, Number(r.total)]));
+
+  const recordRows = await db
+    .select({
+      restaurantId: integrationRecords.restaurantId,
+      status: integrationRecords.status,
+    })
+    .from(integrationRecords)
+    .where(inArray(integrationRecords.restaurantId, restaurantIds));
+  const recordById = new Map(recordRows.map((r) => [r.restaurantId, r.status]));
+
+  return requests.map((r) => {
+    const holder = byId.get(r.previousRestaurantId) ?? null;
+    return {
+      id: r.id,
+      status: r.status,
+      marketplaceId: r.marketplaceId,
+      posRestaurantId: r.posRestaurantId,
+      note: r.note,
+      requestedAt: r.requestedAt.toISOString(),
+      decidedAt: r.decidedAt ? r.decidedAt.toISOString() : null,
+      decidedBy: r.decidedBy,
+      requestedBy: byId.get(r.requestedByRestaurantId) ?? { id: r.requestedByRestaurantId, name: "Unknown", slug: "" },
+      heldBy: holder,
+      holderRecordStatus: recordById.get(r.previousRestaurantId) ?? null,
+      holderStats: {
+        orders: totalById.get(r.previousRestaurantId) ?? 0,
+        openOrders: openById.get(r.previousRestaurantId) ?? 0,
+      },
+    };
+  });
+}
+
+export type TransferDecisionResult =
+  | {
+      ok: true;
+      outcome: "approved" | "denied";
+      requestId: number;
+      grantedTo: number;
+      releasedFrom: number;
+      marketplaceId: string;
+      /** False when the requester's record still lacks a webhook secret. */
+      activated: boolean;
+      warnings: string[];
+    }
+  | { ok: false; code: string; error: string };
+
+/**
+ * Ops approval/denial of an identity transfer.
+ *
+ * The plan comes from the pure `planTransferApproval`, so the conditions under
+ * which an identity may move are unit-tested rather than asserted in a route.
+ * The writes then run in one transaction with two deliberate compare-and-set
+ * guards:
+ *
+ *   - the request UPDATE is scoped to status='pending' and checked, so two
+ *     operators clicking Approve at once cannot both apply;
+ *   - the UNIQUE constraint on restaurants.marketplace_id is the final arbiter.
+ *     The holder was read just before the transaction, so a third listing
+ *     grabbing the id in that window surfaces as a clean refusal rather than a
+ *     half-applied move.
+ */
+export async function decideIntegrationTransfer(input: {
+  requestId: number;
+  decision: "approved" | "denied";
+  actor: string;
+  ipAddress?: string | null;
+  note?: string | null;
+}): Promise<TransferDecisionResult> {
+  const [request] = await db
+    .select()
+    .from(integrationTransferRequests)
+    .where(eq(integrationTransferRequests.id, input.requestId))
+    .limit(1);
+  if (!request) {
+    return { ok: false, code: "TRANSFER_NOT_FOUND", error: "No such transfer request" };
+  }
+
+  if (input.decision === "denied") {
+    const [denied] = await db
+      .update(integrationTransferRequests)
+      .set({
+        status: "denied",
+        decidedAt: new Date(),
+        decidedBy: input.actor,
+        ...(input.note ? { note: input.note } : {}),
+      })
+      .where(and(eq(integrationTransferRequests.id, input.requestId), eq(integrationTransferRequests.status, "pending")))
+      .returning({ id: integrationTransferRequests.id });
+    if (!denied) {
+      return { ok: false, code: "TRANSFER_NOT_PENDING", error: "This request was already decided." };
+    }
+    await recordIntegrationAudit(
+      request.requestedByRestaurantId,
+      "pos_integration_transfer_denied",
+      { actor: "ops", ipAddress: input.ipAddress },
+      { request_id: request.id, marketplace_id: request.marketplaceId, note: input.note ?? null },
+    );
+    return {
+      ok: true,
+      outcome: "denied",
+      requestId: request.id,
+      grantedTo: 0,
+      releasedFrom: 0,
+      marketplaceId: request.marketplaceId,
+      activated: false,
+      warnings: [],
+    };
+  }
+
+  // Snapshot everything the plan reasons about, in one pass per concern.
+  const holder = await getMarketplaceIdHolder(request.marketplaceId);
+  const [requester] = await db
+    .select({ marketplaceId: restaurants.marketplaceId })
+    .from(restaurants)
+    .where(eq(restaurants.id, request.requestedByRestaurantId))
+    .limit(1);
+  const records = await db
+    .select({
+      restaurantId: integrationRecords.restaurantId,
+      status: integrationRecords.status,
+      posRestaurantId: integrationRecords.posRestaurantId,
+      webhookSecret: integrationRecords.webhookSecret,
+    })
+    .from(integrationRecords)
+    .where(
+      inArray(integrationRecords.restaurantId, [
+        request.requestedByRestaurantId,
+        request.previousRestaurantId,
+      ]),
+    );
+  const recordFor = (id: number) => records.find((r) => r.restaurantId === id) ?? null;
+
+  const counts = await db
+    .select({
+      restaurantId: orders.restaurantId,
+      total: sql<number>`count(*)::int`,
+      // `count(*) FILTER (WHERE …)` is the idiomatic Postgres form, but FILTER
+      // is a reserved word and drizzle emits the raw fragment unquoted, which
+      // Postgres rejects with 42601 at "filter". `sum(case …)` says the same
+      // thing without the reserved keyword.
+      open: sql<number>`sum(case when ${OPEN_ORDER_PREDICATE} then 1 else 0 end)::int`,
+    })
+    .from(orders)
+    .where(
+      inArray(orders.restaurantId, [request.requestedByRestaurantId, request.previousRestaurantId]),
+    )
+    .groupBy(orders.restaurantId);
+  const statsFor = (id: number) => {
+    const row = counts.find((c) => c.restaurantId === id);
+    return { orders: Number(row?.total ?? 0), openOrders: Number(row?.open ?? 0) };
+  };
+
+  const requesterRecord = recordFor(request.requestedByRestaurantId);
+  const holderRecord = recordFor(request.previousRestaurantId);
+
+  const snapshot: TransferStateSnapshot = {
+    request: {
+      id: request.id,
+      requestedByRestaurantId: request.requestedByRestaurantId,
+      previousRestaurantId: request.previousRestaurantId,
+      marketplaceId: request.marketplaceId,
+      status: request.status,
+    },
+    currentHolderId: holder?.id ?? null,
+    requesterMarketplaceId: requester?.marketplaceId ?? null,
+    requesterRecord: requesterRecord
+      ? { status: requesterRecord.status, posRestaurantId: requesterRecord.posRestaurantId }
+      : null,
+    holderRecord: holderRecord
+      ? { status: holderRecord.status, posRestaurantId: holderRecord.posRestaurantId }
+      : null,
+    holderStats: statsFor(request.previousRestaurantId),
+  };
+
+  const plan: TransferDecision = planTransferApproval(snapshot);
+  if (!plan.ok) {
+    return { ok: false, code: plan.code, error: plan.error };
+  }
+
+  const activate = requesterRecord
+    ? shouldActivateOnApproval({
+        status: requesterRecord.status,
+        posRestaurantId: requesterRecord.posRestaurantId,
+        hasWebhookSecret: !!requesterRecord.webhookSecret,
+      })
+    : false;
+
+  try {
+    await db.transaction(async (tx) => {
+      // ORDER MATTERS: release the holder BEFORE granting.
+      //
+      // `restaurants_marketplace_id_unique` is an immediate (non-deferred)
+      // constraint, so it is checked per statement, not at commit. Granting
+      // first therefore cannot succeed while the holder still owns the id — it
+      // fails 23505 every time, which is what the first version of this
+      // transaction did. Clearing the holder first is what makes the move legal
+      // at all.
+      //
+      // The same immediacy is what makes it safe: if a third listing claimed the
+      // id in the window between the snapshot and here, the GRANT is what trips
+      // the constraint, the transaction rolls back the release with it, and the
+      // caller gets IDENTITY_TAKEN instead of a half-applied move.
+      await tx
+        .update(restaurants)
+        .set({ marketplaceId: null })
+        .where(eq(restaurants.id, plan.releaseFromRestaurantId));
+
+      // The holder loses the id outright rather than being re-minted one. A
+      // fresh id would imply the POS still answers to it; NULL says plainly that
+      // it does not, and getOrCreateMarketplaceId mints a correct one when that
+      // listing legitimately reconnects later.
+      await tx
+        .update(restaurants)
+        .set({ marketplaceId: plan.marketplaceId })
+        .where(eq(restaurants.id, plan.grantMarketplaceIdTo));
+
+      // Close the outgoing record so the ordering gate and the delivery journal
+      // stop treating it as live. lastError is what the console shows, so the
+      // listing does not just go dark with no explanation.
+      await tx
+        .update(integrationRecords)
+        .set({ status: "disabled", lastError: plan.releaseReason, updatedAt: new Date() })
+        .where(eq(integrationRecords.restaurantId, plan.releaseFromRestaurantId));
+
+      if (activate) {
+        await tx
+          .update(integrationRecords)
+          .set({ status: "active", connectedAt: new Date(), updatedAt: new Date() })
+          .where(eq(integrationRecords.restaurantId, plan.grantMarketplaceIdTo));
+      }
+
+      const [decided] = await tx
+        .update(integrationTransferRequests)
+        .set({
+          status: "approved",
+          decidedAt: new Date(),
+          decidedBy: input.actor,
+          ...(input.note ? { note: input.note } : {}),
+        })
+        .where(
+          and(
+            eq(integrationTransferRequests.id, input.requestId),
+            eq(integrationTransferRequests.status, "pending"),
+          ),
+        )
+        .returning({ id: integrationTransferRequests.id });
+      if (!decided) {
+        // Another operator got there first; abort so nothing above is committed.
+        throw new TransferAbortedError();
+      }
+    });
+  } catch (err) {
+    if (err instanceof TransferAbortedError) {
+      return { ok: false, code: "TRANSFER_NOT_PENDING", error: "This request was already decided." };
+    }
+    if ((err as { code?: string })?.code === "23505") {
+      return {
+        ok: false,
+        code: "IDENTITY_TAKEN",
+        error: "Another listing claimed that identity while you were deciding. Reload the queue.",
+      };
+    }
+    throw err;
+  }
+
+  // Both sides are audited: the requester gained a capability, and the holder
+  // silently lost its ability to take orders, which is the part that would
+  // otherwise be invisible after the fact.
+  await recordIntegrationAudit(
+    plan.grantMarketplaceIdTo,
+    "pos_integration_transfer_granted",
+    { actor: "ops", ipAddress: input.ipAddress },
+    { request_id: request.id, marketplace_id: plan.marketplaceId, activated: activate, warnings: plan.warnings },
+  );
+  await recordIntegrationAudit(
+    plan.releaseFromRestaurantId,
+    "pos_integration_transfer_released",
+    { actor: "ops", ipAddress: input.ipAddress },
+    {
+      request_id: request.id,
+      marketplace_id: plan.marketplaceId,
+      moved_to: plan.grantMarketplaceIdTo,
+      orders_at_transfer: snapshot.holderStats.orders,
+      open_orders_at_transfer: snapshot.holderStats.openOrders,
+    },
+  );
+
+  return {
+    ok: true,
+    outcome: "approved",
+    requestId: request.id,
+    grantedTo: plan.grantMarketplaceIdTo,
+    releasedFrom: plan.releaseFromRestaurantId,
+    marketplaceId: plan.marketplaceId,
+    activated: activate,
+    warnings: plan.warnings,
+  };
+}
+
+/** Thrown to roll back a transaction whose compare-and-set guard lost the race. */
+class TransferAbortedError extends Error {
+  constructor() {
+    super("transfer already decided");
+    this.name = "TransferAbortedError";
+  }
+}
+
 /**
  * Rotate the passkey for an already-authenticated restaurant. Requires the
  * current passkey as proof so session theft cannot silently rotate credentials.
@@ -1285,6 +1975,38 @@ export async function rotatePasskeyAsRestaurant(
     .set({ integrationPasskeyHash: hashOwnerKey(next) })
     .where(eq(restaurants.id, restaurantId));
   return { ok: true, passkey: next };
+}
+
+/**
+ * Rotate the Marketplace owner key from the partner surface, proving control
+ * with the CURRENT key.
+ *
+ * The exact mirror image of `rotatePasskeyAsRestaurant`: this writes
+ * `owner_key_hash` ONLY and leaves `integration_passkey_hash` alone, so
+ * rotating a suspected-compromised /partner key can never break the POS login
+ * the restaurant's terminal depends on. Getting that separation wrong in either
+ * direction is what the "split POS passkey from owner key" migration fixed.
+ *
+ * This is safe to self-serve because it requires the credential being replaced,
+ * so it is deliberately NOT a recovery path — a restaurant that has LOST the key
+ * still needs an operator. It only removes the round-trip for the case where a
+ * partner still holds the old key and simply wants a new one.
+ */
+export async function rotateOwnerKeyAsRestaurant(
+  restaurantId: number,
+  currentOwnerKey: string,
+): Promise<{ ok: true; ownerKey: string } | { ok: false; error: string }> {
+  const current = String(currentOwnerKey ?? "");
+  if (!current) return { ok: false, error: "Current owner key is required" };
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
+  if (!r || !ownerKeyMatches(r.ownerKeyHash, current)) return { ok: false, error: "Invalid owner key" };
+
+  const next = makeOwnerKey();
+  await db
+    .update(restaurants)
+    .set({ ownerKeyHash: hashOwnerKey(next) })
+    .where(eq(restaurants.id, restaurantId));
+  return { ok: true, ownerKey: next };
 }
 
 /* ---------------------------- ops provisioning --------------------------- */

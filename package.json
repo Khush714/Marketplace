@@ -7,10 +7,14 @@
     "start": "next start",
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
-    "profile": "node scripts/profiling/measure.mjs",
+"profile": "node scripts/profiling/measure.mjs",
     "db:push": "drizzle-kit push",
+    "db:migrate": "node scripts/db-migrate.mjs",
+    "db:migrate:status": "node scripts/db-migrate.mjs --status",
+    "verify": "npm run typecheck && npm run lint && npm test",
     "db:reset": "tsx src/db/reset.ts --confirm",
-    "db:seed": "tsx src/db/seed.ts --confirm"
+    "db:seed": "tsx src/db/seed.ts --confirm",
+    "test": "tsx --test tests/*.test.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",
@@ -23,6 +27,7 @@
     "razorpay": "^2.9.8",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "server-only": "^0.0.1",
     "tailwind-merge": "^3.4.0",
     "tsx": "^4.23.13"
   },

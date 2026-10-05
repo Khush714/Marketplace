@@ -9,6 +9,7 @@ import {
   type ProviderOrderResult,
 } from "@/integrations/payments/provider-session";
 import { orderTokensAvailable, signOrderToken } from "@/lib/order-token";
+import { guardWrite, readJsonBody } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,14 @@ export const dynamic = "force-dynamic";
  * payable via POST /api/orders/[code]/pay/start instead of being lost.
  */
 export async function POST(req: NextRequest) {
+  // Unauthenticated and expensive: this route writes a row, allocates a real
+  // provider order and enqueues a delivery event, so it is both the most
+  // attractive thing to spam and the most expensive to serve. Budgeted before
+  // any parsing or database work. See ABUSE_BUDGETS.checkout for why the limit
+  // is sized for shared mobile IPs rather than for the attack rate.
+  const blocked = await guardWrite(req, "checkout");
+  if (blocked) return blocked;
+
   // Without a signing key no order would ever be readable by the customer who
   // just placed it, so this is refused up front rather than minting an order
   // whose only credential is an empty string.
@@ -34,10 +43,10 @@ export async function POST(req: NextRequest) {
   }
 
   let body: CreateOrderInput;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
+  {
+    const parsed = await readJsonBody(req);
+    if (!parsed.ok) return parsed.response;
+    body = parsed.body as CreateOrderInput;
   }
 
   // Shape validation; all prices/totals are recomputed server-side from the DB.

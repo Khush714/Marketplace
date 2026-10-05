@@ -1,9 +1,19 @@
 import type { Metadata } from "next";
 import { OrderTracker } from "@/components/order-tracker";
+import { NOINDEX } from "@/lib/seo";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = { title: "crave. — Live tracking" };
+/**
+ * `NOINDEX`. This URL is reachable by guessing a short order code and the page
+ * behind it is per-customer. `follow: false` also stops it acting as a crawl
+ * path into the listings it links to.
+ */
+export const metadata: Metadata = {
+  title: "Live tracking",
+  description: "Follow your crave. order from the kitchen to your door, stage by stage.",
+  robots: NOINDEX.robots,
+};
 
 /**
  * The order itself is NOT read here: reading it needs the token this browser was

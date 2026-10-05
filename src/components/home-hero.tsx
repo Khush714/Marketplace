@@ -76,13 +76,32 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
           brighter light than the rest of the page. It still moves, on
           `aurora` alone, which is transform-only and therefore promoted to its
           own layer and rastered once. Blur, blend and phone behaviour are in
-          CSS ("hero glow" in globals.css), alongside the ambient modes. */}
+          CSS ("hero glow" in globals.css), alongside the ambient modes.
+
+          The box clips itself, and that is not cosmetic. This glow was the
+          single reason the whole home route could be panned sideways on a
+          phone: `-right-10` on the inner blob pushed 60px past the right edge
+          of a 390px viewport, which widened the document to 450 and — because
+          the layout viewport follows the document on mobile — left
+          `window.innerWidth` reporting 450 too. Every `position: fixed`
+          `inset-0` decoration on the route then sized itself to that inflated
+          viewport, so the damage was self-sustaining. Nothing was visible out
+          there to explain it: the blob is `-z-10`, `pointer-events-none`, and
+          `.hero-glow-blob` drops its blur entirely on phones, leaving a 16%
+          alpha gradient fading to nothing.
+
+          So `max-w-full` keeps the glow inside the section rather than letting
+          it claim 110% of the viewport, and `overflow-hidden` trims the
+          `-right-10` bleed at the wrapper instead of at the screen edge. The
+          rendered result is unchanged — the glow is a `closest-side` radial
+          gradient, so losing 39px off a 429px ellipse is not visible, and the
+          bleed still runs off both edges exactly as before. */}
       <div
         aria-hidden
-        className="hero-glow pointer-events-none absolute -top-24 left-1/2 -z-10 h-[420px] w-[860px] max-w-[110vw] -translate-x-1/2"
+        className="hero-glow pointer-events-none absolute -top-24 left-1/2 -z-10 h-[420px] w-[860px] max-w-full -translate-x-1/2 overflow-hidden"
       >
         <div className="hero-glow-blob hero-glow-blob--a absolute inset-0 bg-[radial-gradient(closest-side,rgba(255,120,70,0.22),transparent_72%)]" />
-        <div className="hero-glow-blob absolute -right-10 top-16 h-64 w-64 bg-[radial-gradient(closest-side,rgba(196,161,255,0.16),transparent_70%)]" />
+        <div className="hero-glow-blob absolute -right-10 top-16 h-64 w-64 bg-[radial-gradient(closest-side,rgba(196,161,255,0.16),transparent_72%)]" />
       </div>
 
       {/* greeting */}

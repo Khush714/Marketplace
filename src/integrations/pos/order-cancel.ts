@@ -1,7 +1,7 @@
 import "server-only";
 import { createHmac, randomUUID } from "node:crypto";
 import { loadOrderCancelContext, recordIntegrationAudit } from "@/db/queries";
-import { posBaseUrl } from "@/lib/pos-bridge";
+import { describePosTransportError, logPosTransportFailure, posBaseUrl, posBaseUrlProblem, posHost } from "@/lib/pos-bridge";
 import { openWebhookSecret } from "@/lib/webhook-crypto";
 
 /**
@@ -84,10 +84,15 @@ export async function requestCustomerCancellation(code: string): Promise<Custome
   const rawBody = JSON.stringify(payload);
   const signature = createHmac("sha256", secret).update(rawBody).digest("hex");
 
-  const base = posBaseUrl();
-  if (!base) {
+  const baseProblem = posBaseUrlProblem();
+  if (baseProblem) {
+    // Same misconfiguration the other three clients refuse. Logged rather than
+    // swallowed: this branch previously returned POS_UNREACHABLE with nothing in
+    // the logs, which is how a dead POS_BASE_URL stayed invisible.
+    logPosTransportFailure(baseProblem);
     return { kind: "error", ok: false, code: "POS_UNREACHABLE", currentStatus: ctx.integrationStatus, reason: "Cancellation is temporarily unavailable" };
   }
+  const base = posBaseUrl();
 
   await recordIntegrationAudit(ctx.restaurantId, "ORDER_CANCEL_REQUESTED", { actor: "system" }, {
     external_order_id: ctx.externalOrderId,
@@ -110,8 +115,13 @@ export async function requestCustomerCancellation(code: string): Promise<Custome
       },
       body: rawBody,
       signal: controller.signal,
+      cache: "no-store",
     });
-  } catch {
+  } catch (err) {
+    // Logged: "POS is unreachable" with no cause is how a dead POS_BASE_URL
+    // stayed invisible in production for a whole deployment cycle.
+    const { reason, detail } = describePosTransportError(err);
+    logPosTransportFailure({ reason, detail, host: posHost() });
     return {
       kind: "error",
       ok: false,

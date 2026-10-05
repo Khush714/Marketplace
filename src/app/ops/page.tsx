@@ -1,5 +1,21 @@
+import type { Metadata } from "next";
 import { opsTokenOptional } from "@/lib/ops-auth";
+import { NOINDEX } from "@/lib/seo";
 import OpsConsole from "./ops-console";
+
+/**
+ * The privileged half of the platform: this console mints partner codes and
+ * drives the delivery and payment workers by hand. The route is unauthenticated
+ * at the HTTP layer (the token is checked per action in the browser), so nothing
+ * here should ever be indexed. `NOINDEX` is the shared crawl policy from
+ * `lib/seo.ts`, extended with `nocache` because an operator reloading
+ * mid-incident must not be served a cached console.
+ */
+export const metadata: Metadata = {
+  title: "Ops console",
+  description: "Internal operations console.",
+  robots: { ...NOINDEX.robots, nocache: true },
+};
 
 /**
  * Marketplace operations console.

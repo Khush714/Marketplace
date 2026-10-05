@@ -162,9 +162,15 @@ function FilterSheet({
   const [dragY, setDragY] = useState(0);
 
   useEffect(() => {
-    document.documentElement.style.overflow = "hidden";
+    // Restore what was there rather than assuming `""`. Overlays stack — the
+    // search overlay holds the same lock on this same property — so blanking it
+    // on unmount silently unlocks a sheet that is still open. Save/restore is
+    // what the search overlay already does; this was the odd one out.
+    const root = document.documentElement;
+    const prev = root.style.overflow;
+    root.style.overflow = "hidden";
     return () => {
-      document.documentElement.style.overflow = "";
+      root.style.overflow = prev;
     };
   }, []);
 

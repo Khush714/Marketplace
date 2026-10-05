@@ -1,7 +1,16 @@
 import { NextRequest } from "next/server";
-import { getIntegrationRecord, getRestaurantByOwnerKey, MarketplaceIdTakenError, recordIntegrationAudit, syncMarketplaceId, upsertIntegrationIdentity } from "@/db/queries";
+import {
+  findPendingTransferFor,
+  getIntegrationRecord,
+  getRestaurantByOwnerKey,
+  MarketplaceIdTakenError,
+  recordIntegrationAudit,
+  requestIntegrationTransfer,
+  syncMarketplaceId,
+  upsertIntegrationIdentity,
+} from "@/db/queries";
 import { setWebhookContext } from "@/db/menu-sync";
-import { claimPosConnection, PosBridgeError } from "@/lib/pos-bridge";
+import { claimPosConnection, PosBridgeError, type PosConnectionIdentity } from "@/lib/pos-bridge";
 import { sealWebhookSecret } from "@/lib/webhook-crypto";
 
 export const dynamic = "force-dynamic";
@@ -31,6 +40,107 @@ function requireOwnerKey(ownerKey: string) {
   return null;
 }
 
+/**
+ * MARKETPLACE_ID_TAKEN, made recoverable.
+ *
+ * `restaurants.marketplace_id` is UNIQUE, so a POS that reconnects under a new
+ * listing while its identity is still held elsewhere cannot complete a claim.
+ * The refusal was correct; what made it a dead end is *when* it fires — after
+ * the POS redeemed its single-use connection code. The operator was left with a
+ * burned code, no recourse, and the only fix an engineer could apply by editing
+ * `restaurants.marketplace_id` by hand.
+ *
+ * So instead of refusing and discarding, this:
+ *
+ *   1. Keeps the claim. The identity and its sealed webhook secret are written to
+ *      the requester's record as PENDING — the same non-deliverable state a
+ *      half-claim already uses, which the ordering gate treats as closed. The
+ *      operator's burned code still bought something: approval can finish the
+ *      connection without them going back to the POS for a new one.
+ *   2. Raises a transfer request naming the listing that holds the identity, for
+ *      ops to approve or deny.
+ *   3. Reports both the holder and any open request, so the UI can explain the
+ *      conflict instead of showing one flat error string.
+ *
+ * Still a 409: the connection genuinely has not been made, and a caller that
+ * only checks `ok` must not read this as success.
+ */
+async function openTransferRequest(input: {
+  restaurantId: number;
+  holderId: number;
+  identity: PosConnectionIdentity | null;
+  ipAddress: string | null;
+}): Promise<Response> {
+  const { restaurantId, holderId, identity, ipAddress } = input;
+  const contestedId = String(identity?.external_restaurant_id ?? "").trim();
+
+  // Preserve the claim before anything else. Every step after this point is
+  // reporting; this is the only one that cannot be reconstructed later, because
+  // the POS will not hand the secret over twice.
+  const sealedSecret = identity?.webhook_secret
+    ? sealWebhookSecret(identity.webhook_secret)
+    : null;
+  if (contestedId) {
+    await upsertIntegrationIdentity({
+      restaurantId,
+      provider: "restaurant-ai",
+      posRestaurantId: contestedId,
+      posBranchId: identity?.branch?.id ?? null,
+      posOutletId: identity?.external_outlet_id ?? null,
+      // Deliberately never "active": the id is not ours yet, and a record
+      // marked active opens checkout for orders that cannot be routed.
+      status: "pending",
+      sync: true,
+    });
+    // After the upsert, so the UPDATE scoped to restaurant_id matches a row.
+    if (sealedSecret) await setWebhookContext(restaurantId, sealedSecret);
+  }
+
+  let request = null;
+  let holder = null;
+  if (contestedId) {
+    try {
+      request = await requestIntegrationTransfer({
+        requestedByRestaurantId: restaurantId,
+        previousRestaurantId: holderId,
+        marketplaceId: contestedId,
+        posRestaurantId: contestedId,
+        ipAddress,
+      });
+      holder = request.heldBy;
+    } catch (e) {
+      // The request is a convenience; the refusal below is still true without
+      // it. Never let a queue hiccup turn a clear conflict into a 500.
+      console.error("integration transfer request failed", e);
+    }
+  }
+
+  await recordIntegrationAudit(
+    restaurantId,
+    "pos_integration_transfer_requested",
+    { actor: "partner", ipAddress },
+    { marketplace_id: contestedId, held_by: holderId, request_id: request?.id ?? null },
+  );
+
+  const holderName = holder ? `“${holder.name}”` : "another listing";
+  return Response.json(
+    {
+      ok: false,
+      error: contestedId
+        ? `This POS is still linked to ${holderName}. Request the transfer and our team will move it across.`
+        : "That POS restaurant is already connected to another listing",
+      code: "MARKETPLACE_ID_TAKEN",
+      transfer: {
+        requested: !!request,
+        requestId: request?.id ?? null,
+        heldBy: holder,
+        marketplaceId: contestedId,
+      },
+    },
+    { status: 409 },
+  );
+}
+
 /** Current POS integration record for an owner's listing. */
 export async function GET(req: NextRequest) {
   const ownerKey = await ownerKeyOf(req);
@@ -41,7 +151,11 @@ export async function GET(req: NextRequest) {
   if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
 
   const record = await getIntegrationRecord(restaurant.id);
-  return Response.json({ ok: true, restaurant, record });
+  // Carried on GET as well so the UI can still show "transfer requested" after a
+  // reload or on another tab. The claim response is where it is created, but the
+  // operator's next visit is a page load.
+  const transfer = record?.posRestaurantId ? await findPendingTransferFor(restaurant.id) : null;
+  return Response.json({ ok: true, restaurant, record, transfer });
 }
 
 /**
@@ -67,8 +181,15 @@ export async function POST(req: NextRequest) {
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;
 
+  // Hoisted out of the try: the MARKETPLACE_ID_TAKEN handler below still needs
+  // the identity the POS just handed over, and by then the connection code has
+  // already been redeemed. That claimed identity is the only copy of the
+  // webhook secret, so losing it here is what turned a recoverable conflict
+  // into a dead end — the operator would have to mint a brand new code.
+  let identity: PosConnectionIdentity | null = null;
+
   try {
-    const identity = await claimPosConnection(connectionCode);
+    identity = await claimPosConnection(connectionCode);
     // The shared external identity must be one value on both sides: the POS
     // routes payloads by order.restaurant_id and signs webhooks with its own
     // external_restaurant_id, both of which must equal this marketplace_id.
@@ -89,8 +210,14 @@ export async function POST(req: NextRequest) {
       ? sealWebhookSecret(identity.webhook_secret)
       : null;
     const deliverable = !!identity.external_restaurant_id && !!sealedSecret;
-    if (sealedSecret) await setWebhookContext(restaurant.id, sealedSecret);
 
+    // ORDER MATTERS: the record must exist before the secret is written.
+    // `setWebhookContext` is an UPDATE scoped to restaurant_id, so running it
+    // first matched zero rows on a first-time connect and the sealed secret was
+    // silently dropped — leaving a record that said `active` (because
+    // `deliverable` was computed from the local variable) while storing no
+    // secret. `hasActiveIntegration` then read false and the ordering gate
+    // refused every checkout with INTEGRATION_NOT_CONNECTED.
     const record = await upsertIntegrationIdentity({
       restaurantId: restaurant.id,
       provider: "restaurant-ai",
@@ -100,6 +227,17 @@ export async function POST(req: NextRequest) {
       status: deliverable ? "active" : "pending",
       sync: true,
     });
+    if (sealedSecret) await setWebhookContext(restaurant.id, sealedSecret);
+
+    // Re-read instead of returning the upsert's DTO. The upsert ran BEFORE the
+    // secret was sealed, so its readiness was computed against a record that did
+    // not have one yet — it reported `status: "active"` together with
+    // `notReadyReason: "webhook_secret"`, telling the restaurant orders were
+    // blocked on a connection that was in fact deliverable. That self-contradiction
+    // is exactly what this panel exists to eliminate, so the response has to
+    // describe committed state.
+    const current = (await getIntegrationRecord(restaurant.id)) ?? record;
+
     await recordIntegrationAudit(
       restaurant.id,
       "pos_integration_connect",
@@ -118,7 +256,7 @@ export async function POST(req: NextRequest) {
       return Response.json(
         {
           ok: true,
-          record,
+          record: current,
           connected: false,
           code: "PENDING_INTEGRATION_SECRET",
           error: identity.webhook_secret
@@ -129,17 +267,15 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    return Response.json({ ok: true, record });
+return Response.json({ ok: true, record: current });
   } catch (err) {
     if (err instanceof MarketplaceIdTakenError) {
-      return Response.json(
-        {
-          ok: false,
-          error: "That POS restaurant is already connected to another listing",
-          code: "MARKETPLACE_ID_TAKEN",
-        },
-        { status: 409 },
-      );
+      return await openTransferRequest({
+        restaurantId: restaurant.id,
+        holderId: err.ownedByRestaurantId,
+        identity,
+        ipAddress,
+      });
     }
     if (err instanceof PosBridgeError) {
       if (err.status === 409 && err.code === "ALREADY_REDEEMED") {
@@ -153,7 +289,8 @@ export async function POST(req: NextRequest) {
         return Response.json(
           {
             ok: false,
-            error: "This code has already been redeemed for a different POS restaurant",
+            error:
+              "That code was already redeemed for a different POS restaurant. Create a new code in the POS for this location — do not reuse one you received elsewhere.",
             code: "ALREADY_REDEEMED",
           },
           { status: 409 },

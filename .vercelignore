@@ -10,3 +10,9 @@ _next
 *.log
 _e2e_check*.cjs
 tmp_*.cjs
+_probe_*.cjs
+
+# Build caches / local tooling state
+*.tsbuildinfo
+docs
+scripts/profiling

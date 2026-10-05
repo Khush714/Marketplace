@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { getRestaurantIdByMarketplaceId, getWebhookContext } from "@/db/menu-sync";
 import { applyOrderStatusTransition } from "@/db/pos-delivery";
-import { mapPosStatusToMarketplaceStatus } from "@/integrations/pos/order-status";
+import { mapPosEventToMarketplaceStatus } from "@/integrations/pos/order-status";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
 import {
   computeWebhookSignature,
@@ -102,7 +102,12 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
   const eventId = typeof body.event_id === "string" ? body.event_id : null;
   const externalOrderId = typeof body.external_order_id === "string" ? body.external_order_id : null;
   const posOrderId = body.pos_order_id == null ? null : Number(body.pos_order_id);
-  const status = typeof body.status === "string" ? mapPosStatusToMarketplaceStatus(body.status) : null;
+
+  // The POS omits `status` on `order.rejected` / `order.cancelled`; the event
+  // name carries it. See mapPosEventToMarketplaceStatus for why reading
+  // `body.status` alone silently dropped both routes.
+  const eventName = typeof body.event === "string" ? body.event : null;
+  const status = mapPosEventToMarketplaceStatus(eventName, body.status);
   // Phase 7 — optional branch/outlet claims on the frame. The Marketplace's own
   // outbound status webhooks never send these; they're read so a forged frame
   // claiming a foreign branch/outlet is rejected inside the transition.
@@ -120,6 +125,7 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
       applied: false,
       skipped: true,
       skippedReason: "MISSING_FIELDS",
+      event: eventName,
       _diag: diag,
     });
   }
@@ -195,6 +201,17 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
     });
   }
 
+  // The POS explains a rejection/cancellation in fields we were dropping on the
+  // floor: `reason` is the standardised code, `initiated_by` separates a
+  // restaurant-driven cancel from a customer one, and `previous_status` is the
+  // stage being left behind. Echo them back so the applied response is
+  // diagnosable without re-reading the POS outbox.
+  const reason = typeof body.reason === "string" && body.reason ? body.reason : null;
+  const initiatedBy =
+    typeof body.initiated_by === "string" && body.initiated_by ? body.initiated_by : null;
+  const previousStatus =
+    typeof body.previous_status === "string" && body.previous_status ? body.previous_status : null;
+
   return Response.json({
     ok: true,
     received: true,
@@ -202,10 +219,14 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
     deduplicated: false,
     applied: true,
     source: "pos",
+    event: eventName,
     event_id: eventId,
     external_order_id: externalOrderId,
     pos_order_id: posOrderId,
     integration_status: status,
+    reason,
+    initiated_by: initiatedBy,
+    previous_status: previousStatus,
     status_updated_at: new Date().toISOString(),
     _diag: diag,
   });

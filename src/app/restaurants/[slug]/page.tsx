@@ -13,12 +13,53 @@ import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-ga
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Built from the listing itself: name, cuisines, rating and delivery window are
+ * all on the page, so a static description would undersell every kitchen
+ * identically. Ratings are rendered through the same `isUnrated` guard the hero
+ * uses — an unrated listing has no number to quote, and inventing one in a meta
+ * tag is worse than omitting it.
+ *
+ * The OG image is the kitchen's own hero, which is what a shared link should
+ * preview. `heroUrl` is already sanitised to an absolute https URL by
+ * `sanitizeImageUrl` when the DTO is built.
+ */
 export async function generateMetadata(props: {
   params: Promise<{ slug: string }>;
 }): Promise<Metadata> {
   const { slug } = await props.params;
   const data = await getRestaurant(slug);
-  return { title: data ? `crave. — ${data.restaurant.name}` : "crave." };
+  if (!data) {
+    return {
+      title: "Restaurant not found",
+      description: "This kitchen is no longer listed on crave.",
+      robots: { index: false, follow: true },
+    };
+  }
+
+  const { restaurant: r, itemCount } = data;
+  const cuisines = r.cuisines.length ? r.cuisines.join(", ") : "Food";
+  const rated = isUnrated(r.ratingsCount) ? "" : ` Rated ${r.rating} out of 5.`;
+
+  // A tagline is free-text authored by a partner and carries no terminal
+  // punctuation, so it cannot simply be interpolated — that produced "Smash
+  // burgers over live fire 8 dishes on the menu". Close it off explicitly
+  // rather than trusting the data.
+  const tagline = r.tagline ? ` ${r.tagline.replace(/[.\s]+$/, "")}.` : "";
+  const description = `${r.name} — ${cuisines} in ${r.locality}.${tagline} ${itemCount} ${itemCount === 1 ? "dish" : "dishes"} on the menu, delivered in ${r.deliveryMinutes}-${r.deliveryMinutes + 10} minutes.${rated}`;
+
+  return {
+    title: r.name,
+    description,
+    alternates: { canonical: `/restaurants/${r.slug}` },
+    openGraph: {
+      type: "website",
+      title: `${r.name} — crave.`,
+      description,
+      url: `/restaurants/${r.slug}`,
+      images: [{ url: r.heroUrl, width: 1200, height: 627, alt: `${r.name} cover` }],
+    },
+  };
 }
 
 export default async function RestaurantPage(props: {

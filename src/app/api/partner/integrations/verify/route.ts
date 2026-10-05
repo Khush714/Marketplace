@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { getRestaurantByOwnerKey } from "@/db/queries";
-import { PosBridgeError, verifyPosConnection } from "@/lib/pos-bridge";
+import { classifyPosVerifyFailure, verifyPosConnection } from "@/lib/pos-bridge";
 
 export const dynamic = "force-dynamic";
 
@@ -38,17 +38,19 @@ export async function POST(req: NextRequest) {
     const detected = await verifyPosConnection(connectionCode);
     return Response.json({ ok: true, detected });
   } catch (err) {
-    if (err instanceof PosBridgeError) {
-      const message =
-        err.code === "ALREADY_REDEEMED"
-          ? "This code has already been redeemed"
-          : err.status === 401
-            ? "Code is invalid or has expired"
-            : err.status === 502 || err.status === 503
-              ? "The POS is unreachable — try again"
-              : err.message;
-      return Response.json({ ok: false, error: message, code: err.code }, { status: err.status });
+    const outcome = classifyPosVerifyFailure(err);
+    if (outcome.kind === "redeemed") {
+      // 200, not 4xx: see classifyPosVerifyFailure. The claim step is where a
+      // replay is actually accepted or refused, and it carries the bound
+      // identity this endpoint deliberately does not expose.
+      return Response.json(
+        { ok: true, redeemed: true, requiresClaim: true, error: outcome.message },
+        { status: 200 },
+      );
     }
-    return Response.json({ ok: false, error: "Could not verify the code" }, { status: 500 });
+    return Response.json(
+      { ok: false, error: outcome.message, code: outcome.code },
+      { status: outcome.status },
+    );
   }
 }

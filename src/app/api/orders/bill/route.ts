@@ -1,16 +1,24 @@
 import { NextRequest } from "next/server";
 import { computeBill } from "@/db/queries";
+import { guardWrite, readJsonBody } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
 
 // Authoritative bill preview for the payment screen. Uses the exact same code
 // path as createOrder, so the amount shown, charged and receipted always match.
+//
+// Unauthenticated by design — the customer has not paid yet and has no token —
+// but it recomputes every total from the database, so a loop over it is a
+// cheap-to-send, expensive-to-serve amplification. Budgeted and size-capped.
 export async function POST(req: NextRequest) {
+  const blocked = await guardWrite(req, "billPreview");
+  if (blocked) return blocked;
+
   let body: { restaurantSlug?: unknown; items?: unknown };
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
+  {
+    const parsed = await readJsonBody(req);
+    if (!parsed.ok) return parsed.response;
+    body = parsed.body as { restaurantSlug?: unknown; items?: unknown };
   }
 
   const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug : "";

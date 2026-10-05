@@ -43,8 +43,9 @@ export default function PartnerPage() {
         Connect your kitchen
       </h1>
       <p className="mt-2 max-w-xl text-sm leading-relaxed text-cream-400">
-        Marketplace ops mints single-use connection codes. A restaurant enters its code to be
-        onboarded onto the platform.
+        Sign up here and connect your POS yourself — no waiting on anyone. If your marketplace
+        partner already sent you a connection code, enter it below and you&apos;ll be live
+        immediately.
       </p>
       <div className="mt-4 flex flex-wrap gap-2.5">
         <Link
@@ -79,6 +80,9 @@ export default function PartnerPage() {
 
 function ConnectPanel() {
   const { toast } = useToast();
+  // "code" = ops/partner issued an invite, land live immediately.
+  // "self" = self-serve signup, land hidden until the POS is connected.
+  const [mode, setMode] = useState<"code" | "self">("self");
   const [code, setCode] = useState("");
   const [name, setName] = useState("");
   const [tagline, setTagline] = useState("");
@@ -92,19 +96,25 @@ function ConnectPanel() {
   const [ownerKey, setOwnerKey] = useState<string | null>(null);
   const [keyCopied, setKeyCopied] = useState(false);
 
-  const submit = async (e: FormEvent) => {
+  const submit = async (e: FormEvent<HTMLFormElement>) => {
     e.preventDefault();
+    // Read before the first await: `currentTarget` is only valid while the
+    // handler is running. Taken from FormData rather than React state so the
+    // honeypot never becomes a controlled input — nothing a person can type
+    // into it, nothing that re-renders on it, and the value that goes on the
+    // wire is exactly what is in the DOM.
+    const form = new FormData(e.currentTarget);
     setBusy(true);
     setConnected(null);
     setOwnerKey(null);
     try {
       const d = await json<
         { ok: boolean; error?: string; restaurant?: RestaurantDto; ownerKey?: string }
-      >("/api/partner/connect", {
+      >(mode === "code" ? "/api/partner/connect" : "/api/partner/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          code,
+          ...(mode === "code" ? { code } : {}),
           name,
           tagline,
           cuisines: cuisines.split(",").map((c) => c.trim()).filter(Boolean),
@@ -112,6 +122,7 @@ function ConnectPanel() {
           externalId,
           imageUrl,
           heroUrl,
+          company_url: String(form.get("company_url") ?? ""),
         }),
       });
       if (!d.ok || !d.restaurant || !d.ownerKey) {
@@ -121,10 +132,13 @@ function ConnectPanel() {
       setConnected(d.restaurant);
       setOwnerKey(d.ownerKey);
       setKeyCopied(false);
-      // Cache the key for this tab so the menu editor is one click away — it is
-      // never recoverable if the restaurant loses it.
+      // Cached on this device so the menu editor and POS screen are one click
+      // away, and so closing the tab no longer costs the restaurant its console.
       storeOwnerKey(d.ownerKey);
-      toast("Restaurant connected", { sub: `${d.restaurant.name} is now live` });
+      toast(
+        mode === "code" ? "Restaurant connected" : "Restaurant created",
+        { sub: mode === "code" ? `${d.restaurant.name} is now live` : "Next: connect your POS" },
+      );
       setCode("");
       setName("");
       setTagline("");
@@ -159,21 +173,75 @@ function ConnectPanel() {
         <Store className="size-4.5 text-ember-400" /> Connect your restaurant
       </h2>
       <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-        Enter the code your marketplace partner gave you, plus a few details, to go live.
+        {mode === "code"
+          ? "Enter the code your marketplace partner gave you, plus a few details, to go live."
+          : "Add your restaurant details to create a listing. You'll connect your POS on the next step."}
       </p>
 
+      <div className="mt-4 grid grid-cols-2 gap-2" role="tablist" aria-label="Onboarding method">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "self"}
+          onClick={() => setMode("self")}
+          className={cn(
+            "press rounded-xl px-3 py-2 text-xs font-bold transition-colors",
+            mode === "self"
+              ? "bg-gradient-to-b from-ember-400 to-chili-600 text-white shadow-glow"
+              : "bg-white/8 text-cream-300 hover:bg-white/12",
+          )}
+        >
+          Sign up myself
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === "code"}
+          onClick={() => setMode("code")}
+          className={cn(
+            "press rounded-xl px-3 py-2 text-xs font-bold transition-colors",
+            mode === "code"
+              ? "bg-gradient-to-b from-ember-400 to-chili-600 text-white shadow-glow"
+              : "bg-white/8 text-cream-300 hover:bg-white/12",
+          )}
+        >
+          I have a code
+        </button>
+      </div>
+
       <form onSubmit={submit} className="mt-5 space-y-3">
-        <div>
-          <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
-            Connection code
-          </label>
+        {/*
+          Honeypot. Hidden from people three ways — off-screen, not focusable, and
+          `aria-hidden` so it is skipped by assistive tech — because the only
+          thing worse than a bot filling it in is a real partner's screen reader
+          announcing a blank "Company URL" field. `tabIndex={-1}` matters most: a
+          field that only looks hidden still steals a keystroke from someone
+          tabbing through the form.
+        */}
+        <div aria-hidden="true" className="absolute -left-[9999px] h-0 w-0 overflow-hidden">
+          <label htmlFor="company_url">Company URL</label>
           <input
-            value={code}
-            onChange={(e) => setCode(e.target.value.toUpperCase())}
-            placeholder="CNX-HD6K2"
-            className={cn(inputCls, "font-mono font-bold tabular-nums uppercase")}
+            id="company_url"
+            name="company_url"
+            type="text"
+            tabIndex={-1}
+            autoComplete="off"
+            defaultValue=""
           />
         </div>
+        {mode === "code" && (
+          <div>
+            <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
+              Connection code
+            </label>
+            <input
+              value={code}
+              onChange={(e) => setCode(e.target.value.toUpperCase())}
+              placeholder="CNX-HD6K2"
+              className={cn(inputCls, "font-mono font-bold tabular-nums uppercase")}
+            />
+          </div>
+        )}
 
         <div>
           <label className="mb-1.5 block text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">
@@ -271,20 +339,53 @@ function ConnectPanel() {
           className="press mt-1 flex w-full items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 py-3 text-sm font-bold text-white shadow-glow transition-opacity disabled:opacity-60"
         >
           {busy ? <RefreshCw className="size-4 animate-spin" /> : <Plus className="size-4" />}
-          {busy ? "Connecting…" : "Connect restaurant"}
+          {busy ? "Creating…" : mode === "code" ? "Connect restaurant" : "Create my listing"}
         </button>
       </form>
 
       {connected && (
         <div className="animate-pop-in mt-4 rounded-2xl border border-mint-400/25 bg-mint-500/10 p-4">
           <p className="flex items-center justify-center gap-1.5 text-sm font-bold text-mint-400">
-            <BadgeCheck className="size-4" /> {connected.name} is live
+            <BadgeCheck className="size-4" />
+            {mode === "code"
+              ? `${connected.name} is live`
+              : `${connected.name} is set up`}
           </p>
+
+          {mode === "self" && (
+            <p className="mt-2 text-center text-[11px] leading-relaxed text-cream-300">
+              Two things left, both in this console: connect your POS, then publish a dish.
+              Your listing stays hidden from customers until it can actually take orders.
+            </p>
+          )}
+
+          {/*
+            The POS handshake lives on /partner/integrations, which picks the owner
+            key up from storage on its own. For a self-serve signup this is the
+            only step between the restaurant and being able to take orders, so it
+            leads; for a code redemption the listing is already live and the menu
+            is the useful next move.
+          */}
+          {mode === "self" ? (
+            <Link
+              href="/partner/integrations"
+              className="press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-xs font-bold text-white transition-opacity"
+            >
+              <Handshake className="size-3.5" /> Connect your POS
+            </Link>
+          ) : (
+            <Link
+              href="/partner/menu"
+              className="press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2 text-xs font-bold text-white transition-opacity"
+            >
+              <Utensils className="size-3.5" /> Add your first dish
+            </Link>
+          )}
           <Link
             href="/partner/menu"
-            className="press mt-3 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2 text-xs font-bold text-white transition-opacity"
+            className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
           >
-            <Utensils className="size-3.5" /> Add your first dish
+            <Utensils className="size-3.5" /> Menu editor
           </Link>
           <Link
             href={`/restaurants/${connected.slug}`}
@@ -292,17 +393,14 @@ function ConnectPanel() {
           >
             <Store className="size-3.5" /> View restaurant page
           </Link>
-          {/*
-            The POS handshake lives on /partner/integrations, which now picks the
-            owner key up from sessionStorage on its own. Without this link the
-            operator finishes onboarding and has no signpost to the connect step.
-          */}
-          <Link
-            href="/partner/integrations"
-            className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
-          >
-            <Handshake className="size-3.5" /> Connect your POS
-          </Link>
+          {mode === "code" && (
+            <Link
+              href="/partner/integrations"
+              className="press mt-2 inline-flex w-full items-center justify-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+            >
+              <Handshake className="size-3.5" /> Connect your POS
+            </Link>
+          )}
 
           {ownerKey && (
             <div className="mt-3 rounded-xl border border-ember-400/25 bg-black/25 p-3.5">

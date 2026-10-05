@@ -24,10 +24,13 @@ export function CardGridSkeleton({ count = 8 }: { count?: number }) {
 }
 
 export function RailSkeleton({ count = 5 }: { count?: number }) {
+  /* A scroller, like the rail this stands in for. As a bare `flex gap-4` the
+     five 260px cards made a 1360px row inside a phone-width column, so any
+     screen that mounted this scrolled sideways for as long as it was up. */
   return (
-    <div className="flex gap-4">
+    <div className="no-scrollbar mask-fade-x flex snap-x snap-mandatory gap-4 overflow-x-auto scroll-px-1 py-1">
       {Array.from({ length: count }, (_, i) => (
-        <div key={i} className="w-[260px] shrink-0">
+        <div key={i} className="w-[240px] shrink-0 snap-start">
           <CardSkeleton />
         </div>
       ))}

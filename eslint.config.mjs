@@ -24,6 +24,7 @@ export default defineConfig([
       "src/components/motion-primitives.tsx",
       "src/components/search-overlay.tsx",
       "src/lib/cart.tsx",
+      "src/lib/consent.tsx",
       "src/lib/location.tsx",
       "src/lib/profile.tsx",
     ],

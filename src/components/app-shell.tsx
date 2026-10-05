@@ -10,6 +10,8 @@ import { ScrollProgress } from "@/components/scroll-progress";
 import { SiteHeader } from "@/components/site-header";
 import { AnimatedPrice, RevealObserver } from "@/components/motion-primitives";
 import { useCart } from "@/lib/cart";
+import { useConsent } from "@/lib/consent";
+import { LEGAL_ROUTES } from "@/lib/site-legal";
 
 const CART_BAR_HIDDEN = ["/cart", "/checkout"];
 
@@ -115,6 +117,8 @@ function CartConflictDialog() {
 }
 
 function SiteFooter() {
+  const { openPreferences } = useConsent();
+
   return (
     <footer className="border-t border-white/6 py-8 text-center">
       <p className="text-xs text-cream-600">
@@ -124,6 +128,34 @@ function SiteFooter() {
       <Link href="/partner" className="press mt-2 inline-flex items-center gap-1 text-xs font-semibold text-ember-400 transition-colors hover:text-ember-300">
         Partner with us <ArrowRight className="size-3.5" />
       </Link>
+      {/* Razorpay's Payment Aggregator guidelines require the terms of use,
+          privacy policy, refund policy and entity contact details to be reachable
+          from every page — so they live in the site footer, not behind a route
+          only the checkout knows about. */}
+      <nav aria-label="Legal" className="mt-4 flex flex-wrap items-center justify-center gap-x-3 gap-y-1 text-xs text-cream-600">
+        <Link href={LEGAL_ROUTES.terms} className="transition-colors hover:text-cream-400">
+          Terms
+        </Link>
+        <span aria-hidden className="text-cream-600/50">·</span>
+        <Link href={LEGAL_ROUTES.privacy} className="transition-colors hover:text-cream-400">
+          Privacy
+        </Link>
+        <span aria-hidden className="text-cream-600/50">·</span>
+        <Link href={LEGAL_ROUTES.refunds} className="transition-colors hover:text-cream-400">
+          Refunds
+        </Link>
+        <span aria-hidden className="text-cream-600/50">·</span>
+        <Link href={LEGAL_ROUTES.contact} className="transition-colors hover:text-cream-400">
+          Contact
+        </Link>
+        {/* Reachable on every page because a consent choice that cannot be changed
+            is not a choice. Scoped to the storage this site actually writes, not
+            cookies — there are none. */}
+        <span aria-hidden className="text-cream-600/50">·</span>
+        <button type="button" onClick={openPreferences} className="transition-colors hover:text-cream-400">
+          Storage preferences
+        </button>
+      </nav>
     </footer>
   );
 }

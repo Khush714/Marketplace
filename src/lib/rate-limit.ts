@@ -1,5 +1,7 @@
 import "server-only";
 
+import { fallbackBucketKey } from "@/lib/abuse-core";
+
 /**
  * Fixed-window rate limiter for the few endpoints that are deliberately
  * unauthenticated.
@@ -80,15 +82,18 @@ export function checkRateLimit(
  * Prefers the first entry of `x-forwarded-for` (the client as seen by the edge)
  * and falls back to the platform-provided client address. Untrusted headers are
  * fine here precisely because a caller who spoofs `x-forwarded-for` only evades
- * their own limiter — the edge's own limit still applies, and the codes are 24M
- * wide either way.
+ * their own limiter — the edge's own limit still applies.
+ *
+ * With no address at all it falls back to `fallbackBucketKey`, which keeps
+ * unrelated callers out of each other's counters.
  */
 export function clientKey(req: { headers: Headers }, scope: string): string {
   const forwarded = (req.headers.get("x-forwarded-for") ?? "")
     .split(",")[0]
     ?.trim();
-  const ip = forwarded || req.headers.get("x-real-ip")?.trim() || "unknown";
-  return `${scope}:${ip}`;
+  const ip = forwarded || req.headers.get("x-real-ip")?.trim() || "";
+  if (ip) return `${scope}:${ip}`;
+  return `${scope}:${fallbackBucketKey(req.headers)}`;
 }
 
 /** Standard 429 response for a throttled unauthenticated route. */

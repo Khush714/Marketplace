@@ -11,7 +11,24 @@ import { localityByKey } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = { title: "crave. — Food, delivered beautifully" };
+/**
+ * Generated rather than static because the page is locality-scoped: `?loc=`
+ * selects a delivery neighbourhood and changes both the copy and the kitchens
+ * listed, so one fixed description would misdescribe every page but the first.
+ * The title stays absolute because the root template already supplies the brand
+ * suffix and a templated child would read "… — crave. — crave.".
+ */
+export async function generateMetadata(props: {
+  searchParams: Promise<HomeSearchParams>;
+}): Promise<Metadata> {
+  const sp = await props.searchParams;
+  const locality = localityByKey(sp.loc);
+  return {
+    title: { absolute: "crave. — Food, delivered beautifully" },
+    description: `Order food delivery in ${locality.name}, ${locality.city}. Browse local restaurants, check live menus and track your rider to the door.`,
+    alternates: { canonical: "/" },
+  };
+}
 
 const TICKER = [
   { Icon: Bike, text: "Free delivery over ₹499" },

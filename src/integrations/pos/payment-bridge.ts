@@ -1,6 +1,6 @@
 import "server-only";
 import { createHmac, randomUUID } from "node:crypto";
-import { posBaseUrl } from "@/lib/pos-bridge";
+import { PosBridgeError, describePosTransportError, logPosTransportFailure, posHost, requirePosBaseUrl } from "@/lib/pos-bridge";
 import { openWebhookSecret } from "@/lib/webhook-crypto";
 import { recordIntegrationAudit } from "@/db/queries";
 import {
@@ -13,6 +13,7 @@ import {
   type PosPaymentDeliveryContext,
 } from "@/db/payment-delivery";
 import { enqueuePosDelivery, processPendingPosDeliveries } from "@/integrations/pos/order-bridge";
+import { integrationReadiness } from "@/integrations/pos/readiness";
 
 /**
  * Marketplace → POS payment bridge (Phase 6). Narrow by design: it builds the
@@ -128,16 +129,32 @@ export function buildPosPaymentPayload(input: PosPaymentBridgeEventInput): Recor
 
 /* ----------------------------- HTTP client ------------------------------- */
 
+/**
+ * Same reason as the order client's resolver: `requirePosBaseUrl` throws a
+ * PosBridgeError, but the payment journal classifies retryability off
+ * PosPaymentDeliveryError. A wrong POS_BASE_URL is an operator fix, so the row
+ * must stay retryable.
+ */
+function resolvePosBaseUrlForPayment(): string {
+  try {
+    return requirePosBaseUrl();
+  } catch (err) {
+    throw new PosPaymentDeliveryError(
+      err instanceof Error ? err.message : "POS_BASE_URL is not configured",
+      err instanceof PosBridgeError ? err.status : 503,
+      "POS_UNREACHABLE",
+      true,
+    );
+  }
+}
+
 export async function postPosPaymentEvent(opts: {
   marketplaceId: string;
   secret: string;
   payload: Record<string, unknown>;
   requestId?: string;
 }): Promise<{ status: number; response: { success?: boolean; handled?: boolean; dedup?: boolean } }> {
-  const base = posBaseUrl();
-  if (!base) {
-    throw new PosPaymentDeliveryError("POS_BASE_URL is not configured", 503, "POS_UNREACHABLE", true);
-  }
+  const base = resolvePosBaseUrlForPayment();
 
   const rawBody = JSON.stringify(opts.payload);
   const signature = createHmac("sha256", opts.secret).update(rawBody).digest("hex");
@@ -156,8 +173,11 @@ export async function postPosPaymentEvent(opts: {
       },
       body: rawBody,
       signal: controller.signal,
+      cache: "no-store",
     });
-  } catch {
+  } catch (err) {
+    const { reason, detail } = describePosTransportError(err);
+    logPosTransportFailure({ reason, detail, host: posHost() });
     throw new PosPaymentDeliveryError("POS is unreachable", 502, "POS_UNREACHABLE", true);
   } finally {
     clearTimeout(timer);
@@ -206,11 +226,19 @@ export async function enqueuePaymentDelivery(input: {
   });
 }
 
+/**
+ * Same rule as the order bridge and `hasActiveIntegration`, delegated so the
+ * three cannot drift — the wording is the operator-facing form of each reason.
+ */
 function notReadyReason(ctx: PosPaymentDeliveryContext): string | null {
-  if (!ctx.marketplaceId) return "integration not claimed";
-  if (!ctx.integrationActive) return "integration not active";
-  if (!ctx.sealedSecret) return "webhook secret missing";
-  return null;
+  const { notReadyReason: reason } = integrationReadiness({
+    status: ctx.marketplaceId && ctx.integrationActive ? "active" : "pending",
+    posRestaurantId: ctx.marketplaceId,
+    webhookSecret: ctx.sealedSecret,
+  });
+  if (!reason) return null;
+  if (reason === "inactive") return ctx.marketplaceId ? "integration not active" : "integration not claimed";
+  return "webhook secret missing";
 }
 
 /**

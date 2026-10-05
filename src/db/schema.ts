@@ -1,4 +1,12 @@
+import type {
+  CategoryMappingEcho,
+  ItemMappingEcho,
+  ModifierGroupMappingEcho,
+  ModifierMappingEcho,
+} from "@/db/menu-mapping-echo";
+import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   foreignKey,
   index,
@@ -109,7 +117,11 @@ export const menuCategories = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
-    posCategoryId: integer("pos_category_id").notNull(),
+    // bigint, not integer: the POS mints menu ids as epoch milliseconds
+    // (~1.79e12), which overflows int4. `mode: "number"` keeps the driver
+    // mapping to a JS number so the Map<number, number> id lookups in
+    // menu-sync.ts stay exact.
+    posCategoryId: bigint("pos_category_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     sortOrder: integer("sort_order").notNull().default(0),
     isActive: boolean("is_active").notNull().default(true),
@@ -134,8 +146,8 @@ export const menuItems = pgTable(
     isBestseller: boolean("is_bestseller").notNull().default(false),
     sort: integer("sort").notNull().default(0),
     available: boolean("available").notNull().default(true),
-    posItemId: integer("pos_item_id"),
-    posCategoryId: integer("pos_category_id"),
+    posItemId: bigint("pos_item_id", { mode: "number" }),
+    posCategoryId: bigint("pos_category_id", { mode: "number" }),
     categoryId: integer("category_id").references(() => menuCategories.id, {
       onDelete: "set null",
     }),
@@ -225,6 +237,44 @@ export const integrationRecords = pgTable(
   (t) => [index("integration_records_restaurant_idx").on(t.restaurantId)],
 );
 
+/**
+ * A request to move a `marketplace_id` from one listing to another.
+ *
+ * `restaurants.marketplace_id` is UNIQUE, so a POS that reconnects under a new
+ * listing while its id is still held elsewhere cannot complete a claim. That
+ * refusal arrives after the POS has burned its single-use connection code, so
+ * without a queue the only recovery was hand-editing `restaurants`. Ops approves
+ * or denies here; nothing moves without a decision row.
+ */
+export const integrationTransferRequests = pgTable(
+  "integration_transfer_requests",
+  {
+    id: serial("id").primaryKey(),
+    requestedByRestaurantId: integer("requested_by_restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    previousRestaurantId: integer("previous_restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    marketplaceId: text("marketplace_id").notNull(),
+    posRestaurantId: text("pos_restaurant_id"),
+    status: text("status").notNull().default("pending"),
+    note: text("note"),
+    requestedByIp: text("requested_by_ip"),
+    decidedBy: text("decided_by"),
+    requestedAt: timestamp("requested_at", { withTimezone: true }).notNull().defaultNow(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+  },
+  (t) => [
+    index("integration_transfer_requests_status_idx").on(t.status, t.requestedAt),
+    // Mirrors the partial UNIQUE index in the migration: only pending rows are
+    // constrained, so decided requests stay as history.
+    uniqueIndex("integration_transfer_requests_pending_uniq")
+      .on(t.marketplaceId, t.requestedByRestaurantId)
+      .where(sql`${t.status} = 'pending'`),
+  ],
+);
+
 /** Append-only audit trail for integration actions (login, rotate, identity…). */
 export const integrationAudit = pgTable(
   "integration_audit",
@@ -285,8 +335,13 @@ export const orders = pgTable(
      * orders that never ship to the POS.
      */
     externalOrderId: text("external_order_id"),
-    /** The POS order id echoed back on successful delivery (marketplace_order_ingest). */
-    posOrderId: integer("pos_order_id"),
+    /**
+     * The POS order id echoed back on successful delivery (marketplace_order_ingest).
+     * bigint, not integer: the POS declares epoch-ms as its id convention, which
+     * overflows int4. `mode: "number"` keeps the driver's JS-number mapping so the
+     * equality checks in pos-delivery.ts stay exact.
+     */
+    posOrderId: bigint("pos_order_id", { mode: "number" }),
     /**
      * Was this order admitted while the restaurant had an ACTIVE POS
      * integration? Stamped at creation rather than re-derived, because the
@@ -342,7 +397,8 @@ export const posOrderDeliveries = pgTable(
     marketplaceOrderId: integer("marketplace_order_id").notNull(),
     externalOrderId: text("external_order_id").notNull(),
     restaurantId: integer("restaurant_id").notNull(),
-    posOrderId: integer("pos_order_id"),
+    // bigint: POS order ids may be epoch-ms, which overflows int4.
+    posOrderId: bigint("pos_order_id", { mode: "number" }),
     status: text("status").notNull().default("PENDING"),
     attempts: integer("attempts").notNull().default(0),
     lastError: text("last_error"),
@@ -520,7 +576,8 @@ export const marketplaceOrderEvents = pgTable(
     restaurantId: integer("restaurant_id").notNull(),
     eventId: text("event_id").notNull(),
     externalOrderId: text("external_order_id").notNull(),
-    posOrderId: integer("pos_order_id"),
+    // bigint: POS order ids may be epoch-ms, which overflows int4.
+    posOrderId: bigint("pos_order_id", { mode: "number" }),
     status: text("status").notNull(),
     payloadHash: text("payload_hash"),
     receivedAt: timestamp("received_at", { withTimezone: true }).notNull().defaultNow(),
@@ -548,7 +605,7 @@ export const modifierGroups = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
-    posGroupId: integer("pos_group_id").notNull(),
+    posGroupId: bigint("pos_group_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     minSelect: integer("min_select").notNull().default(0),
     maxSelect: integer("max_select").notNull().default(1),
@@ -573,8 +630,8 @@ export const modifierOptions = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
-    posGroupId: integer("pos_group_id").notNull(),
-    posOptionId: integer("pos_option_id").notNull(),
+    posGroupId: bigint("pos_group_id", { mode: "number" }).notNull(),
+    posOptionId: bigint("pos_option_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     priceCents: integer("price_cents").notNull().default(0),
     isVeg: boolean("is_veg").notNull().default(true),
@@ -643,11 +700,25 @@ export type MenuWebhookAction =
   | "modifier.updated"
   | "modifier.deleted";
 
+/**
+ * Minted-id echoes the POS captures from a `menu.sync` response.
+ *
+ * Each entry carries the id under TWO keys and both must always be populated:
+ * `id` is the Marketplace's own numeric id (what the `menu_item_id`-style single
+ * entity responses use), while `marketplace_*_id` is the entity-scoped name the
+ * POS reads in `persistAssignmentsFromResponse`
+ * (Backend/integrations/marketplace/menu.js). Emitting only `id` left the POS
+ * writing the literal string "undefined" into its mapping tables — and because
+ * `marketplace_category_mappings` is unique on
+ * (restaurant_id, marketplace_category_id), the FIRST category won that unique
+ * key and every later one failed its insert. A 6-category sync produced 1 usable
+ * category mapping and 1 of 3 modifier mappings. Always emit both.
+ */
 export type MenuMappings = {
-  categories?: { pos_category_id: number; id: number; name?: string | null }[];
-  items?: { pos_item_id: number; id: number; name?: string | null; marketplace_item_id?: string | null }[];
-  modifier_groups?: { pos_group_id: number; id: number; name?: string | null }[];
-  modifiers?: { pos_group_id: number; pos_modifier_id: number; id: number; name?: string | null }[];
+  categories?: CategoryMappingEcho[];
+  items?: ItemMappingEcho[];
+  modifier_groups?: ModifierGroupMappingEcho[];
+  modifiers?: ModifierMappingEcho[];
 };
 
 export const menuWebhookEvents = pgTable(
@@ -693,3 +764,20 @@ export type ConnectionRow = typeof connections.$inferSelect;
 export type IntegrationSessionRow = typeof integrationSessions.$inferSelect;
 export type IntegrationRecordRow = typeof integrationRecords.$inferSelect;
 export type IntegrationAuditRow = typeof integrationAudit.$inferSelect;
+export const adminSessions = pgTable(
+  "admin_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("admin_sessions_token_hash_idx").on(t.tokenHash),
+    index("admin_sessions_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type AdminSessionRow = typeof adminSessions.$inferSelect;

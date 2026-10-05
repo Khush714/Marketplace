@@ -55,3 +55,12 @@ dev*.log
 # throwaway debug scripts (throwaway_pg_checks etc.)
 _*.cjs
 tmp_*.cjs
+
+# profiling scratch output. README.md and measure.mjs stay tracked; the logs,
+# captured console dumps and one-off result files below are local debris and
+# leak absolute machine paths (and error text quoting usernames) if committed.
+scripts/profiling/_*.log
+scripts/profiling/_*.log.err
+scripts/profiling/_*.txt
+scripts/profiling/_debug-*.mjs
+scripts/profiling/results-*.jsonl

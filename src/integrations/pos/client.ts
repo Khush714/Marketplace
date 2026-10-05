@@ -1,6 +1,26 @@
 import "server-only";
 import { createHmac, randomUUID } from "node:crypto";
-import { posBaseUrl } from "@/lib/pos-bridge";
+import { PosBridgeError, describePosTransportError, logPosTransportFailure, posHost, requirePosBaseUrl } from "@/lib/pos-bridge";
+
+/**
+ * `requirePosBaseUrl` throws a PosBridgeError; the delivery journal classifies
+ * retryability off PosOrderDeliveryError, so the misconfiguration has to be
+ * re-thrown in this module's error type. Retryable, because a wrong
+ * POS_BASE_URL is an operator fix, not a permanently bad order — the row must
+ * survive to be delivered once the URL is corrected.
+ */
+export function resolvePosBaseUrlForDelivery(): string {
+  try {
+    return requirePosBaseUrl();
+  } catch (err) {
+    throw new PosOrderDeliveryError(
+      err instanceof Error ? err.message : "POS_BASE_URL is not configured",
+      err instanceof PosBridgeError ? err.status : 503,
+      "POS_UNREACHABLE",
+      true,
+    );
+  }
+}
 
 export const POS_ORDER_INGEST_PATH = "/integrations/marketplace/orders";
 const ORDER_INGEST_TIMEOUT_MS = 8000;
@@ -49,10 +69,7 @@ export async function postPosOrderIngest(opts: {
   payload: Record<string, unknown>;
   requestId?: string;
 }): Promise<{ status: number; response: PosOrderIngestResponse }> {
-  const base = posBaseUrl();
-  if (!base) {
-    throw new PosOrderDeliveryError("POS_BASE_URL is not configured", 503, "POS_UNREACHABLE", true);
-  }
+  const base = resolvePosBaseUrlForDelivery();
 
   const rawBody = JSON.stringify(opts.payload);
   const signature = createHmac("sha256", opts.secret).update(rawBody).digest("hex");
@@ -71,8 +88,14 @@ export async function postPosOrderIngest(opts: {
       },
       body: rawBody,
       signal: controller.signal,
+      cache: "no-store",
     });
-  } catch {
+  } catch (err) {
+    // Logged, not swallowed: a delivery journal that only records
+    // POS_UNREACHABLE cannot tell DNS failure from a refused port, and the
+    // distinction decides whether ops restarts a tunnel or fixes a record.
+    const { reason, detail } = describePosTransportError(err);
+    logPosTransportFailure({ reason, detail, host: posHost() });
     throw new PosOrderDeliveryError("POS is unreachable", 502, "POS_UNREACHABLE", true);
   } finally {
     clearTimeout(timer);

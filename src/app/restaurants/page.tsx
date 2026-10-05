@@ -8,7 +8,29 @@ import { localityByKey, withLoc } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
 
-export const metadata: Metadata = { title: "crave. — Explore restaurants" };
+/**
+ * Generated because the page is filter-scoped. A `?q=`/`?cuisine=` variant
+ * renders a different grid, but those are the same listing surface and must not
+ * compete with each other in search — hence the canonical pinned to the
+ * unfiltered path while the description reports what is actually on screen.
+ */
+export async function generateMetadata(props: {
+  searchParams: Promise<SearchParams>;
+}): Promise<Metadata> {
+  const sp = await props.searchParams;
+  const locality = localityByKey(sp.loc);
+  const cuisine = sp.cuisine?.trim();
+  const q = sp.q?.trim();
+
+  const subject = q ? `“${q}”` : cuisine ? `${cuisine} restaurants` : "restaurants";
+  const title = q ? `Results for “${q}”` : cuisine ? `Best ${cuisine} nearby` : "Explore restaurants";
+
+  return {
+    title,
+    description: `Find ${subject} delivering to ${locality.name}, ${locality.city}. Filter by cuisine, price, rating, offers and pure-veg, then order in minutes.`,
+    alternates: { canonical: "/restaurants" },
+  };
+}
 
 interface SearchParams {
   q?: string;

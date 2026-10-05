@@ -112,6 +112,37 @@ export function mapPosStatusToMarketplaceStatus(
 }
 
 /**
+ * The POS does NOT send `status` on every lifecycle event.
+ * `order.accepted` and `order.status_changed` carry one, but `order.rejected`
+ * and `order.cancelled` are minted without it — the event name IS the status
+ * (Restaurant AI `Backend/integrations/marketplace/status.js` → `deliverWebhook`).
+ *
+ * Reading `status` alone left those two routes answering 200
+ * `{skipped: "MISSING_FIELDS"}`. The POS outbox treats any 2xx as delivered, so
+ * a restaurant rejection or cancellation was acknowledged, marked sent, and
+ * never applied — and because `handleCancelledOrderPayment` hangs off the
+ * applied branch, the customer's refund never fired either.
+ *
+ * Keyed off the exact event names the POS emits. An unrecognised event falls
+ * through to the `status` field and, failing that, to null, so the caller
+ * converges as MISSING_FIELDS rather than guessing at a status.
+ */
+const STATUS_BY_POS_EVENT: Readonly<Record<string, MarketplaceOrderStatus>> = {
+  "order.accepted": "ACCEPTED",
+  "order.rejected": "REJECTED",
+  "order.cancelled": "CANCELLED",
+};
+
+export function mapPosEventToMarketplaceStatus(
+  event: string | null | undefined,
+  rawStatus?: unknown,
+): MarketplaceOrderStatus | null {
+  const byEvent = event ? STATUS_BY_POS_EVENT[event] : undefined;
+  if (byEvent) return byEvent;
+  return typeof rawStatus === "string" ? mapPosStatusToMarketplaceStatus(rawStatus) : null;
+}
+
+/**
  * Legal edges: [current] → allowed incoming statuses. Includes:
  *  - PLACED → PREPARING (POS may skip ACCEPTED — orders arrive kitchen-ready)
  *  - ACCEPTED absorb edges (see pos-delivery.ts absorb branch)

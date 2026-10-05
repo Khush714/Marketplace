@@ -11,6 +11,18 @@ import {
   restaurants,
   type MenuMappings,
 } from "@/db/schema";
+import {
+  categoryMapping,
+  itemMapping,
+  modifierGroupMapping,
+  modifierMapping,
+} from "@/db/menu-mapping-echo";
+import {
+  posImageForInsert,
+  posImageForUpdate,
+  readPosImage,
+} from "@/integrations/pos/menu-image";
+import { DEFAULT_DISH_IMAGE } from "@/lib/domain";
 
 /* ----------------------------- helpers --------------------------------- */
 
@@ -100,19 +112,31 @@ export async function getWebhookContext(restaurantId: number) {
   return row ?? null;
 }
 
-/** Seal-sidebook union of webhook secret + menu version for a restaurant. */
+/**
+ * Seal-sidebook union of webhook secret + menu version for a restaurant.
+ *
+ * `sealedSecret: null` means "leave the stored secret alone". That has to be
+ * expressed by OMITTING the key: passing `integrationRecords.webhookSecret` as
+ * the new value is not a no-op in a drizzle `.set()` — a column reference there
+ * is serialized as a bind parameter, not read back as the current row value, so
+ * the "keep existing" branch overwrote the secret with garbage. The correct
+ * keep-current expression is a raw `sql` template, but omitting the key is
+ * clearer and cannot be got wrong.
+ */
 export async function setWebhookContext(
   restaurantId: number,
   sealedSecret: string | null,
   baseVersion = 1,
 ): Promise<void> {
+  const patch: Partial<typeof integrationRecords.$inferInsert> = {
+    latestMenuVersion: baseVersion,
+    updatedAt: new Date(),
+  };
+  if (sealedSecret !== null) patch.webhookSecret = sealedSecret;
+
   await db
     .update(integrationRecords)
-    .set({
-      webhookSecret: sealedSecret !== null ? sealedSecret : integrationRecords.webhookSecret,
-      latestMenuVersion: baseVersion,
-      updatedAt: new Date(),
-    })
+    .set(patch)
     .where(eq(integrationRecords.restaurantId, restaurantId));
 }
 
@@ -312,7 +336,7 @@ async function applyMenuSync(
     }
     if (id !== undefined) {
       catIds.set(posCatId, id);
-      (mappings.categories ??= []).push({ pos_category_id: posCatId, id, name });
+      (mappings.categories ??= []).push(categoryMapping(posCatId, id, name));
     }
   }
 
@@ -326,6 +350,12 @@ async function applyMenuSync(
     const posCategoryId = readPosId(it.category_id) ?? null;
     const categoryId = posCategoryId !== null ? catIds.get(posCategoryId) : undefined;
     const displayCategory = str(it.category) ?? null;
+    // `undefined` in a drizzle `.set()` omits the column, so a re-sync that
+    // carries no image keeps the picture already on the dish instead of wiping
+    // it. This branch used to never touch `imageUrl` at all, which meant a
+    // restaurant that fixed a photo on the POS kept seeing the old one here
+    // until the item happened to be re-sent as a single `item.updated`.
+    const syncedImageUrl = posImageForUpdate(readPosImage(it), DEFAULT_DISH_IMAGE);
 
     const [row] = await tx
       .select({ id: menuItems.id })
@@ -346,6 +376,7 @@ async function applyMenuSync(
           category: displayCategory ?? undefined,
           categoryId,
           posCategoryId,
+          imageUrl: syncedImageUrl ?? undefined,
           lastSyncedAt: now,
         })
         .where(and(eq(menuItems.id, id), eq(menuItems.restaurantId, restaurantId)));
@@ -359,7 +390,7 @@ async function applyMenuSync(
           name,
           description: typeof it.description === "string" ? it.description : "",
           priceCents: price ?? 0,
-          imageUrl: str(it.image_url ?? it.img) ?? "",
+          imageUrl: posImageForInsert(readPosImage(it), DEFAULT_DISH_IMAGE),
           isVeg: bool(it.isveg, true),
           isBestseller: false,
           sort: toInt(it.sort) ?? 0,
@@ -375,7 +406,7 @@ async function applyMenuSync(
       itemIds.set(posItemId, id);
       // marketplace_item_id is how the POS bridges order lines back to this
       // Marketplace numeric menu_items.id — never a name, never null.
-      (mappings.items ??= []).push({ pos_item_id: posItemId, id, name, marketplace_item_id: String(id) });
+      (mappings.items ??= []).push(itemMapping(posItemId, id, name));
     }
   }
 
@@ -422,7 +453,7 @@ async function applyMenuSync(
     }
     if (groupId === undefined) continue;
     mappings.modifier_groups = mappings.modifier_groups ?? [];
-    mappings.modifier_groups.push({ pos_group_id: posGroupId, id: groupId, name });
+    mappings.modifier_groups.push(modifierGroupMapping(posGroupId, groupId, name));
 
     const linkedItems = asArray(g.items).map(Number);
     for (const posItemId of linkedItems) {
@@ -486,12 +517,7 @@ async function applyMenuSync(
       }
       if (optionId !== undefined) {
         mappings.modifiers = mappings.modifiers ?? [];
-        mappings.modifiers.push({
-          pos_group_id: posGroupId,
-          pos_modifier_id: posOptionId,
-          id: optionId,
-          name: optName,
-        });
+        mappings.modifiers.push(modifierMapping(posGroupId, posOptionId, optionId, optName));
       }
     }
   }
@@ -542,7 +568,8 @@ async function applyItemEvent(
 
   const name = str(body.name) ?? "Untitled";
   const price = cents(body.price);
-  const imageUrl = str(body.image_url ?? body.img) ?? null;
+  const image = readPosImage(body);
+  const imageUrl = posImageForUpdate(image, DEFAULT_DISH_IMAGE);
   const patch: Partial<typeof menuItems.$inferInsert> = {
     name,
     isVeg: bool(body.isveg, true),
@@ -573,7 +600,7 @@ async function applyItemEvent(
         name,
         description: typeof body.description === "string" ? body.description : "",
         priceCents: price ?? 0,
-        imageUrl: imageUrl ?? "",
+        imageUrl: posImageForInsert(image, DEFAULT_DISH_IMAGE),
         isVeg: bool(body.isveg, true),
         isBestseller: false,
         sort: toInt(body.sort) ?? 0,
@@ -591,9 +618,7 @@ async function applyItemEvent(
   return {
     mappings: {
       items:
-        id !== null && id !== undefined
-          ? [{ pos_item_id: posItemId ?? 0, id, name, marketplace_item_id: String(id) }]
-          : [],
+        id !== null && id !== undefined ? [itemMapping(posItemId ?? 0, id, name)] : [],
     },
     mintedEntityId: id ?? null,
     item: item[0] ? (item[0] as unknown as JsonObject) : null,
@@ -648,7 +673,7 @@ async function applyCategoryEvent(
   }
   return {
     mappings: {
-      categories: [{ pos_category_id: posCategoryId, id: id ?? 0, name }],
+      categories: [categoryMapping(posCategoryId, id ?? 0, name)],
     },
     mintedEntityId: id ?? null,
   };
@@ -733,7 +758,7 @@ async function applyModifierGroupEvent(
   }
   return {
     mappings: {
-      modifier_groups: [{ pos_group_id: posGroupId, id: id ?? 0, name }],
+      modifier_groups: [modifierGroupMapping(posGroupId, id ?? 0, name)],
     },
     mintedEntityId: id ?? null,
   };
@@ -827,7 +852,7 @@ async function applyModifierEvent(
   }
   return {
     mappings: {
-      modifiers: [{ pos_group_id: posGroupId ?? 0, pos_modifier_id: posOptionId, id: id ?? 0, name }],
+      modifiers: [modifierMapping(posGroupId ?? 0, posOptionId, id ?? 0, name)],
     },
     mintedEntityId: id ?? null,
   };

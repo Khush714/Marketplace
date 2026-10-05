@@ -127,6 +127,12 @@ export async function POST(req: NextRequest) {
   }
 
   const result = await applyMenuWebhook(restaurantId!, body);
+
+  const itemFields = describeItemFields(body);
+  if (itemFields) {
+    console.log(`[menu-sync] ${integrationId} ${result.eventType} ${itemFields}`);
+  }
+
   const entityType = (result.entityType ?? "sync") as MenuWebhookEntity;
 
   return Response.json({
@@ -141,6 +147,38 @@ export async function POST(req: NextRequest) {
     item: result.item,
     _diag: diag,
   });
+}
+
+/**
+ * Names of the fields the POS actually sends on a menu item, plus one truncated
+ * sample per string field.
+ *
+ * This exists because the payload is not retained anywhere, so a dish photo that
+ * fails to sync leaves no trace: the only surviving evidence was `image_url`
+ * holding `Starter` and `🍽️` for restaurant XYZ, which proves the image field
+ * carried a category name but not which key it came from. Without this, every
+ * follow-up question about the POS menu contract has to be answered by guessing.
+ * One line per sync, menu data only — no credentials are in the body.
+ */
+function describeItemFields(body: JsonObject): string | null {
+  const items = Array.isArray(body.items) ? body.items : [];
+  if (items.length === 0) return null;
+
+  const keys = new Set<string>();
+  const samples = new Map<string, string>();
+  for (const entry of items) {
+    if (!entry || typeof entry !== "object") continue;
+    for (const [key, value] of Object.entries(entry as JsonObject)) {
+      keys.add(key);
+      if (typeof value === "string" && value && !samples.has(key)) {
+        samples.set(key, value.slice(0, 60));
+      }
+    }
+  }
+  if (keys.size === 0) return null;
+  return `itemKeys=[${[...keys].sort().join(",")}] samples=${JSON.stringify(
+    Object.fromEntries(samples),
+  )}`;
 }
 
 function parseBody(raw: string): JsonObject | null {

@@ -159,11 +159,15 @@ export default function ProfilePage() {
           <Heart className="size-4.5 text-chili-400" /> Favorites
         </h2>
         {favorites === null ? (
-          <div className="flex gap-4">
+          /* Same rail as the real list below. This was a bare `flex gap-4` of
+             three `w-[260px] shrink-0` cards with no scroller: 812px of row in
+             a 328px column, so the document ran 438px wide for as long as the
+             profile fetch was in flight. */
+          <Rail ariaLabel="Loading favorite restaurants">
             {[0, 1, 2].map((i) => (
-              <div key={i} className="skeleton h-48 w-[260px] shrink-0 rounded-3xl" />
+              <div key={i} className="skeleton h-48 w-[240px] shrink-0 snap-start rounded-3xl" />
             ))}
-          </div>
+          </Rail>
         ) : favorites.length === 0 ? (
           <p className="rounded-2xl border border-dashed border-white/12 bg-white/[0.03] px-5 py-8 text-center text-sm text-cream-500">
             Tap the <Heart className="inline size-3.5 text-chili-400" /> on any restaurant to pin it here.

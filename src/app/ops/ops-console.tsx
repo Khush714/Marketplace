@@ -3,6 +3,9 @@
 import Link from "next/link";
 import { useCallback, useState } from "react";
 import {
+  Activity,
+  AlertTriangle,
+  ArrowRightLeft,
   BadgeCheck,
   Check,
   Copy,
@@ -15,6 +18,7 @@ import {
   Store,
   UserRoundCheck,
   Wallet,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/domain";
 import { useToast } from "@/lib/toast";
@@ -112,9 +116,11 @@ export default function OpsConsole({ open }: { open: boolean }) {
         onSave={setToken}
         onTest={() => testToken(call, toast, open)}
       />
+        <PosBridgePanel token={token} call={call} />
         <CodesPanel token={token} canAct={canAct} call={call} />
         <ProvisionPanel canAct={canAct} call={call} />
         <ConnectionsPanel token={token} canAct={canAct} call={call} />
+        <TransferPanel canAct={canAct} call={call} />
       <WorkersPanel token={token} canAct={canAct} call={call} />
 
       <Link
@@ -792,6 +798,331 @@ interface PosDrainSummary {
   terminalFailed: number;
   skipped: number;
   errored: number;
+}
+
+interface PosBridgeProbe {
+  ok: boolean;
+  baseUrl: string | null;
+  host: string | null;
+  configured: boolean;
+  loopback: boolean;
+  status: number | null;
+  latencyMs: number | null;
+  reason: string | null;
+  detail: string | null;
+}
+
+/**
+ * Reachability of the POS itself, checked before anything else in this panel.
+ *
+ * Every marketplace→POS call resolves its host from one env var, so a wrong
+ * POS_BASE_URL makes connection verify, claim, order ingest, payments and
+ * cancellations all fail together with an identical, context-free 502. A
+ * deployment once carried a quick-tunnel URL that had already stopped resolving
+ * and nothing surfaced it until a restaurant tried to connect. Read this first
+ * when a bridge call 502s.
+ */
+/**
+ * Identity transfers: one listing asking to take a POS identity
+ * (`restaurants.marketplace_id`) from another that still holds it.
+ *
+ * This queue exists because the alternative was a hand-written UPDATE. The claim
+ * route refuses with MARKETPLACE_ID_TAKEN when the unique id is spoken for, and
+ * it does so *after* the POS burned its single-use connection code — so the
+ * operator had no route forward and the only fix was an engineer editing the
+ * database. Now the refusal files a request and the claim is preserved as a
+ * PENDING record, so approving here finishes the connection without the
+ * restaurant going back to the POS for a new code.
+ *
+ * Approving takes capability away from one partner and gives it to another, so
+ * the consequences are shown before the click: the listing that loses the id has
+ * its checkout closed, and any order still mid-flight loses its status webhook.
+ * Those counts come from the server rather than being recomputed in the browser.
+ */
+/**
+ * One row of the identity-transfer queue, mirroring
+ * `IntegrationTransferDto` from src/db/queries.ts.
+ *
+ * `holderStats` is the reason this panel exists rather than a confirm dialog:
+ * approving takes a working checkout away from another restaurant, and the
+ * operator should see how much is riding on it before agreeing.
+ */
+interface TransferRow {
+  id: number;
+  status: string;
+  marketplaceId: string;
+  posRestaurantId: string | null;
+  note: string | null;
+  requestedAt: string;
+  decidedAt: string | null;
+  decidedBy: string | null;
+  requestedBy: { id: number; name: string; slug: string };
+  heldBy: { id: number; name: string; slug: string } | null;
+  holderRecordStatus: string | null;
+  holderStats: { orders: number; openOrders: number };
+}
+
+function TransferPanel({ canAct, call }: { canAct: boolean; call: OpsCall }) {
+  const { toast } = useToast();
+  const [rows, setRows] = useState<TransferRow[]>([]);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [deciding, setDeciding] = useState<number | null>(null);
+  const [warnings, setWarnings] = useState<Record<number, string[]>>({});
+
+  const load = useCallback(async () => {
+    if (!canAct) return;
+    setBusy(true);
+    try {
+      const d = await call<{ transfers: TransferRow[] }>("/api/ops/integration-transfers");
+      setRows(d.transfers ?? []);
+      setError(null);
+      setLoaded(true);
+    } catch (e) {
+      setRows([]);
+      setError(e instanceof Error ? e.message : "Could not load transfer requests");
+    } finally {
+      setBusy(false);
+    }
+  }, [call, canAct]);
+
+  const decide = async (row: TransferRow, decision: "approved" | "denied") => {
+    setDeciding(row.id);
+    setWarnings((p) => {
+      const next = { ...p };
+      delete next[row.id];
+      return next;
+    });
+    try {
+      const d = await call<{
+        ok: boolean;
+        outcome?: string;
+        grantedTo?: number;
+        releasedFrom?: number;
+        activated?: boolean;
+        warnings?: string[];
+        error?: string;
+      }>("/api/ops/integration-transfers", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ request_id: row.id, decision }),
+      });
+      if (!d.ok) {
+        toast(d.error ?? "Could not decide transfer", { kind: "error" });
+        return;
+      }
+      if (decision === "denied") {
+        toast(`Transfer to ${row.requestedBy.name} denied`, { kind: "info" });
+      } else if (d.warnings?.length) {
+        // Warnings do not block, but they are the whole reason this panel shows
+        // counts — surface them instead of burying them in a success toast.
+        setWarnings((p) => ({ ...p, [row.id]: d.warnings as string[] }));
+        toast(`Moved to ${row.requestedBy.name} — with warnings`, { kind: "info" });
+      } else {
+        toast(`Moved to ${row.requestedBy.name}`, {
+          kind: "success",
+          sub: d.activated ? "Connection is live" : "Connected, still waiting on the POS secret",
+        });
+      }
+      void load();
+    } catch (e) {
+      // A 409 here means the read was stale: the holder moved on, or someone
+      // else decided first. Reload rather than leaving a queue that lies.
+      if (e instanceof OpsError && e.status === 409) {
+        toast(e.message, { kind: "error" });
+        void load();
+        return;
+      }
+      toast(e instanceof Error ? e.message : "Could not decide transfer", { kind: "error" });
+    } finally {
+      setDeciding(null);
+    }
+  };
+
+  return (
+    <section className="glass mt-5 rounded-3xl p-5 md:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+            <ArrowRightLeft className="size-4.5 text-ember-400" /> Identity transfers
+          </h2>
+          <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+            Listings asking to take a POS identity from another listing. Approving moves the id,
+            closes the old listing&apos;s checkout, and cancels its in-flight status webhooks.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={!canAct || busy}
+          className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+          Load
+        </button>
+      </div>
+
+      {error && (
+        <p className="mt-3 rounded-xl border border-chili-500/25 bg-chili-500/8 px-3.5 py-2.5 text-xs text-chili-300">
+          {error}
+        </p>
+      )}
+
+      {loaded && !rows.length && !error && (
+        <p className="mt-4 rounded-xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-center text-xs text-cream-500">
+          No pending transfer requests.
+        </p>
+      )}
+
+      <div className="mt-4 space-y-3">
+        {rows.map((row) => (
+          <div key={row.id} className="rounded-2xl border border-white/10 bg-white/[0.045] p-4">
+            <div className="flex flex-wrap items-center gap-2 text-sm">
+              <span className="font-semibold text-cream-50">{row.requestedBy.name}</span>
+              <ArrowRightLeft className="size-3.5 text-ember-400" />
+              <span className="font-semibold text-cream-300">{row.heldBy?.name ?? "unknown"}</span>
+              <span className="rounded-full bg-white/8 px-2 py-0.5 font-mono text-[11px] text-cream-400">
+                {row.marketplaceId}
+              </span>
+            </div>
+
+            <p className="mt-1.5 text-xs text-cream-500">
+              Requested {formatWhen(row.requestedAt)}
+              {row.holderRecordStatus ? ` · holder record ${row.holderRecordStatus}` : ""}
+              {row.holderStats.orders > 0 ? ` · ${row.holderStats.orders} orders` : ""}
+              {row.holderStats.openOrders > 0 ? ` · ${row.holderStats.openOrders} still open` : ""}
+            </p>
+
+            {row.note && <p className="mt-1.5 text-xs italic text-cream-400">&ldquo;{row.note}&rdquo;</p>}
+
+            {/* Shown after the fact: approval already happened, so these describe
+                consequences that are live rather than ones being considered. */}
+            {warnings[row.id]?.length ? (
+              <ul className="mt-3 space-y-1 rounded-xl border border-ember-500/25 bg-ember-500/8 px-3.5 py-2.5">
+                {warnings[row.id].map((w) => (
+                  <li key={w} className="flex items-start gap-1.5 text-[11px] leading-relaxed text-ember-200">
+                    <AlertTriangle className="mt-px size-3 shrink-0" />
+                    {w}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
+
+            <div className="mt-3.5 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void decide(row, "approved")}
+                disabled={deciding === row.id}
+                className="press flex items-center gap-1.5 rounded-xl bg-gradient-to-b from-mint-400 to-mint-600 px-4 py-2 text-xs font-bold text-emerald-950 transition-opacity disabled:opacity-60"
+              >
+                {deciding === row.id ? (
+                  <LoaderCircle className="size-3.5 animate-spin" />
+                ) : (
+                  <Check className="size-3.5" />
+                )}
+                Approve transfer
+              </button>
+              <button
+                type="button"
+                onClick={() => void decide(row, "denied")}
+                disabled={deciding === row.id}
+                className="press flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-chili-500/20 hover:text-chili-300 disabled:opacity-60"
+              >
+                <X className="size-3.5" />
+                Deny
+              </button>
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function PosBridgePanel({ token, call }: { token: string; call: OpsCall }) {
+  const [probe, setProbe] = useState<PosBridgeProbe | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const check = useCallback(async () => {
+    setBusy(true);
+    setError(null);
+    try {
+      const d = await call<{ ok: boolean; probe: PosBridgeProbe }>("/api/ops/pos-bridge");
+      setProbe(d.probe);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not reach the probe endpoint");
+    } finally {
+      setBusy(false);
+    }
+  }, [call]);
+
+  return (
+    <section className="glass mt-5 rounded-3xl p-5 md:p-6">
+      <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+        <Activity className="size-4.5 text-ember-400" /> POS bridge
+      </h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+        Where the marketplace sends orders, payments and connection codes, and whether that host
+        answers. Check this first when a bridge call returns 502.
+      </p>
+
+      {error && (
+        <p className="mt-4 rounded-xl border border-chili-500/30 bg-chili-600/10 px-3.5 py-2.5 text-xs text-chili-300">
+          {error}
+        </p>
+      )}
+
+      <button
+        type="button"
+        onClick={check}
+        disabled={busy}
+        className="press mt-4 flex items-center justify-center gap-2 rounded-2xl bg-white/8 py-2.5 text-sm font-bold text-cream-50 transition-colors hover:bg-white/12 disabled:opacity-50"
+      >
+        {busy ? <LoaderCircle className="size-4 animate-spin" /> : <RefreshCw className="size-4" />}
+        Check POS bridge
+      </button>
+
+      {probe && (
+        <div className="mt-4 space-y-2 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <span
+              className={cn(
+                "flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-[11px] font-bold",
+                probe.ok ? "bg-mint-500/12 text-mint-400" : "bg-chili-500/15 text-chili-400",
+              )}
+            >
+              {probe.ok ? <BadgeCheck className="size-3" strokeWidth={2.6} /> : <ShieldAlert className="size-3" strokeWidth={2.6} />}
+              {probe.ok ? "Reachable" : "Unreachable"}
+            </span>
+            <span className="rounded-full bg-white/8 px-2.5 py-0.5 font-mono text-cream-300">
+              {probe.host ?? "no POS_BASE_URL"}
+            </span>
+            {probe.latencyMs != null && (
+              <span className="rounded-full bg-white/8 px-2.5 py-0.5 font-mono text-cream-300">
+                {probe.latencyMs}ms
+              </span>
+            )}
+            {probe.status != null && (
+              <span className="rounded-full bg-white/8 px-2.5 py-0.5 font-mono text-cream-300">
+                HTTP {probe.status}
+              </span>
+            )}
+          </div>
+          {!probe.ok && (
+            <p className="rounded-xl border border-chili-500/25 bg-chili-600/10 px-3.5 py-2.5 text-chili-300">
+              {probe.reason === "not_configured"
+                ? "POS_BASE_URL is not set on this deployment."
+                : probe.reason === "loopback_in_production"
+                  ? "POS_BASE_URL points at localhost, which a deployed function can never reach. Set it to the POS's public URL."
+                  : (probe.detail ?? "The POS did not answer.")}
+            </p>
+          )}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function WorkersPanel({

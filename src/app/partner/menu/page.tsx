@@ -791,14 +791,14 @@ function GroupForm({
                 onChange={(e) => setOption(i, { name: e.target.value })}
                 placeholder="Regular"
                 required
-                className={cn(inputCls, "flex-1")}
+                className={cn(inputCls, "min-w-0 flex-1")}
               />
               <input
                 value={o.priceRupees}
                 onChange={(e) => setOption(i, { priceRupees: e.target.value })}
                 placeholder="+₹40"
                 inputMode="decimal"
-                className={cn(inputCls, "w-28")}
+                className={cn(inputCls, "w-28 shrink-0")}
               />
               <button
                 type="button"

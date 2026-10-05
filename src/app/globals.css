@@ -1,8 +1,18 @@
 @import "tailwindcss";
 
-@theme {
-  --font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --font-display: "Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
+/* `inline` is required, not stylistic.
+
+   `next/font` defines --font-inter / --font-bricolage on a class that lands on
+   <html>, while Tailwind resolves --font-sans / --font-display where they are
+   declared. Without `inline` the generated `.font-sans` rule would read
+   `var(--font-sans)`, whose value is `var(--font-inter)`; a rule that resolves
+   it against a *descendant* of <html> finds no --font-inter there and silently
+   falls back to `sans-serif`. With `inline`, the utility inlines the reference
+   and the font applies. See the "Referencing other variables" section of the
+   Tailwind v4 theme docs. */
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-bricolage), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
 
   /* Surfaces */
   --color-void: #07070a;
@@ -214,9 +224,53 @@
 /* ------------------------------ base layer -------------------------------- */
 
 @layer base {
+  /* `overflow-x: clip` on BOTH elements, and the order matters.
+
+     It has to be on `html`, and that is not a stylistic choice. Per CSS
+     Overflow 3, a UA applies the root element's overflow to the viewport; but
+     when `html` is `visible` in both axes, it instead applies `body`'s — and
+     `body`'s own used value then becomes `visible`. So the declaration that
+     used to live on `body` alone was inert on `body` itself: it configured the
+     viewport and clipped nothing. Verified in Chromium at an iPhone 14
+     viewport: computed style read `body=clip/visible` while the document still
+     scrolled 450px wide, and forcing `body` to `clip/clip` changed nothing,
+     because propagation had already taken the value away from it.
+
+     Declaring it on `html` as well means `html` is no longer `visible`, so
+     propagation stops there. `body` keeps its own clip and becomes a real clip
+     container, and no in-flow overflow can widen the document at all.
+
+     `clip` rather than `hidden` is load-bearing in three ways:
+
+       - It is not a scroll container, so `position: sticky` still resolves
+         against the viewport. `hidden` creates a scroll container and the
+         sticky filter bar on /restaurants stops sticking. Measured: sticky top
+         stays 0 at scrollY 1200 either way with `clip`.
+       - No coercion. `visible` and `clip` only compute to `auto`/`hidden` when
+         the *other* axis is neither of the two, so `overflow-x: clip` here
+         leaves `overflow-y` genuinely `visible` and the page still scrolls.
+       - It forbids programmatic scrolling too, so a stray `scrollTo` cannot
+         pan past the edge.
+
+     The viewport ends up `overflow-x: clip; overflow-y: auto` (CSS 2.1 maps a
+     `visible` viewport to `auto`), which is the intended result: vertical
+     scroll, no horizontal pan.
+
+     One consequence to respect when adding UI: a scroll lock must now target
+     `document.documentElement`, not `document.body`. Locking the body sets
+     `body`'s overflow, and `body` no longer feeds the viewport, so the page
+     behind keeps scrolling. That was measured, not assumed — the dish sheet's
+     body-level lock scrolled a locked page 900px once this rule landed.
+
+     Note this is a backstop, not a licence. Clipping hides overflow rather
+     than fixing it, so content pushed outside the viewport becomes unreachable
+     instead of merely pannable. Every actual overflow source is fixed at its
+     source; this only guarantees that a future one degrades to "cut off"
+     rather than "the whole app slides sideways". */
   html {
     color-scheme: dark;
     scroll-behavior: smooth;
+    overflow-x: clip;
   }
   body {
     background-color: var(--color-void);

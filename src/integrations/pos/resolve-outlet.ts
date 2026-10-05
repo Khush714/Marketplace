@@ -2,6 +2,7 @@ import "server-only";
 import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { integrationRecords } from "@/db/schema";
+import { canDeliverToPos } from "@/integrations/pos/readiness";
 
 export type OutletResolution =
   | {
@@ -49,12 +50,10 @@ export async function resolveOutletForRestaurant(
     .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
 
-  if (
-    !record ||
-    record.status !== "active" ||
-    !record.posRestaurantId ||
-    !record.webhookSecret
-  ) {
+  // Deliberately the shared predicate rather than a fourth inline copy of
+  // "ACTIVE and routable and signable" — see readiness.ts for why these copies
+  // used to disagree.
+  if (!record || !canDeliverToPos(record)) {
     return { ok: false, code: "INTEGRATION_NOT_CONNECTED" };
   }
 

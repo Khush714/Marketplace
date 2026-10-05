@@ -12,8 +12,8 @@ import {
 import { orderItemLineTotalCents, type OrderRow } from "@/db/schema";
 import { openWebhookSecret } from "@/lib/webhook-crypto";
 import { postPosOrderIngest, PosOrderDeliveryError } from "@/integrations/pos/client";
-
-const ONLINE_PAYMENT_METHODS = new Set(["upi", "card"]);
+import { isOnlinePaymentMethod, posItemName } from "@/integrations/pos/order-payload-shape";
+import { integrationReadiness } from "@/integrations/pos/readiness";
 
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
@@ -33,34 +33,22 @@ export function buildPosOrderPayload(
 ): Record<string, unknown> {
   const items = order.items.map((it) => {
     const qty = Math.max(1, Math.floor(it.quantity) || 1);
-    const modifierTotalCents = (it.modifiers ?? []).reduce((s, m) => s + m.priceCents * m.quantity, 0);
     const lineTotalCents = orderItemLineTotalCents(it);
-    // `unit_price` stays the effective all-in per-unit amount so the POS's own
+    // `unit_price` is the effective all-in per-unit amount, so the POS's own
     // unit_price × quantity reproduces exactly the line total the Marketplace
-    // billed (no money drift on either side). `base_unit_price` and the
-    // `modifiers` array ride alongside for the kitchen ticket / receipt, which
-    // would otherwise show a single inflated unit price and no explanation.
+    // billed — the base price plus its modifiers — with no money drift on either
+    // side. The base price and the modifier split are NOT sent: the POS discards
+    // them on ingest, and the name above is where the modifier detail has to
+    // live for it to survive at all.
     return {
       marketplace_item_id: String(it.menuItemId),
-      name: it.name,
+      name: posItemName(it),
       quantity: qty,
       unit_price: round2(lineTotalCents / qty / 100),
-      base_unit_price: round2(it.priceCents / 100),
-      modifier_total: round2(modifierTotalCents / 100),
-      ...(it.modifiers?.length
-        ? {
-            modifiers: it.modifiers.map((m) => ({
-              marketplace_modifier_id: String(m.optionId),
-              name: m.name,
-              quantity: Math.max(1, Math.floor(m.quantity) || 1),
-              unit_price: round2(m.priceCents / 100),
-            })),
-          }
-        : {}),
     };
   });
 
-  const paidOnline = ONLINE_PAYMENT_METHODS.has(String(order.paymentMethod).toLowerCase());
+  const paidOnline = isOnlinePaymentMethod(order.paymentMethod);
 
   return {
     event: "order.created",
@@ -105,9 +93,28 @@ export async function enqueuePosDelivery(orderId: number): Promise<void> {
   }
   if (deliveryId == null) return;
 
-  void attemptPosDelivery(deliveryId).catch(() => {
-    // The row stays PENDING and the drain loop owns the retry.
-  });
+  // The first attempt is AWAITED, not detached.
+  //
+  // This used to be `void attemptPosDelivery(...)`, which is fine on a long-lived
+  // Node process but silently fatal on serverless. Vercel freezes or terminates
+  // the instance as soon as the response is flushed, so the unawaited POST was
+  // killed mid-flight and the row stayed PENDING — the customer saw a placed
+  // order that the restaurant never received. The retry loop could not save it
+  // either: the drain is an `unref()`'d setInterval in instrumentation.ts, and
+  // an interval only runs in a process that is still resident, which a serverless
+  // instance is not. Reproduced live: a production order sat PENDING with a null
+  // pos_order_id indefinitely.
+  //
+  // Awaiting keeps the attempt inside the request lifetime. Durability is
+  // unaffected — the row is already journaled above, so a POS outage or a
+  // timeout still leaves a PENDING row for the cron drain to retry, and the
+  // customer is never told "placed" before the restaurant has the order.
+  try {
+    await attemptPosDelivery(deliveryId);
+  } catch (e) {
+    // Never fail the checkout over delivery: the journal row is the retry.
+    console.error("[pos-delivery] first attempt threw; leaving row for retry", e);
+  }
 }
 
 export type DeliveryAttemptOutcome =
@@ -117,11 +124,19 @@ export type DeliveryAttemptOutcome =
   | "skipped"
   | "errored";
 
+/**
+ * Same rule as the payment bridge and `hasActiveIntegration`, delegated so the
+ * three cannot drift — the wording is the operator-facing form of each reason.
+ */
 function notReadyReason(ctx: PosDeliveryContext): string | null {
-  if (!ctx.marketplaceId) return "integration not claimed";
-  if (!ctx.integrationActive) return "integration not active";
-  if (!ctx.sealedSecret) return "webhook secret missing";
-  return null;
+  const { notReadyReason: reason } = integrationReadiness({
+    status: ctx.marketplaceId && ctx.integrationActive ? "active" : "pending",
+    posRestaurantId: ctx.marketplaceId,
+    webhookSecret: ctx.sealedSecret,
+  });
+  if (!reason) return null;
+  if (reason === "inactive") return ctx.marketplaceId ? "integration not active" : "integration not claimed";
+  return "webhook secret missing";
 }
 
 /** Deliver one journaled order to the POS (claim → build → POST → outcome). */

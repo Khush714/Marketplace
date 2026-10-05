@@ -27,6 +27,7 @@ import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
 import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
+import { LEGAL, LEGAL_ROUTES } from "@/lib/site-legal";
 import { useToast } from "@/lib/toast";
 import type { OrderDto } from "@/lib/types";
 
@@ -108,6 +109,13 @@ export default function CheckoutPage() {
   const [phone, setPhone] = useState("");
   const [payChoice, setPayChoice] = useState<PayChoice>("online");
   const [instructions, setInstructions] = useState("");
+  /**
+   * DPDP Act 2023 §5–6 / IT Act §43A: the notice must be given and consent
+   * obtained by affirmative action. An unchecked box that merely links the
+   * policies is not consent, so this gates order placement rather than sitting
+   * beside it.
+   */
+  const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [openSummary, setOpenSummary] = useState(false);
   const [placeState, setPlaceState] = useState<PlaceState>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -169,7 +177,12 @@ export default function CheckoutPage() {
     );
   }
 
-  if (cart.items.length === 0 && !placed) {
+  // An online order clears the cart before payment is taken, so an empty cart is
+  // NOT the end of checkout — a pending `payTarget` still owes the customer a
+  // payment stage. Without this, the empty state returned early and
+  // <PaymentStage> below never mounted: Razorpay never opened, no capture
+  // webhook arrived, and the order stayed held at PAYMENT_PENDING forever.
+  if (cart.items.length === 0 && !placed && !payTarget) {
     return (
       <div className="mx-auto max-w-3xl px-4 pb-10 pt-14 text-center md:px-6">
         <span className="mx-auto grid size-14 place-items-center rounded-2xl bg-white/6 text-cream-400">
@@ -192,8 +205,10 @@ export default function CheckoutPage() {
   const effectiveAddressText = showAddressForm ? addressText : selectedAddress?.text ?? "";
   const effectiveLabel = showAddressForm ? label || "Other" : selectedAddress?.label ?? "Home";
   const phoneDigits = phone.replace(/\D/g, "");
-  const canPlace =
+  /** Everything needed to actually submit: contact, address and consent. */
+  const detailsComplete =
     name.trim().length > 0 && phoneDigits.length >= 10 && effectiveAddressText.trim().length > 10;
+  const canPlace = detailsComplete && acceptedTerms;
 
   /**
    * Create the order first, then take the money. For online payments the server
@@ -482,6 +497,57 @@ export default function CheckoutPage() {
               ))}
             </div>
 
+            <div className="mt-4 rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+              <div className="flex items-start gap-3">
+                <input
+                  id="accept-legal"
+                  type="checkbox"
+                  checked={acceptedTerms}
+                  onChange={(e) => setAcceptedTerms(e.target.checked)}
+                  className="sr-only"
+                />
+                <label
+                  htmlFor="accept-legal"
+                  className={cn(
+                    "press mt-0.5 grid size-5 shrink-0 cursor-pointer place-items-center rounded-md border-2 transition-colors",
+                    acceptedTerms
+                      ? "border-ember-400 bg-ember-400 text-void"
+                      : "border-white/25 bg-transparent",
+                  )}
+                >
+                  {acceptedTerms ? <Check className="size-3.5" strokeWidth={3} /> : null}
+                </label>
+                <p className="text-[11px] leading-relaxed text-cream-400">
+                  I have read and accept the{" "}
+                  <Link
+                    href={LEGAL_ROUTES.terms}
+                    target="_blank"
+                    className="font-semibold text-ember-400 hover:text-ember-300"
+                  >
+                    Terms &amp; Conditions
+                  </Link>
+                  , the{" "}
+                  <Link
+                    href={LEGAL_ROUTES.privacy}
+                    target="_blank"
+                    className="font-semibold text-ember-400 hover:text-ember-300"
+                  >
+                    Privacy Policy
+                  </Link>{" "}
+                  and the{" "}
+                  <Link
+                    href={LEGAL_ROUTES.refunds}
+                    target="_blank"
+                    className="font-semibold text-ember-400 hover:text-ember-300"
+                  >
+                    Cancellation &amp; Refund Policy
+                  </Link>
+                  , and consent to {LEGAL.brand} collecting my contact and delivery details to
+                  fulfil this order.
+                </p>
+              </div>
+            </div>
+
             <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-mint-500/10 text-mint-400">
@@ -512,9 +578,14 @@ export default function CheckoutPage() {
                 restaurant only receives your order once the payment is confirmed.
               </p>
             )}
-            {!canPlace && (
+            {!detailsComplete && (
               <p className="mt-2.5 text-xs text-chili-300">
-                Add a delivery address, name & 10-digit phone to continue
+                Add a delivery address, name &amp; 10-digit phone to continue
+              </p>
+            )}
+            {detailsComplete && !acceptedTerms && (
+              <p className="mt-2.5 text-xs text-chili-300">
+                Please accept the Terms &amp; Privacy Policy to continue
               </p>
             )}
           </Section>
@@ -574,9 +645,14 @@ export default function CheckoutPage() {
             onClick={startCheckout}
             className="mt-4 hidden lg:flex"
           />
-          {!canPlace && (
+          {!detailsComplete && (
             <p className="mt-2 hidden text-center text-xs text-cream-500 lg:block">
-              Add a delivery address, name & 10-digit phone to continue
+              Add a delivery address, name &amp; 10-digit phone to continue
+            </p>
+          )}
+          {detailsComplete && !acceptedTerms && (
+            <p className="mt-2 hidden text-center text-xs text-cream-500 lg:block">
+              Accept the Terms &amp; Privacy Policy to continue
             </p>
           )}
           {error && <p className="mt-3 text-center text-sm text-chili-300">{error}</p>}

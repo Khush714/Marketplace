@@ -50,12 +50,19 @@ export function DishSheet({
       if (e.key === "Escape") onClose();
     };
     document.addEventListener("keydown", onKey);
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = "hidden";
+    // Lock the root, not the body. `html` carries `overflow-x: clip` (see the
+    // base layer in globals.css), which means it is no longer `visible` and so
+    // is the element whose overflow reaches the viewport — a body-level lock
+    // now configures a container that does not scroll and the page behind the
+    // sheet keeps moving. Measured at an iPhone 14 viewport: with this written
+    // against `body`, a real touch drag scrolled the locked page 900px.
+    const root = document.documentElement;
+    const prev = root.style.overflow;
+    root.style.overflow = "hidden";
     panelRef.current?.focus();
     return () => {
       document.removeEventListener("keydown", onKey);
-      document.body.style.overflow = prev;
+      root.style.overflow = prev;
     };
   }, [onClose]);
 
