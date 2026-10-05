@@ -57,7 +57,7 @@ export async function generateMetadata(props: {
       title: `${r.name} — crave.`,
       description,
       url: `/restaurants/${r.slug}`,
-      images: [{ url: r.heroUrl, width: 1200, height: 627, alt: `${r.name} cover` }],
+      images: [{ url: r.heroUrl, width: 1200, height: 630, alt: `${r.name} cover` }],
     },
   };
 }

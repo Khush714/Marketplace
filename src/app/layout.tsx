@@ -74,6 +74,12 @@ export const metadata: Metadata = {
     description:
       "A next-generation food marketplace. Discover restaurants, order in seconds, track your rider live.",
     url: "/",
+    // A static file rather than an `opengraph-image.tsx` route on purpose: this
+    // card is the same for every page, so rendering it per request would buy
+    // nothing and would put a dynamic route (and its dependencies) in front of
+    // a crawler that may not wait. 1200x630 is the ratio X and Facebook crop
+    // to; declaring it explicitly keeps them from re-encoding the card.
+    images: [{ url: "/og.png", width: 1200, height: 630, alt: "crave. — Food, delivered beautifully" }],
   },
   // The OG block above supplies title/description; Twitter needs its own copy
   // because X falls back to og:title only for some scrapers, and a card with no
@@ -83,6 +89,12 @@ export const metadata: Metadata = {
     title: "crave. — Food, delivered beautifully",
     description:
       "A next-generation food marketplace. Discover restaurants, order in seconds, track your rider live.",
+    // Set explicitly rather than relying on Twitter reading `og:image`. It does
+    // for most cards, but a route that overrides `openGraph` — every
+    // restaurant page does — replaces the whole block, and `twitter` is not
+    // merged into it. Naming the file here keeps the site-wide card in place
+    // for any route that has no image of its own.
+    images: ["/og.png"],
   },
   robots: { index: true, follow: true },
 };
