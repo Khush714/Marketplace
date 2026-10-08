@@ -7,7 +7,9 @@ import {
   AlertTriangle,
   ArrowRightLeft,
   BadgeCheck,
+  Ban,
   Check,
+  Clock,
   Copy,
   Flame,
   KeyRound,
@@ -553,6 +555,8 @@ function CodesPanel({
   const [copied, setCopied] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loaded, setLoaded] = useState(false);
+  const [revoking, setRevoking] = useState<string | null>(null);
+  const [confirming, setConfirming] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     if (!canAct) return;
@@ -582,6 +586,37 @@ function CodesPanel({
     }
   };
 
+  /**
+   * Withdraw an unused code.
+   *
+   * Revoking is irreversible and the code's contents are unrecoverable, so it is
+   * two-step: the first click arms the row, the second confirms. That is cheaper
+   * than a modal for an operator who is working through a list, and it cannot be
+   * mis-hit the way a bare trash icon in a dense table can.
+   */
+  const revoke = async (code: string) => {
+    setRevoking(code);
+    try {
+      const d = await call<{ ok: boolean; code: ConnectionCodeDto }>(
+        `/api/partner/codes/${encodeURIComponent(code)}`,
+        { method: "DELETE" },
+      );
+      toast(`${code} revoked`, {
+        kind: "success",
+        sub: "It can no longer be redeemed",
+      });
+      // The minted-code banner shows the code most likely to be the one just
+      // revoked, so drop it rather than leave a dead code on screen looking live.
+      setLast((prev) => (prev?.code === code ? null : prev));
+      void load();
+    } catch (e) {
+      toast(e instanceof Error ? e.message : "Could not revoke the code", { kind: "error" });
+    } finally {
+      setRevoking(null);
+      setConfirming(null);
+    }
+  };
+
   const copy = async () => {
     if (!last) return;
     try {
@@ -600,7 +635,8 @@ function CodesPanel({
             <KeyRound className="size-4.5 text-mint-400" /> Onboarding codes
           </h2>
           <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-            A code is the single-use capability that lets a restaurant claim its listing.
+            A code is the single-use capability that lets a restaurant claim its listing. Withdraw
+            one that leaked or went to the wrong address — a redeemed code cannot be revoked.
           </p>
         </div>
         <div className="flex shrink-0 gap-2">
@@ -653,6 +689,11 @@ function CodesPanel({
           {last.expiresAt && (
             <p className="mt-1.5 text-xs text-cream-500">Valid through {formatWhen(last.expiresAt)}</p>
           )}
+          {!last.expiresAt && (
+            <p className="mt-1.5 text-xs text-cream-500">
+              No expiry set — this code stays redeemable until it is used or revoked.
+            </p>
+          )}
         </div>
       )}
 
@@ -665,31 +706,90 @@ function CodesPanel({
             </p>
           ) : (
             <ul className="space-y-2">
-              {codes.map((c) => (
-                <li
-                  key={c.id}
-                  className="flex items-center gap-3 rounded-xl bg-white/[0.045] px-3.5 py-2.5"
-                >
-                  <span className="font-mono text-sm font-bold text-cream-100 tabular-nums">{c.code}</span>
-                  <span className="ml-auto flex items-center gap-2">
+              {codes.map((c) => {
+                const expired = !!c.expiresAt && new Date(c.expiresAt) < new Date();
+                const armed = confirming === c.code;
+                return (
+                  <li
+                    key={c.id}
+                    className={cn(
+                      "flex flex-wrap items-center gap-3 rounded-xl px-3.5 py-2.5",
+                      armed ? "bg-chili-500/12" : "bg-white/[0.045]",
+                    )}
+                  >
+                    <span
+                      className={cn(
+                        "font-mono text-sm font-bold tabular-nums",
+                        c.status === "revoked" ? "text-cream-600 line-through" : "text-cream-100",
+                      )}
+                    >
+                      {c.code}
+                    </span>
+
                     {c.status === "used" ? (
                       <>
-                        <span className="max-w-[9rem] truncate text-xs text-cream-400">{c.restaurantName}</span>
+                        <span className="ml-auto max-w-[9rem] truncate text-xs text-cream-400">
+                          {c.restaurantName}
+                        </span>
                         <span className="flex items-center gap-1 rounded-full bg-mint-500/12 px-2 py-0.5 text-[10px] font-bold text-mint-400">
                           <UserRoundCheck className="size-3" /> Used
                         </span>
                       </>
-                    ) : (
-                      <span className="flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-300">
-                        <BadgeCheck className="size-3" /> Unused
+                    ) : c.status === "revoked" ? (
+                      <span className="ml-auto flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-400">
+                        <Ban className="size-3" /> Revoked
                       </span>
+                    ) : expired ? (
+                      <span className="ml-auto flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-500">
+                        <Clock className="size-3" /> Expired
+                      </span>
+                    ) : (
+                      <>
+                        <span className="ml-auto flex items-center gap-1 rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-300">
+                          <BadgeCheck className="size-3" /> Unused
+                        </span>
+                        {armed ? (
+                          <span className="flex items-center gap-1.5">
+                            <button
+                              type="button"
+                              onClick={() => void revoke(c.code)}
+                              disabled={revoking === c.code}
+                              className="press flex items-center gap-1 rounded-lg bg-chili-500 px-2.5 py-1 text-[11px] font-bold text-white transition-opacity disabled:opacity-60"
+                            >
+                              {revoking === c.code ? (
+                                <LoaderCircle className="size-3 animate-spin" />
+                              ) : (
+                                <Ban className="size-3" />
+                              )}
+                              Confirm revoke
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirming(null)}
+                              className="press rounded-lg px-2 py-1 text-[11px] font-semibold text-cream-400 transition-colors hover:text-cream-200"
+                            >
+                              Cancel
+                            </button>
+                          </span>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirming(c.code)}
+                            title="Withdraw this code so it can never be redeemed"
+                            className="press flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-bold text-cream-500 transition-colors hover:bg-chili-500/15 hover:text-chili-300"
+                          >
+                            <Ban className="size-3" /> Revoke
+                          </button>
+                        )}
+                      </>
                     )}
-                  </span>
-                  <span className="hidden shrink-0 text-[11px] text-cream-600 sm:block">
-                    {formatWhen(c.createdAt)}
-                  </span>
-                </li>
-              ))}
+
+                    <span className="hidden shrink-0 text-[11px] text-cream-600 sm:block">
+                      {formatWhen(c.createdAt)}
+                    </span>
+                  </li>
+                );
+              })}
             </ul>
           )}
         </div>

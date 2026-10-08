@@ -11,15 +11,16 @@ import {
 } from "react";
 
 /**
- * Storage consent for a site that sets no cookies.
+ * Storage consent for a site that sets no tracking cookies.
  *
  * ─────────────────────────────────────────────────────────────────────────────
  * READ THIS BEFORE ADDING A CATEGORY
  *
- * crave. sets no cookies, runs no analytics and loads no third-party trackers,
- * so there is no cross-site profile to withhold. Everything this governs is
- * `localStorage` on the visitor's own device, which never reaches us unless they
- * place an order.
+ * crave. sets no tracking cookies, runs no analytics and loads no third-party
+ * trackers — its only cookie is an essential, `HttpOnly` sign-in session on the
+ * partner console, which this consent surface does not govern — so there is no
+ * cross-site profile to withhold. Everything this governs is `localStorage` on
+ * the visitor's own device, which never reaches us unless they place an order.
  *
  * That is why the choice is phrased as "essential" vs "everything" rather than
  * accept/reject: nothing here is a tracker, and a reject button that implied we

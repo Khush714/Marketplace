@@ -102,7 +102,70 @@ export const restaurants = pgTable("restaurants", {
    */
   integrationPasskeyHash: text("integration_passkey_hash"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // Phase 10 (10.3): `restaurantIdForOwnerKey` resolves identity with
+  // `WHERE owner_key_hash = ?` on an authentication path — without this the
+  // owner-key exchange is a sequential scan of restaurants on every login.
+  index("restaurants_owner_key_hash_idx").on(t.ownerKeyHash),
+]);
+
+/**
+ * A live partner console session — the replacement for "the owner key is the
+ * session".
+ *
+ * Before this, `owner_key_hash` was asked to do three jobs at once: prove
+ * ownership, authenticate every `/api/partner/*` request, and act as the session
+ * the browser replayed on each one. The third role is the problem. A bearer
+ * secret that authenticates every call is not a session — it is a password with
+ * no expiry, no revocation and no server-side record, so it cannot be ended
+ * short of rotating it (which locks the restaurant out of its own console), and
+ * it has to be handed to the server on every single request.
+ *
+ * So the owner key keeps the job it is actually good at — being the long-lived
+ * recovery credential, exchanged exactly once for one of these rows — and the
+ * row carries everything a session needs:
+ *
+ *   - `token_hash`     the session token, hashed at rest like every other token
+ *                      in this schema, so a database read does not yield a
+ *                      usable credential.
+ *   - `csrf_hash`      the paired CSRF secret. Cookie auth removes the implicit
+ *                      CSRF protection the `x-owner-key` header used to give for
+ *                      free (a custom header forces a preflight a cross-site form
+ *                      cannot pass), so the defence has to be rebuilt explicitly.
+ *   - `delete_confirm_*` a single-use, short-lived confirmation for the one
+ *                      irreversible operation in the console. See
+ *                      `issueDeleteConfirmation`.
+ *
+ * `expires_at` and `revoked_at` are what a session actually has and a bare owner
+ * key does not: a bounded lifetime and a kill switch that leaves the owner key
+ * itself valid for recovery.
+ */
+export const restaurantSessions = pgTable(
+  "restaurant_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    csrfHash: text("csrf_hash").notNull(),
+    deleteConfirmHash: text("delete_confirm_hash"),
+    deleteConfirmExpiresAt: timestamp("delete_confirm_expires_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("restaurant_sessions_token_hash_idx").on(t.tokenHash),
+    index("restaurant_sessions_restaurant_id_idx").on(t.restaurantId),
+    // Supports the expiry sweep. Without it, reaping dead sessions is a seq scan
+    // that gets slower as the table grows, and it runs on a schedule.
+    index("restaurant_sessions_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type RestaurantSessionRow = typeof restaurantSessions.$inferSelect;
 
 /**
  * One restaurant's synced menu mirror (server-authoritative POS source).
@@ -165,38 +228,94 @@ export const connectionCodes = pgTable("connection_codes", {
   status: text("status").notNull().default("unused"),
   expiresAt: timestamp("expires_at", { withTimezone: true }),
   usedAt: timestamp("used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+}, (t) => [
+  // Phase 10 (10.3): `status` splits codes into `unused` vs terminal. Every
+  // redemption/revocation predicate leads with the unique `code` column and is
+  // served by that index; this one is for status-partitioned scans (counts,
+  // sweeps, filtered listings) that the code index cannot serve.
+  index("connection_codes_status_idx").on(t.status),
+]);
 
 export const connections = pgTable("connections", {
   id: serial("id").primaryKey(),
+  /**
+   * NO ACTION on purpose (Phase 10, 10.2): connection codes are append-only
+   * history — revocation flips `status`, it never deletes the row — so this
+   * constraint is the guard that stops a redeemed code from vanishing under
+   * the connection it produced. Same reasoning on `integration_sessions.code_id`.
+   */
   codeId: integer("code_id")
     .notNull()
     .unique()
     .references(() => connectionCodes.id),
+  /**
+   * Cascade (Phase 10, 10.2): the redemption binding is meaningless without
+   * its restaurant, and an orphaned row would still claim the code was
+   * redeemed. `deleteRestaurantById` and `db:reset` delete connections first
+   * today; the cascade is the guarantee for any future path that forgets —
+   * it also unblocks `db:seed`, which deletes restaurants without clearing
+   * connections and only worked while none existed.
+   */
   restaurantId: integer("restaurant_id")
     .notNull()
     .unique()
-    .references(() => restaurants.id),
+    .references(() => restaurants.id, { onDelete: "cascade" }),
   marketplace: text("marketplace").notNull().default("crave"),
   status: text("status").notNull().default("active"),
   connectedAt: timestamp("connected_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
-export const integrationSessions = pgTable("integration_sessions", {
-  id: serial("id").primaryKey(),
-  tokenHash: text("token_hash").notNull().unique(),
-  restaurantId: integer("restaurant_id")
-    .notNull()
-    .references(() => restaurants.id),
-  codeId: integer("code_id")
-    .notNull()
-    .references(() => connectionCodes.id),
-  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
-  revokedAt: timestamp("revoked_at", { withTimezone: true }),
-  lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const integrationSessions = pgTable(
+  "integration_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    /**
+     * Cascade (Phase 10, 10.2), mirroring `restaurant_sessions`: a live POS
+     * session whose restaurant is gone is an orphaned credential. The explicit
+     * delete in `deleteRestaurantById` stays, but no path can now remove a
+     * restaurant while leaving usable tokens behind.
+     */
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    codeId: integer("code_id")
+      .notNull()
+      .references(() => connectionCodes.id),
+    /**
+     * The absolute ceiling on the session's life, set at mint and never slid.
+     * A session that keeps getting used must still die here — the POS is
+     * pushed back through the passkey handshake — so this shares a column name
+     * with the restaurant console's short-lived sessions: the two stores keep
+     * the same vocabulary for the same idea.
+     */
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    /**
+     * Sliding inactivity cutoff. Every authenticated request pushes it back to
+     * `now + IDLE_TTL` (alongside the `lastUsedAt` touch). A session that stops
+     * being used dies here long before `expiresAt`, so a stolen token cannot be
+     * kept warm by anything other than activity the restaurant itself would
+     * see. Policy in `src/lib/integration-session-core.ts`.
+     */
+    idleExpiresAt: timestamp("idle_expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    /** Where the POS was when the session was minted; audit/assist only. */
+    ipAddress: text("ip_address"),
+    /** Client string presented at mint time; audit/assist only. */
+    userAgent: text("user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // `token_hash` is already UNIQUE (the keyed lookup), so these are the
+    // working scans: revoke-all walks a restaurant's rows, and the future idle
+    // sweep walks the idle window.
+    index("integration_sessions_restaurant_id_idx").on(t.restaurantId),
+    index("integration_sessions_idle_expires_at_idx").on(t.idleExpiresAt),
+  ],
+);
 
 /**
  * One-to-one POS identity record for a marketplace restaurant. Traces the
@@ -297,9 +416,19 @@ export const orders = pgTable(
   {
     id: serial("id").primaryKey(),
     code: text("code").notNull().unique(),
+    /**
+     * RESTRICT, not cascade (Phase 10, 10.2): orders are financial records.
+     * Removing a restaurant may only remove its orders through an explicit
+     * DELETE — `deleteRestaurantById` does exactly that, in the same
+     * transaction that clears the payment/delivery journals via their
+     * cascades — so a stray or half-implemented delete path fails loudly
+     * instead of silently destroying revenue history. (ON UPDATE stays NO
+     * ACTION throughout this schema: every FK target is an immutable serial,
+     * there is nothing a cascade-on-update could ever move.)
+     */
     restaurantId: integer("restaurant_id")
       .notNull()
-      .references(() => restaurants.id),
+      .references(() => restaurants.id, { onDelete: "restrict" }),
     restaurantName: text("restaurant_name").notNull(),
     restaurantSlug: text("restaurant_slug").notNull(),
     items: jsonb("items").notNull().$type<OrderItemSnapshot[]>(),
@@ -373,10 +502,27 @@ export const orders = pgTable(
     /** When `integrationStatus` last transitioned (status webhooks). */
     statusUpdatedAt: timestamp("status_updated_at", { withTimezone: true }).notNull().defaultNow(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    /**
+     * sha256 hex of the 128-bit random tracking token (Phase 6). The token is
+     * the bearer credential behind `/order/<tracking-token>`; only its hash is
+     * stored, so a database leak does not hand out working tracking URLs. NULL
+     * for legacy rows until the backfill migration stamps them.
+     */
+    trackingTokenHash: text("tracking_token_hash"),
   },
   (t) => [
     index("orders_phone_idx").on(t.phone),
+    // Phase 10 (10.3): restaurant-scoped recency. The composite's leading
+    // column serves plain "orders for this restaurant" lookups (the FK
+    // included) and its suffix serves `listIntegrationOrders'`
+    // ORDER BY created_at DESC — a separate plain (restaurant_id) index
+    // would only duplicate the prefix.
+    index("orders_restaurant_created_idx").on(t.restaurantId, t.createdAt),
+    // Phase 10 (10.3): cross-restaurant recency/time-range scans, which the
+    // composite cannot serve because created_at is not its leading column.
+    index("orders_created_at_idx").on(t.createdAt),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
+    uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
   ],
 );
 
@@ -459,6 +605,14 @@ export const marketplacePayments = pgTable(
     amount: real("amount").notNull().default(0),
     currency: text("currency").notNull().default("INR"),
     status: text("status").notNull().default("PAYMENT_PENDING"),
+    /**
+     * Phase 9 — did a signature this server verified with a provider secret
+     * back the status now on this row? True only once a webhook HMAC or a
+     * checkout signature check passed; the local `dev` stand-in and the
+     * initial PAYMENT_PENDING record both leave it false, so "who told us this
+     * money moved" is answerable from the row itself.
+     */
+    signatureVerified: boolean("signature_verified").notNull().default(false),
     method: text("method"),
     failureCode: text("failure_code"),
     failureMessage: text("failure_message"),

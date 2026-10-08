@@ -4,17 +4,25 @@ import Link from "next/link";
 import { useState } from "react";
 import { OrderSuccess } from "@/components/order-success";
 import { PaymentStage } from "@/components/payment-stage";
-import { useProfileReady } from "@/lib/profile";
+import { useProfileOrders, useProfileReady } from "@/lib/profile";
 import { usePublicOrder } from "@/lib/order-access";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 
 /** Client entry for /order/[code]/success — token-gated like tracking. */
 export function OrderSuccessScreen({ code }: { code: string }) {
   const hydrated = useProfileReady();
+  const { orders } = useProfileOrders();
   const { order, access, token, refresh } = usePublicOrder(code);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [payError, setPayError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
+
+  // The shareable Phase 6 URL is preferred when this browser holds the token
+  // (it survives a cleared session), falling back to the code+token page.
+  const stored = orders.find((o) => o.code === code);
+  const trackingHref = stored?.trackingToken
+    ? `/order/track/${stored.trackingToken}`
+    : `/order/${code}/track`;
 
   if (!hydrated || access === "loading" || (access === "ready" && !order)) {
     return (
@@ -106,6 +114,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
         order={order}
         onResumePayment={unpaidOnline ? resumePayment : undefined}
         resumingPayment={starting}
+        trackingHref={trackingHref}
       />
       {payTarget && (
         <PaymentStage

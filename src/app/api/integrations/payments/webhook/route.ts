@@ -6,6 +6,8 @@ import {
   type RazorpayRefundEntity,
 } from "@/db/payments";
 import { enqueuePaymentDelivery, coordinateCaptureDelivery } from "@/integrations/pos/payment-bridge";
+import { readRawBodyCapped } from "@/lib/abuse";
+import { emitSecurityEvent } from "@/lib/security/security-events";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -28,6 +30,7 @@ export const runtime = "nodejs";
 const RAZORPAY_WEBHOOK_SECRET_ENV = "RAZORPAY_WEBHOOK_SECRET";
 const WEBHOOK_WINDOW_MS = 60_000;
 const WEBHOOK_MAX_PER_WINDOW = 120;
+const WEBHOOK_MAX_BODY_BYTES = 256 * 1024;
 
 function timingSafeEqualHex(a: string, b: string): boolean {
   try {
@@ -78,26 +81,71 @@ type JsonObject = Record<string, unknown>;
 export async function POST(req: NextRequest): Promise<Response> {
   const secret = webhookSecret();
   if (!secret) {
+    // Phase 12: an unverifiable webhook is an operational failure worth
+    // alerting on — the provider's money signal is being dropped. The secret
+    // itself is never included; only its absence.
+    emitSecurityEvent("payment_webhook_failure", {
+      outcome: "failure",
+      reason: "secret_not_configured",
+    });
     return Response.json({ success: false, error: "RAZORPAY_WEBHOOK_SECRET not configured" }, { status: 503 });
   }
 
   const ip = clientIp(req);
   if (rateLimited(ip)) {
+    // The webhook has its own limiter (not the shared one in rate-limit.ts),
+    // so it emits the rate-limit event directly — same vocabulary, this path's
+    // own budget.
+    emitSecurityEvent("rate_limit_violation", {
+      bucket: `paymentWebhook:${ip}`,
+      limit: WEBHOOK_MAX_PER_WINDOW,
+      windowMs: WEBHOOK_WINDOW_MS,
+      retryAfterSeconds: WEBHOOK_WINDOW_MS / 1000,
+    });
     return Response.json({ success: false, error: "rate_limited" }, { status: 429 });
   }
 
-  const rawBody = await req.text();
+  const raw = await readRawBodyCapped(req, WEBHOOK_MAX_BODY_BYTES);
+  if (!raw.ok) {
+    // Oversized or unreadable frame — the provider never sends these, so a
+    // rejection here is not normal traffic.
+    emitSecurityEvent("payment_webhook_failure", {
+      ip,
+      outcome: "failure",
+      reason: "body_rejected",
+    });
+    return raw.response;
+  }
+  const rawBody = raw.text;
   if (!rawBody) {
+    emitSecurityEvent("payment_webhook_failure", {
+      ip,
+      outcome: "failure",
+      reason: "missing_body",
+    });
     return Response.json({ success: false, error: "missing body" }, { status: 400 });
   }
 
   const signature = (req.headers.get("x-razorpay-signature") ?? "").trim();
   if (!signature) {
+    emitSecurityEvent("payment_webhook_failure", {
+      ip,
+      outcome: "failure",
+      reason: "missing_signature",
+    });
     return Response.json({ success: false, error: "missing signature" }, { status: 400 });
   }
 
   const expected = createHmac("sha256", secret).update(rawBody).digest("hex");
   if (!timingSafeEqualHex(expected, signature)) {
+    // The high-signal line of this route: something with network reach is
+    // posting frames that fail HMAC. The presented signature and the secret
+    // are both absent from the event; the source ip is the actionable part.
+    emitSecurityEvent("payment_webhook_failure", {
+      ip,
+      outcome: "failure",
+      reason: "invalid_signature",
+    });
     return Response.json({ success: false, error: "invalid signature" }, { status: 400 });
   }
 
@@ -106,6 +154,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     body = JSON.parse(rawBody) as JsonObject;
     if (!body || typeof body !== "object") throw new Error("not an object");
   } catch {
+    emitSecurityEvent("payment_webhook_failure", {
+      ip,
+      outcome: "failure",
+      reason: "invalid_json",
+    });
     return Response.json({ success: false, error: "invalid_json" }, { status: 400 });
   }
 
@@ -134,7 +187,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     ? `rzp:refund:${(entity as RazorpayRefundEntity).id ?? eventId}`
     : `rzp:${eventId}:${eventType}`;
 
-  const result = await applyProviderPaymentEvent({ eventId: resolvedEventId, eventType, entity, rawBody });
+  const result = await applyProviderPaymentEvent({ eventId: resolvedEventId, eventType, entity, rawBody, channel: "webhook" });
 
   // Same event_id, different bytes: acknowledge so the provider stops retrying,
   // but surface the conflict explicitly (the POS outbox must converge, not loop).
@@ -199,6 +252,13 @@ export async function POST(req: NextRequest): Promise<Response> {
         },
       },
     }).catch((e) => {
+      // Phase 12: the money event was verified and applied but could not be
+      // handed to the POS — the delivery lag this gap creates is exactly what
+      // reconciliation exists to find, so it gets an event, not just a line.
+      emitSecurityEvent("payment_webhook_failure", {
+        outcome: "failure",
+        reason: "refund_delivery_enqueue_failed",
+      });
       console.error("[payments-webhook] refund delivery enqueue failed", e);
     });
   }

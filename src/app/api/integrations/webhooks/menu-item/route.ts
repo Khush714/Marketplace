@@ -13,11 +13,19 @@ import {
   openWebhookSecret,
   webhookSignaturesEqual,
 } from "@/lib/webhook-crypto";
+import { readRawBodyCapped } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
 
 type JsonObject = Record<string, unknown>;
+
+/**
+ * Upstream body cap for a menu frame. A full menu.sync can carry many items,
+ * so this is generous (1 MiB); the signature still has to verify over the exact
+ * bytes, and an unsigned flood cannot make the platform buffer past the cap.
+ */
+const WEBHOOK_MAX_BODY_BYTES = 1024 * 1024;
 
 const ID_FIELD: Record<MenuWebhookEntity, string | null> = {
   item: "item_id",
@@ -45,7 +53,9 @@ function idPayload(
  * minted ids + version, never re-minted).
  */
 export async function POST(req: NextRequest) {
-  const rawBody = await req.text();
+  const raw = await readRawBodyCapped(req, WEBHOOK_MAX_BODY_BYTES);
+  if (!raw.ok) return raw.response;
+  const rawBody = raw.text;
 
   const integrationId = (req.headers.get("x-integration-id") ?? "").trim();
   const tsHeader = (req.headers.get("x-timestamp") ?? "").trim();

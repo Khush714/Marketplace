@@ -3,9 +3,11 @@
  *
  * Run with: npm test
  *
- * This covers the unauthenticated surface only: order creation, bill preview,
- * order lookup, owner-key verification, search and listing browse. Each is
- * either public by design or gated by a capability the caller already holds, so
+ * This covers the unauthenticated surface (order creation, bill preview,
+ * order lookup, search and listing browse) and the credential-gated one (the
+ * owner-key exchange that mints a partner session, POS login, passkey
+ * rotation and the ops-code routes). Each is either public by design or gated
+ * by a capability the caller already holds, so
  * the failures worth pinning are not "who can reach this" but:
  *
  *   - Amplification. `POST /api/orders` writes a row, allocates a provider
@@ -21,6 +23,9 @@
  *   - The limiter being the attack. The signup route charges its budget *after*
  *     the honeypot, so a bot behind a shared address cannot spend a real
  *     restaurant's three signups.
+ *   - The limiter running after the credential check. A budget charged on the
+ *     far side of a 401 bounds nothing: the wrong token is answered and never
+ *     counted. The credential-gated routes are pinned budget-first.
  *
  * `abuse-core.ts` is importable only because it is kept free of `server-only`,
  * the same constraint that made `cron-auth-core.ts` a separate file.
@@ -200,25 +205,71 @@ test("the owner-key check is the tightest budget in the table", () => {
   // cannot find their saved key needs, and is far below sustained script rates.
   const perHour = (ABUSE_BUDGETS.ownerVerify.limit * 60 * 60 * 1000) / ABUSE_BUDGETS.ownerVerify.windowMs;
   assert.ok(perHour <= 60, "no more than an hour of guesses per hour per address");
+  // Credential-grade scopes: the guard is charged before the credential is
+  // checked, so a wrong key/passphrase/token is counted rather than answered
+  // for free. They share the tightest tier; everything else must be looser.
+  const credentialScopes = new Set([
+    "ownerVerify",
+    "integrationLogin",
+    "passkeyRotate",
+    "opsCodeMint",
+    "opsCodeRead",
+    "opsCodeRevoke",
+  ]);
   for (const [scope, budget] of Object.entries(ABUSE_BUDGETS)) {
-    if (scope === "ownerVerify") continue;
-    const other = (budget.limit * 60 * 60 * 1000) / budget.windowMs;
-    assert.ok(other > perHour, `${scope} should be looser than the credential check`);
+    const rate = (budget.limit * 60 * 60 * 1000) / budget.windowMs;
+    if (credentialScopes.has(scope)) {
+      assert.ok(rate <= 60, `${scope} is credential-grade and must stay at the tightest tier`);
+      continue;
+    }
+    assert.ok(rate > perHour, `${scope} should be looser than the credential check`);
   }
+  const loginPerHour =
+    (ABUSE_BUDGETS.integrationLogin.limit * 60 * 60 * 1000) / ABUSE_BUDGETS.integrationLogin.windowMs;
+  assert.ok(loginPerHour <= 60, "the POS login check is as tight as the owner-key check");
 });
 
 /* ------------------------------ route wiring ------------------------------ */
 
-const GUARDED_ROUTES: { path: string; guard: string; scope: string }[] = [
+const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string }[] = [
   { path: "src/app/api/orders/route.ts", guard: "guardWrite", scope: "checkout" },
   { path: "src/app/api/orders/bill/route.ts", guard: "guardWrite", scope: "billPreview" },
   { path: "src/app/api/orders/lookup/route.ts", guard: "guardWrite", scope: "orderLookup" },
-  { path: "src/app/api/partner/verify/route.ts", guard: "guardWrite", scope: "ownerVerify" },
+  { path: "src/app/api/partner/session/route.ts", guard: "guardWrite", scope: "ownerVerify" },
+  { path: "src/app/api/integration/login/route.ts", guard: "guardWrite", scope: "integrationLogin" },
   { path: "src/app/api/search/route.ts", guard: "guardRead", scope: "search" },
   { path: "src/app/api/restaurants/route.ts", guard: "guardRead", scope: "restaurants" },
+  { path: "src/app/api/restaurants/[slug]/route.ts", guard: "guardRead", scope: "restaurants" },
+  { path: "src/app/api/orders/[code]/route.ts", guard: "guardRead", scope: "orderLookup" },
+  { path: "src/app/api/orders/[code]/pay/start/route.ts", guard: "guardWrite", scope: "paymentStart" },
+  { path: "src/app/api/orders/[code]/pay/verify/route.ts", guard: "guardWrite", scope: "paymentVerify" },
+  // Credential-gated routes, budgeted ahead of the credential check. Several
+  // of these files hold two handlers with their own guard and scope, so each
+  // entry names the database call it is responsible for keeping behind the
+  // guard (`db`) rather than competing over the file's first one.
+  {
+    path: "src/app/api/integration/passkey/rotate/route.ts",
+    guard: "guardBudget",
+    scope: "passkeyRotate",
+    db: "rotatePasskeyAsRestaurant",
+  },
+  { path: "src/app/api/partner/codes/route.ts", guard: "guardRead", scope: "opsCodeList", db: "listConnectionCodes" },
+  { path: "src/app/api/partner/codes/route.ts", guard: "guardWrite", scope: "opsCodeMint", db: "mintConnectionCode" },
+  {
+    path: "src/app/api/partner/codes/[code]/route.ts",
+    guard: "guardRead",
+    scope: "opsCodeRead",
+    db: "getConnectionCode",
+  },
+  {
+    path: "src/app/api/partner/codes/[code]/route.ts",
+    guard: "guardBudget",
+    scope: "opsCodeRevoke",
+    db: "revokeConnectionCode",
+  },
 ];
 
-test("every unauthenticated route is actually wired to its guard", () => {
+test("every budgeted route is actually wired to its guard", () => {
   // A budget that is defined but never called protects nothing, and the route
   // still looks correct in review.
   for (const route of GUARDED_ROUTES) {
@@ -235,7 +286,13 @@ test("every unauthenticated route is actually wired to its guard", () => {
 
 test("the read guards are budgeted and the write guards also bound the body", () => {
   for (const route of GUARDED_ROUTES.filter((r) => r.guard === "guardWrite")) {
-    assert.match(readSource(route.path), /readJsonBody\(/, `${route.path} must read its body under the cap`);
+    const source = readSource(route.path);
+    // A write that parses a body must parse it under the cap. A write that
+    // never reads one (pay/start takes its code from the URL) has nothing to
+    // bound, so it is exempt rather than forced to grow a body read.
+    const readsBody = /req\.json\(\)|readJsonBody\(|req\.text\(\)|req\.formData\(\)/.test(source);
+    if (!readsBody) continue;
+    assert.match(source, /readJsonBody\(/, `${route.path} must read its body under the cap`);
   }
 });
 
@@ -243,10 +300,38 @@ test("the guard runs before the route does any work", () => {
   for (const route of GUARDED_ROUTES) {
     const source = readSource(route.path);
     const guardAt = source.search(new RegExp(`\\b${route.guard}\\(`));
-    // First database call and first body read must both come after the guard.
-    const dbAt = source.search(/await (db|createOrder|computeBill|getOrderByCode|verifyOwner|searchAll|browseRestaurants|featuredRestaurants|restaurantsBySlugs|selfRegisterRestaurant)/);
+    // The database call named by the entry must come after its guard; routes
+    // without one fall back to the shared list of first-work functions.
+    const dbAt = source.search(
+      route.db
+        ? new RegExp(`await ${route.db}\\(`)
+        : /await (db|createOrder|computeBill|getOrderByCode|verifyOwner|searchAll|browseRestaurants|featuredRestaurants|restaurantsBySlugs|selfRegisterRestaurant)/,
+    );
     assert.ok(guardAt >= 0, `${route.path} has no guard`);
     assert.ok(dbAt === -1 || dbAt > guardAt, `${route.path} touches the database before the guard`);
+  }
+});
+
+test("the budget is charged before the credential check", () => {
+  // A limiter behind a 401 bounds nothing: the wrong token is answered and
+  // never counted, so a guesser gets unlimited attempts for free. Checked per
+  // handler, not per file, because these files hold two handlers (GET/POST,
+  // GET/DELETE) and every one of them has to charge its own budget first.
+  const paths = [
+    "src/app/api/integration/passkey/rotate/route.ts",
+    "src/app/api/partner/codes/route.ts",
+    "src/app/api/partner/codes/[code]/route.ts",
+  ];
+  for (const path of paths) {
+    const handlers = readSource(path).split(/export async function/).slice(1);
+    assert.ok(handlers.length >= 1, `${path} has no handler`);
+    for (const handler of handlers) {
+      const authAt = handler.search(/require(?:OpsToken|IntegrationAuth)\(/);
+      if (authAt === -1) continue;
+      const guardAt = handler.search(/\b(?:guardWrite|guardRead|guardBudget)\(/);
+      assert.ok(guardAt >= 0, `${path} checks a credential with no budget ahead of it`);
+      assert.ok(guardAt < authAt, `${path} must charge the budget before checking the credential`);
+    }
   }
 });
 
@@ -299,5 +384,50 @@ test("the webhook's own limiter is not weakened by this work", () => {
   // every legitimate event from Razorpay together.
   const source = readSource("src/app/api/integrations/payments/webhook/route.ts");
   assert.match(source, /WEBHOOK_MAX_PER_WINDOW/);
-  assert.doesNotMatch(source, /guardWrite|guardRead|@\/lib\/abuse"/, "the webhook path is deliberately not wrapped");
+  assert.doesNotMatch(source, /guardWrite|guardRead/, "the webhook path is deliberately not wrapped by the route budgets");
+});
+
+test("the signature webhooks read their bodies under an explicit cap", () => {
+  // Every route that needs the exact raw bytes (to verify a signature over
+  // them) must still bound the read: without a cap an unsigned flood can make
+  // the platform buffer an arbitrary payload before it is ever rejected.
+  const files = [
+    "src/app/api/integrations/payments/webhook/route.ts",
+    "src/app/api/integrations/webhooks/menu-item/route.ts",
+    "src/lib/pos-order-status-webhook.ts",
+  ];
+  for (const file of files) {
+    const source = readSource(file);
+    assert.match(source, /readRawBodyCapped\(/, `${file} must read its body under a cap`);
+    assert.doesNotMatch(source, /await req\.text\(\)/, `${file} must not read the raw body unbounded`);
+  }
+});
+
+test("the public read surface is CDN-cacheable behind the guards", () => {
+  // Browse, search and the slug page are the anonymous-volume surface. Caching
+  // the responses for 60 seconds means a repeated-URL flood is absorbed by the
+  // edge cache instead of the ILIKE scan / per-slug query. Order tracking is
+  // deliberately excluded — it must stay authoritative per request.
+  for (const path of [
+    "src/app/api/search/route.ts",
+    "src/app/api/restaurants/route.ts",
+    "src/app/api/restaurants/[slug]/route.ts",
+  ]) {
+    const source = readSource(path);
+    assert.match(source, /export const revalidate = 60;/);
+    assert.match(source, /s-maxage=60/);
+  }
+  assert.match(readSource("src/app/api/orders/[code]/route.ts"), /force-dynamic/);
+});
+
+test("the proxy is wired as the network boundary", () => {
+  const source = readSource("src/proxy.ts");
+  assert.match(source, /export function proxy\(/);
+  assert.match(source, /methodAllowed\(/, "the method allowlist is enforced");
+  assert.match(source, /hostAllowed\(/, "the host allowlist is enforced");
+  assert.match(source, /declaredTooLarge\(/, "the declared-size cap is enforced");
+  assert.match(source, /checkRateLimit\(/, "the per-client burst ceiling is enforced");
+  assert.match(source, /withSecurityHeaders\(/, "every response carries the security headers");
+  assert.match(source, /matcher:/, "the proxy is scoped by a matcher");
+  assert.match(source, /_next\/static/, "static assets are excluded from the proxy");
 });

@@ -1,6 +1,7 @@
 import "server-only";
 import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
+import { emitSecurityEvent } from "@/lib/security/security-events";
 
 /**
  * Shared guard for the privileged operations surface: partner onboarding codes,
@@ -44,7 +45,14 @@ function constantTimeEquals(a: string, b: string): boolean {
 export function requireOpsToken(req: NextRequest): Response | null {
   const expected = configuredOpsToken();
   if (!expected) {
-    if (opsTokenOptional()) return null;
+    if (opsTokenOptional()) {
+      // Development's open surface: authorized, but only because nothing is
+      // configured. Emitted so an ops_login line in a dev log always means
+      // "no token stood between this request and the ops surface".
+      emitSecurityEvent("admin_login", { outcome: "success", reason: "open_surface" });
+      return null;
+    }
+    emitSecurityEvent("admin_login", { outcome: "failure", reason: "not_configured" });
     return Response.json(
       {
         ok: false,
@@ -56,7 +64,15 @@ export function requireOpsToken(req: NextRequest): Response | null {
   }
   const provided = (req.headers.get(OPS_TOKEN_HEADER) ?? "").trim();
   if (!provided || !constantTimeEquals(provided, expected)) {
+    // The presented value is never logged — not even on a near-miss, which
+    // would leak a valid prefix. `reason` separates an absent header from a
+    // wrong one, which is the only distinction an operator needs.
+    emitSecurityEvent("admin_login", {
+      outcome: "failure",
+      reason: provided ? "token_mismatch" : "token_missing",
+    });
     return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
   }
+  emitSecurityEvent("admin_login", { outcome: "success" });
   return null;
 }

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { computeBill } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { sanitizeCart } from "@/lib/order-input-core";
 
 export const dynamic = "force-dynamic";
 
@@ -21,44 +22,25 @@ export async function POST(req: NextRequest) {
     body = parsed.body as { restaurantSlug?: unknown; items?: unknown };
   }
 
-  const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug : "";
-  const items = Array.isArray(body?.items)
-    ? body.items
-        .filter(
-          (raw): raw is { menuItemId: number; quantity: number; priceCents?: number; modifiers?: unknown } =>
-            !!raw &&
-            typeof raw === "object" &&
-            typeof (raw as { menuItemId?: unknown }).menuItemId === "number" &&
-            typeof (raw as { quantity?: unknown }).quantity === "number",
-        )
-        .map((raw) => ({
-          menuItemId: raw.menuItemId,
-          quantity: raw.quantity,
-          priceCents: typeof raw.priceCents === "number" ? raw.priceCents : undefined,
-          modifiers: Array.isArray(raw.modifiers)
-            ? raw.modifiers
-                .filter(
-                  (mod): mod is { optionId: number; quantity?: number } =>
-                    !!mod &&
-                    typeof mod === "object" &&
-                    typeof (mod as { optionId?: unknown }).optionId === "number",
-                )
-                .map((mod) => ({
-                  optionId: mod.optionId,
-                  quantity: typeof mod.quantity === "number" ? mod.quantity : undefined,
-                }))
-            : undefined,
-        }))
-    : [];
-
-  if (!restaurantSlug || items.length === 0) {
+  const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
+  if (!restaurantSlug) {
     return Response.json(
-      { ok: false, error: "Missing or invalid required fields" },
+      { ok: false, error: "Missing or invalid required fields", code: "MISSING_FIELDS" },
       { status: 400 },
     );
   }
 
-  const result = await computeBill(restaurantSlug, items);
+  // Same cart rules as POST /api/orders: empty carts, out-of-range quantities
+  // and oversized carts are refused here too, so the amount shown at payment
+  // always comes from a cart checkout would actually accept. Unlike the old
+  // inline filter this rejects a bad line rather than silently dropping it —
+  // a preview that omits a line disagrees with the order it claims to preview.
+  const cart = sanitizeCart(body?.items);
+  if (!cart.ok) {
+    return Response.json({ ok: false, error: cart.error, code: cart.code }, { status: 400 });
+  }
+
+  const result = await computeBill(restaurantSlug, cart.items);
   if (!result.ok) {
     // Same status mapping as POST /api/orders: an integration/outlet refusal is
     // 422 (the client's request named a restaurant that cannot take the order),

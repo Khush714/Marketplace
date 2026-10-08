@@ -1,34 +1,24 @@
 import { NextRequest } from "next/server";
-import { getRestaurantByOwnerKey } from "@/db/queries";
-import { classifyPosVerifyFailure, verifyPosConnection } from "@/lib/pos-bridge";
+import { verifyPosConnection, classifyPosVerifyFailure } from "@/lib/pos-bridge";
+import { requirePartnerSession } from "@/lib/security/restaurant-session";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Detect what a POS connection code is bound to WITHOUT consuming it.
  *
- * This route needs the caller's owner key even though the attestation itself
- * doesn't: an unauthenticated `verify` is a free oracle. It answers 200 for a
- * live code and 401 for a dead one, which lets anyone enumerate POS-issued
- * codes and read back the tenant/branch/outlet each one is bound to. The sibling
- * `POST /api/partner/integrations` (claim) already required the owner key, so
- * requiring it here matches that contract and keeps the owner flow working while
- * closing the anonymous probe.
+ * The attestation itself does not need the caller — but an unauthenticated `verify`
+ * is a free oracle: it answers 200 for a live code and 401 for a dead one, which
+ * lets anyone enumerate POS-issued codes and read back the tenant, branch and
+ * outlet each one is bound to. So the route is scoped to the session instead,
+ * matching its sibling `POST /api/partner/integrations` (claim) and closing the
+ * anonymous probe.
  */
 export async function POST(req: NextRequest) {
-  // The body is readable once, so parse it up front and read the owner key from
-  // either the header (preferred, matches the sibling GET) or the payload.
+  const auth = await requirePartnerSession(req, { mutating: true });
+  if (!auth.ok) return auth.response;
+
   const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
-  const ownerKey =
-    String(req.headers.get("x-owner-key") ?? "").trim() || String(body?.ownerKey ?? "").trim();
-
-  if (!ownerKey) {
-    return Response.json({ ok: false, error: "ownerKey is required" }, { status: 400 });
-  }
-
-  const restaurant = await getRestaurantByOwnerKey(ownerKey);
-  if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
-
   const connectionCode = String(body?.connection_code ?? "").trim();
   if (!connectionCode) {
     return Response.json({ ok: false, error: "connection_code is required" }, { status: 400 });

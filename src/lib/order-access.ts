@@ -25,6 +25,18 @@ export async function fetchPublicOrder(code: string, token: string): Promise<Pub
   return data?.order ?? null;
 }
 
+/**
+ * Read an order by its Phase 6 tracking token. Unlike `fetchPublicOrder` this
+ * needs no per-browser header: the token itself is the credential, so it is
+ * what powers the shareable `/order/<tracking-token>` URL.
+ */
+export async function fetchOrderByTrackingToken(trackingToken: string): Promise<PublicOrder | null> {
+  const res = await fetch(`/api/orders/track/${encodeURIComponent(trackingToken)}`, { cache: "no-store" });
+  if (!res.ok) return null;
+  const data = (await res.json().catch(() => null)) as { order?: PublicOrder } | null;
+  return data?.order ?? null;
+}
+
 export type OrderAccess = "loading" | "ready" | "denied";
 
 function deriveAccess(input: {

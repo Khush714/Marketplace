@@ -12,6 +12,7 @@ import {
   type OrderRow,
   type MarketplacePaymentRow,
 } from "@/db/schema";
+import { channelVerifiesSignature, type PaymentChannel } from "@/lib/payment-security-core";
 
 /**
  * Marketplace payment core (Phase 6). Owns the payment state machine,
@@ -28,6 +29,10 @@ import {
  *     becomes PAID; a mismatch lands the payment in FAILED* with a
  *     PAYMENT_AMOUNT_MISMATCH / PAYMENT_CURRENCY_MISMATCH failure code and the
  *     order stays PAYMENT_PENDING (never auto-paid).
+ *   - every transition records whether the channel it arrived on carried a
+ *     verified provider signature (`signature_verified`): the webhook's HMAC
+ *     and the checkout triple say yes, the local dev stand-in says no. A row
+ *     never claims verification the caller did not demonstrate.
  *   - a refund is confirmed only by the provider (refund.completed/webhook);
  *     the Marketplace never invents one.
  */
@@ -68,6 +73,8 @@ export interface PaymentRecordView {
   amountCents: number;
   currency: string;
   status: string;
+  /** Whether a signature-verified provider channel vouches for this status. */
+  signatureVerified: boolean;
   method: string | null;
   refundedAmountCents: number;
 }
@@ -85,6 +92,7 @@ function toPaymentView(r: MarketplacePaymentRow): PaymentRecordView {
     amountCents: r.amountCents,
     currency: r.currency,
     status: r.status,
+    signatureVerified: r.signatureVerified,
     method: r.method,
     refundedAmountCents: r.refundedAmountCents,
   };
@@ -207,7 +215,9 @@ export type ProviderEventOutcome =
  *      refund.entity.payment_id for refund events).
  *   3. amount + currency verified against the order for captures; a mismatch
  *      is recorded (FAILED + PAYMENT_AMOUNT_MISMATCH) and NEVER becomes PAID.
- *   4. payment row + orders.payment_status advance together, audited.
+ *   4. payment row + orders.payment_status advance together, audited, each
+ *      transition stamped with whether `channel` proved itself with a verified
+ *      provider signature (see payment-security-core).
  * `deliverToPos` tells the caller which events must be pushed to the POS
  * bridge (captured → money movement; refunds → refund lifecycle).
  */
@@ -216,9 +226,12 @@ export async function applyProviderPaymentEvent(opts: {
   eventType: string;
   entity: RazorpayPaymentEntity | RazorpayRefundEntity;
   rawBody?: string;
+  /** Which verified channel this event arrived on — see PaymentChannel. */
+  channel: PaymentChannel;
 }): Promise<ProviderEventOutcome> {
   const { eventId, eventType, entity } = opts;
   const provider = "razorpay";
+  const signatureVerified = channelVerifiesSignature(opts.channel);
 
   const isRefund = eventType.startsWith("refund.");
   const providerPaymentId = isRefund
@@ -320,6 +333,7 @@ export async function applyProviderPaymentEvent(opts: {
             failedAt: at,
             failureCode: code,
             failureMessage: message,
+            signatureVerified,
             updatedAt: at,
           })
           .where(eq(marketplacePayments.id, pay.id));
@@ -331,7 +345,7 @@ export async function applyProviderPaymentEvent(opts: {
           failure_code: code,
           failure_message: message,
         });
-        return { outcome: "applied", payment: { ...toPaymentView(pay), status: "FAILED", method: methodOf(entity) }, orderId: order.id, deliverToPos: false } as const;
+        return { outcome: "applied", payment: { ...toPaymentView(pay), status: "FAILED", method: methodOf(entity), signatureVerified }, orderId: order.id, deliverToPos: false } as const;
       }
 
       await tx
@@ -344,6 +358,7 @@ export async function applyProviderPaymentEvent(opts: {
           failedAt: null,
           failureCode: null,
           failureMessage: null,
+          signatureVerified,
           updatedAt: at,
         })
         .where(eq(marketplacePayments.id, pay.id));
@@ -355,8 +370,9 @@ export async function applyProviderPaymentEvent(opts: {
         payment_reference: pay.paymentReference,
         provider_payment_id: providerPaymentId,
         amount_cents: amountPaise,
+        signature_verified: signatureVerified,
       });
-      return { outcome: "applied", payment: { ...toPaymentView(pay), status: "PAID", providerPaymentId, method: methodOf(entity) }, orderId: order.id, deliverToPos: true } as const;
+      return { outcome: "applied", payment: { ...toPaymentView(pay), status: "PAID", providerPaymentId, method: methodOf(entity), signatureVerified }, orderId: order.id, deliverToPos: true } as const;
     }
 
     if (eventType === "payment.failed") {
@@ -364,7 +380,7 @@ export async function applyProviderPaymentEvent(opts: {
       const message = String((entity as RazorpayPaymentEntity).error_description ?? "").slice(0, 500) || null;
       await tx
         .update(marketplacePayments)
-        .set({ status: "FAILED", providerPaymentId, failedAt: at, failureCode: code, failureMessage: message, updatedAt: at })
+        .set({ status: "FAILED", providerPaymentId, failedAt: at, failureCode: code, failureMessage: message, signatureVerified, updatedAt: at })
         .where(eq(marketplacePayments.id, pay.id));
       await tx.update(orders).set({ paymentStatus: "FAILED" }).where(eq(orders.id, order.id));
       await recordIntegrationAudit(pay.restaurantId, "PAYMENT_FAILED", { actor: "system" }, {
@@ -373,8 +389,9 @@ export async function applyProviderPaymentEvent(opts: {
         external_order_id: pay.externalOrderId,
         payment_reference: pay.paymentReference,
         failure_code: code,
+        signature_verified: signatureVerified,
       });
-      return { outcome: "applied", payment: { ...toPaymentView(pay), status: "FAILED", providerPaymentId }, orderId: order.id, deliverToPos: false } as const;
+      return { outcome: "applied", payment: { ...toPaymentView(pay), status: "FAILED", providerPaymentId, signatureVerified }, orderId: order.id, deliverToPos: false } as const;
     }
 
     if (eventType === "refund.completed" || eventType === "refund.processed") {
@@ -383,7 +400,7 @@ export async function applyProviderPaymentEvent(opts: {
       const status = nextRefunded >= pay.amountCents ? "REFUNDED" : "PARTIALLY_REFUNDED";
       await tx
         .update(marketplacePayments)
-        .set({ status, refundedAmountCents: nextRefunded, refundedAt: at, updatedAt: at })
+        .set({ status, refundedAmountCents: nextRefunded, refundedAt: at, signatureVerified, updatedAt: at })
         .where(eq(marketplacePayments.id, pay.id));
       await tx.update(orders).set({ paymentStatus: status }).where(eq(orders.id, order.id));
       await recordIntegrationAudit(pay.restaurantId, "REFUND_SUCCEEDED", { actor: "system" }, {
@@ -395,8 +412,9 @@ export async function applyProviderPaymentEvent(opts: {
         refund_amount_cents: refundAmount,
         total_refunded_cents: nextRefunded,
         status,
+        signature_verified: signatureVerified,
       });
-      return { outcome: "applied", payment: { ...toPaymentView(pay), status, refundedAmountCents: nextRefunded }, orderId: order.id, deliverToPos: true } as const;
+      return { outcome: "applied", payment: { ...toPaymentView(pay), status, refundedAmountCents: nextRefunded, signatureVerified }, orderId: order.id, deliverToPos: true } as const;
     }
 
     if (eventType === "refund.failed") {

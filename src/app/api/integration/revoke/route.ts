@@ -10,7 +10,10 @@ export async function POST(req: NextRequest) {
   if (!restaurant) return Response.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 
   await revokeIntegrationSessions(restaurant.id);
-  await recordIntegrationAudit(restaurant.id, "sessions.revoked", { actor: "restaurant" });
+  await recordIntegrationAudit(restaurant.id, "sessions.revoked", {
+    actor: "restaurant",
+    ipAddress: req.headers.get("x-forwarded-for"),
+  });
 
   return Response.json({ ok: true, revoked: true });
 }

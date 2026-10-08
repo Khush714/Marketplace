@@ -1,6 +1,6 @@
 import "server-only";
 
-import { checkRateLimit, clientKey, rateLimited } from "@/lib/rate-limit";
+import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
 import {
   ABUSE_BUDGETS,
   decideOrigin,
@@ -69,8 +69,10 @@ export type JsonBodyResult =
   | { ok: true; body: unknown }
   | { ok: false; response: Response };
 
+export type RawBodyResult = { ok: true; text: string } | { ok: false; response: Response };
+
 /**
- * Read and parse a JSON body under a hard size cap.
+ * Read a raw body under a hard size cap, returning the exact bytes.
  *
  * `Content-Length` is checked first because it is free, but it cannot be
  * trusted: a chunked request sends no length, so the stream is counted as it
@@ -79,16 +81,17 @@ export type JsonBodyResult =
  * reading the body with a cap stops an unauthenticated caller from making the
  * platform hold an arbitrarily large payload in memory.
  *
- * Returns the response to send rather than throwing, so callers keep one error
- * path for "could not use this body" instead of three.
+ * The exact bytes are required by the signature-verified webhooks: a signature
+ * covers the raw frame, so those handlers need the text as sent, not a parsed
+ * projection. Returns the response to send rather than throwing, so callers
+ * keep one error path for "could not use this body" instead of three.
  */
-export async function readJsonBody(req: Request): Promise<JsonBodyResult> {
+export async function readRawBodyCapped(req: Request, maxBytes: number): Promise<RawBodyResult> {
   const declared = Number(req.headers.get("content-length") ?? "");
-  if (Number.isFinite(declared) && declared > MAX_JSON_BODY_BYTES) {
+  if (Number.isFinite(declared) && declared > maxBytes) {
     return { ok: false, response: tooLarge() };
   }
 
-  let text: string;
   try {
     const body = req.body;
     if (!body) {
@@ -102,7 +105,7 @@ export async function readJsonBody(req: Request): Promise<JsonBodyResult> {
       if (done) break;
       if (!value) continue;
       total += value.byteLength;
-      if (total > MAX_JSON_BODY_BYTES) {
+      if (total > maxBytes) {
         // Cancel rather than drain: draining would still consume the bytes we
         // are refusing, which is the cost this guard exists to avoid.
         await reader.cancel().catch(() => {});
@@ -110,13 +113,25 @@ export async function readJsonBody(req: Request): Promise<JsonBodyResult> {
       }
       chunks.push(value);
     }
-    text = new TextDecoder().decode(concat(chunks));
+    return { ok: true, text: new TextDecoder().decode(concat(chunks)) };
   } catch {
     return { ok: false, response: Response.json({ ok: false, error: "Invalid request" }, { status: 400 }) };
   }
+}
+
+/**
+ * Read and parse a JSON body under the standard size cap.
+ *
+ * Delegates the bounded read to `readRawBodyCapped`, so every route that takes
+ * a JSON body — including the ones that parse it themselves afterwards — shares
+ * one implementation of the same cap.
+ */
+export async function readJsonBody(req: Request): Promise<JsonBodyResult> {
+  const raw = await readRawBodyCapped(req, MAX_JSON_BODY_BYTES);
+  if (!raw.ok) return { ok: false, response: raw.response };
 
   try {
-    return { ok: true, body: JSON.parse(text) as unknown };
+    return { ok: true, body: JSON.parse(raw.text) as unknown };
   } catch {
     return { ok: false, response: Response.json({ ok: false, error: "Invalid request" }, { status: 400 }) };
   }

@@ -1,7 +1,10 @@
 import { NextRequest } from "next/server";
-import { listConnections, redeemConnectionCode, type RedeemConnectionInput } from "@/db/queries";
+import { createRestaurantSession, listConnections, redeemConnectionCode, type RedeemConnectionInput } from "@/db/queries";
 import { requireOpsToken } from "@/lib/ops-auth";
-import { checkRateLimit, clientKey, rateLimited } from "@/lib/rate-limit";
+import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
+import { emitSecurityEvent } from "@/lib/security/security-events";
+import { bodyTrippedHoneypot, honeypotRejected, originDecision, readJsonBody } from "@/lib/abuse";
+import { cookieShouldBeSecure, setSessionCookies } from "@/lib/security/restaurant-session";
 
 export const dynamic = "force-dynamic";
 
@@ -33,17 +36,78 @@ export async function GET(req: NextRequest) {
   return Response.json({ connections: await listConnections() });
 }
 
+/**
+ * Redeem an invitation and create a LIVE listing.
+ *
+ * This is the most privileged unauthenticated write in the app: a successful
+ * call publishes a customer-visible restaurant immediately, where
+ * `POST /api/partner/signup` writes `is_active = false` and is therefore
+ * comparatively cheap to get wrong. That asymmetry is the whole reason the
+ * guards below are here — an earlier version of this handler parsed
+ * `await req.json()` raw, while the *inert* signup route beside it already
+ * origin-checked, size-capped and honeypotted.
+ *
+ * Layered, cheapest first, and the budget is charged LAST for the reason spelled
+ * out in `POST /api/partner/signup`: charging before the cheap rejections would
+ * let a bot behind the same NAT burn a real restaurant's ten attempts before its
+ * own request was ever inspected.
+ *
+ *   1. Origin — rejects a browser lured into firing this cross-site. The code is
+ *      a bearer capability, so it is never in a URL and a legitimate redemption
+ *      is always same-origin.
+ *   2. Body cap — `readJsonBody` bounds the payload at 16 KB by counting the
+ *      stream, so an unauthenticated caller cannot make the platform buffer an
+ *      arbitrary body before the first query runs.
+ *   3. Honeypot — the hidden `company_url` field on /partner. Answered with
+ *      `{ ok: true }` so the bot learns nothing; no budget is spent.
+ *   4. Budget — the only thing standing between a 24.3M-code space and a
+ *      successful guess, and the guess is what the other three only make
+ *      expensive, not impossible.
+ *   5. Strict validation + atomic single-use spend, in redeemConnectionCode.
+ *
+ * The redemption itself is unchanged and deliberately so: single-use is enforced
+ * by the conditional UPDATE inside its transaction, not by anything here.
+ */
 export async function POST(req: NextRequest) {
+  if (originDecision(req) === "cross-site") {
+    return Response.json({ ok: false, error: "Request rejected" }, { status: 403 });
+  }
+
+  let body: RedeemConnectionInput;
+  {
+    const parsed = await readJsonBody(req);
+    if (!parsed.ok) return parsed.response;
+    if (bodyTrippedHoneypot(parsed.body)) return honeypotRejected();
+    body = parsed.body as RedeemConnectionInput;
+  }
+
   const limit = checkRateLimit(clientKey(req, "partner-connect"), REDEEM_LIMIT, REDEEM_WINDOW_MS);
   if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
 
-  let body: RedeemConnectionInput;
-  try {
-    body = await req.json();
-  } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
-  }
   const result = await redeemConnectionCode(body);
-  if (!result.ok) return Response.json(result, { status: 400 });
-  return Response.json(result, { status: 201 });
+  if (!result.ok) {
+    // The failure half is the interesting one: a guessing burst against this
+    // endpoint shows up exactly here. `result.error` is a fixed server-side
+    // string (never the presented code), and the raw code is deliberately
+    // absent from the event — an unused code in a log line is an invitation.
+    emitSecurityEvent("connection_code_redeemed", {
+      outcome: "failure",
+      reason: result.error,
+    });
+    return Response.json(result, { status: 400 });
+  }
+  emitSecurityEvent("connection_code_redeemed", {
+    outcome: "success",
+    restaurantId: result.restaurant.id,
+  });
+
+  // The operator has just proven control of the listing by spending a
+  // POS-issued single-use code — the strongest proof in the system. Mint the
+  // session here so onboarding lands already signed in; the owner key is still
+  // returned (it is the recovery credential to save), it is just not needed to
+  // proceed.
+  const session = await createRestaurantSession(result.restaurant.id);
+  const res = Response.json(result, { status: 201 });
+  setSessionCookies(res, session, cookieShouldBeSecure(req));
+  return res;
 }

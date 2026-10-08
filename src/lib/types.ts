@@ -171,12 +171,20 @@ export interface OrderDto {
 export interface ConnectionCodeDto {
   id: number;
   code: string;
-  status: "unused" | "used";
+  /**
+   * "revoked" is an operator withdrawing an unused invite, not a redemption.
+   * It is a terminal state distinct from "used": "used" means a listing was
+   * created from it, and the operator must never be able to put a code back
+   * into circulation after that.
+   */
+  status: "unused" | "used" | "revoked";
   restaurantId: number | null;
   restaurantName: string | null;
   createdAt: string;
   usedAt: string | null;
   expiresAt: string | null;
+  /** When an operator withdrew the code, or null if it was never revoked. */
+  revokedAt: string | null;
 }
 
 export interface ConnectionDto {

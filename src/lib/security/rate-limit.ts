@@ -1,6 +1,7 @@
 import "server-only";
 
 import { fallbackBucketKey } from "@/lib/abuse-core";
+import { emitSecurityEvent } from "./security-events";
 
 /**
  * Fixed-window rate limiter for the few endpoints that are deliberately
@@ -68,10 +69,21 @@ export function checkRateLimit(
   }
   existing.count += 1;
   if (existing.count > limit) {
-    return {
-      allowed: false,
-      retryAfterSeconds: Math.max(1, Math.ceil((existing.resetAt - now) / 1000)),
-    };
+    const retryAfterSeconds = Math.max(1, Math.ceil((existing.resetAt - now) / 1000));
+    // Phase 12: every limiter in the app funnels through this function — the
+    // abuse budgets, the per-session partner budgets, the onboarding
+    // limiters and the edge burst ceiling — so one emission here covers
+    // them all under a single event name. The bucket key carries the scope
+    // as its prefix (`integrationLogin:<ip>`, `partner-delete:<sessionId>`,
+    // `edge-burst:<ip>`), which is what makes refusals greppable per route
+    // without this function needing to know what any route calls its budget.
+    emitSecurityEvent("rate_limit_violation", {
+      bucket: key,
+      limit,
+      windowMs,
+      retryAfterSeconds,
+    });
+    return { allowed: false, retryAfterSeconds };
   }
   return { allowed: true, retryAfterSeconds: 0 };
 }

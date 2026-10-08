@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
-import { createOrder, recordIntegrationAudit, type CreateOrderInput } from "@/db/queries";
+import { createOrder, recordIntegrationAudit } from "@/db/queries";
 import { bindProviderOrderId, createPaymentRecord, isOnlinePayment } from "@/db/payments";
+import { validateCheckout, type CheckoutResult } from "@/lib/order-input-core";
 import { enqueuePosDelivery } from "@/integrations/pos/order-bridge";
 import {
   createProviderOrder,
@@ -22,6 +23,12 @@ export const dynamic = "force-dynamic";
  * the provider order id, the publishable key, and the order's access token.
  * A failed provider allocation is reported, not swallowed: the order stays
  * payable via POST /api/orders/[code]/pay/start instead of being lost.
+ *
+ * The request itself is never handed to createOrder as received: it is
+ * validated and rebuilt from a whitelist by validateCheckout (quantities, cart
+ * size and the payment method are rejected outright when out of policy, and
+ * client price/restaurant fields are never carried through). All totals are
+ * recomputed server-side from the DB regardless.
  */
 export async function POST(req: NextRequest) {
   // Unauthenticated and expensive: this route writes a row, allocates a real
@@ -32,6 +39,22 @@ export async function POST(req: NextRequest) {
   const blocked = await guardWrite(req, "checkout");
   if (blocked) return blocked;
 
+  try {
+    return await checkout(req);
+  } catch (e) {
+    // A thrown DB/driver error would otherwise surface as Next's HTML error
+    // page, which the checkout page cannot read and which Safari reports as a
+    // DOMException ("The string did not match the expected pattern"). Always
+    // answer with JSON so the browser shows the real failure.
+    console.error("[orders] checkout failed:", e);
+    return Response.json(
+      { ok: false, error: "Something went wrong placing your order. Please try again.", code: "INTERNAL_ERROR" },
+      { status: 500 },
+    );
+  }
+}
+
+async function checkout(req: NextRequest) {
   // Without a signing key no order would ever be readable by the customer who
   // just placed it, so this is refused up front rather than minting an order
   // whose only credential is an empty string.
@@ -42,28 +65,23 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  let body: CreateOrderInput;
+  let validated: CheckoutResult;
   {
     const parsed = await readJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    body = parsed.body as CreateOrderInput;
+    // Rebuild from a whitelist: required fields, then cart (empty, per-line
+    // quantity, cart size), then payment method. The result carries no client
+    // price or restaurant-name fields at all.
+    validated = validateCheckout(parsed.body);
+  }
+  if (!validated.ok) {
+    return Response.json(
+      { ok: false, error: validated.error, code: validated.code },
+      { status: 400 },
+    );
   }
 
-  // Shape validation; all prices/totals are recomputed server-side from the DB.
-  const phoneDigits = String(body?.phone ?? "").replace(/\D/g, "");
-  const invalid =
-    !body?.restaurantSlug ||
-    !Array.isArray(body.items) ||
-    body.items.length === 0 ||
-    !body.customerName?.trim() ||
-    !body.addressText?.trim() ||
-    phoneDigits.length < 10;
-  if (invalid) {
-    return Response.json({ ok: false, error: "Missing or invalid required fields" }, { status: 400 });
-  }
-  body.phone = phoneDigits.slice(-10);
-
-  const wantsOnline = isOnlinePayment(body.paymentMethod);
+  const wantsOnline = isOnlinePayment(validated.request.paymentMethod);
   if (wantsOnline && providerMode() === "unavailable") {
     // Refuse BEFORE creating anything: an order that can never be paid for is an
     // order that can never reach the kitchen, and the customer should be told to
@@ -78,7 +96,7 @@ export async function POST(req: NextRequest) {
     );
   }
 
-  const result = await createOrder(body);
+  const result = await createOrder(validated.request);
   if (!result.ok) {
     // Phase 7 — deterministic outlet errors surface as 422 (client sent a bad
     // branch/outlet claim), everything else stays a client 400.
@@ -128,8 +146,12 @@ export async function POST(req: NextRequest) {
   return Response.json(
     {
       ...result,
-      // The browser's only credential for this order from here on.
+      // The browser's code-bound access token for this order from here on.
       orderToken: signOrderToken(result.order.code),
+      // `result` also carries the Phase 6 trackingToken on a fresh order — the
+      // customer's URL becomes /order/<tracking-token>. Omitted on an
+      // idempotent retry, when only the hash exists and the browser already
+      // received the plaintext the first time.
       payment: {
         reference: payment.reference,
         provider: online ? "razorpay" : "cash",

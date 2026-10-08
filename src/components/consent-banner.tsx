@@ -75,7 +75,8 @@ function ConsentBanner({
     >
       <section
         aria-label="Storage and cookie preferences"
-        className="glass-strong animate-sheet-up pointer-events-auto w-full max-w-lg rounded-3xl p-5 shadow-float"
+        className="glass-strong animate-sheet-up pointer-events-auto w-full max-w-lg rounded-3xl p-5 shadow-float
+          max-h-[calc(100dvh-7rem)] overflow-y-auto overscroll-contain md:max-h-[calc(100dvh-3rem)]"
       >
         <div className="flex items-start gap-3">
           <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ember-400/15 text-ember-400">
@@ -86,8 +87,9 @@ function ConsentBanner({
               We keep a little on your device
             </h2>
             <p className="mt-1.5 text-xs leading-relaxed text-cream-400">
-              crave. sets no cookies and runs no trackers. Your cart, area and saved details stay
-              in this browser so checkout is quick — they reach us only when you place an order.
+              crave. sets no tracking cookies and runs no trackers. Your cart, area and saved
+              details stay in this browser so checkout is quick — they reach us only when you
+              place an order.
             </p>
           </div>
         </div>
@@ -130,21 +132,21 @@ function ConsentBanner({
           <button
             type="button"
             onClick={() => onDecide("essential")}
-            className="press rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+            className="press min-w-[9rem] flex-1 rounded-xl bg-white/8 px-4 py-3 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
           >
             Essential only
           </button>
           <button
             type="button"
             onClick={() => onDecide("all")}
-            className="press relative overflow-hidden rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-sm font-bold text-white shadow-glow"
+            className="press relative min-w-[9rem] flex-1 overflow-hidden rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-3 text-sm font-bold text-white shadow-glow"
           >
             Accept all
           </button>
           <button
             type="button"
             onClick={onManage}
-            className="press ml-auto rounded-lg px-2 py-2 text-xs font-semibold text-cream-500 underline-offset-4 transition-colors hover:text-cream-200 hover:underline"
+            className="press mx-auto w-full max-w-[12rem] rounded-lg px-3 py-2.5 text-center text-xs font-semibold text-cream-500 underline-offset-4 transition-colors hover:text-cream-200 hover:underline sm:mx-0 sm:ml-auto sm:w-auto sm:px-2 sm:py-2 sm:text-left"
           >
             Manage choices
           </button>
@@ -264,8 +266,8 @@ function ConsentPreferences({
         </div>
 
         <p className="mt-3 text-xs leading-relaxed text-cream-400">
-          crave. sets no cookies and loads no third-party trackers. These are the only things written
-          to this browser, and you can change your mind at any time.
+          No tracking cookies and no third-party trackers. On the customer side these are the only
+          things written to this browser, and you can change your mind at any time.
         </p>
 
         <ul className="mt-5 space-y-4">

@@ -2,9 +2,10 @@ import { NextRequest } from "next/server";
 import {
   getRestaurantByOwnerKey,
   recordIntegrationAudit,
+  revokeRestaurantSessionsForRestaurant,
   rotateOwnerKeyAsRestaurant,
 } from "@/db/queries";
-import { checkRateLimit, clientKey, rateLimited } from "@/lib/rate-limit";
+import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
 
 export const dynamic = "force-dynamic";
 
@@ -57,6 +58,12 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: false, error: result.error }, { status: 400 });
   }
 
+  // The old key is dead; every session ever minted by it must be too. Without
+  // this, someone who held the key before rotation keeps a live session for up
+  // to 30 days after the key they used to mint it stopped working — the very
+  // thing rotation is supposed to end. The operator signs back in with the new
+  // key, which is shown exactly once in the response.
+  await revokeRestaurantSessionsForRestaurant(restaurant.id);
   await recordIntegrationAudit(restaurant.id, "owner_key.rotated_by_partner", { actor: "partner" });
 
   return Response.json({

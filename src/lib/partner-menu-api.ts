@@ -1,23 +1,43 @@
 import { NextRequest } from "next/server";
 
+import { requirePartnerSession } from "@/lib/security/restaurant-session";
+
 /**
  * Shared plumbing for the partner menu API.
  *
- * Every handler resolves the restaurant from `x-owner-key`; none of them ever
- * accept a restaurant id from the client. That keeps the tenant boundary in
- * the data layer (`db/partner-menu.ts`) instead of trusting request bodies.
+ * Every handler resolves the restaurant from the caller's session; none of them
+ * ever accept a restaurant id from the client, and none of them accept an owner
+ * key either. That keeps the tenant boundary in the data layer
+ * (`db/partner-menu.ts`) instead of trusting request bodies — and it means the
+ * long-lived owner key is not on the wire for any menu request, which is the
+ * point of the session work.
+ *
+ * `requirePartnerSession` already enforces origin + CSRF + a per-session budget on
+ * writes, so a handler below only has to decide `mutating: true` or `false`.
  */
 
-/** Owner key rides a header, never a URL query (queries leak into logs, proxies, history). */
-export const OWNER_KEY_HEADER = "x-owner-key";
-
-export function readOwnerKey(req: NextRequest): string {
-  return String(req.headers.get(OWNER_KEY_HEADER) ?? "").trim();
-}
-
-/** 404 rather than 401: an unknown key must not confirm whether a listing exists. */
-export function invalidOwnerKey() {
-  return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
+/**
+ * Authorise a menu request and hand back the restaurant id to work with.
+ *
+ * Returns a ready `Response` on failure rather than a status code, so a handler
+ * cannot forget to send one. The pattern is always:
+ *
+ * ```ts
+ * const auth = await authoriseMenu(req, true);
+ * if (!auth.ok) return auth.response;
+ * return respond(await createMenuItem(auth.restaurantId, body));
+ * ```
+ */
+export async function authoriseMenu(
+  req: NextRequest,
+  mutating: boolean,
+): Promise<
+  | { ok: true; restaurantId: number }
+  | { ok: false; response: Response }
+> {
+  const auth = await requirePartnerSession(req, { mutating });
+  if (!auth.ok) return { ok: false, response: auth.response };
+  return { ok: true, restaurantId: auth.session.restaurantId };
 }
 
 export function badRequest(error: string) {

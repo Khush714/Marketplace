@@ -39,7 +39,10 @@
  * executes no migration SQL, so it converts an unmanaged schema into a tracked
  * one without touching the schema.
  *
- * Requires DATABASE_URL. Refuses to run against a database whose name does not
+ * Requires MIGRATIONS_DATABASE_URL (falls back to DATABASE_URL): migrations are
+ * DDL, so they need the owner credential — the restricted `marketplace_app`
+ * role the app runs as (Phase 10, 10.1) deliberately cannot run them. Refuses
+ * to run against a database whose name does not
  * look like a real one unless --allow-any-database is passed, so a stray
  * DATABASE_URL cannot wipe a dev database by accident.
  */
@@ -111,8 +114,8 @@ function checksumDrift(name, recorded, current) {
 }
 
 async function main() {
-  const url = process.env.DATABASE_URL;
-  if (!url) fail("DATABASE_URL is not set");
+  const url = process.env.MIGRATIONS_DATABASE_URL ?? process.env.DATABASE_URL;
+  if (!url) fail("MIGRATIONS_DATABASE_URL (or DATABASE_URL) is not set");
 
   let dbName;
   try {

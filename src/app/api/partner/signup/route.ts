@@ -1,7 +1,8 @@
 import { NextRequest } from "next/server";
-import { selfRegisterRestaurant, type ListingProfileInput } from "@/db/queries";
-import { checkRateLimit, clientKey, rateLimited } from "@/lib/rate-limit";
+import { createRestaurantSession, selfRegisterRestaurant, type ListingProfileInput } from "@/db/queries";
+import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
 import { bodyTrippedHoneypot, honeypotRejected, originDecision, readJsonBody } from "@/lib/abuse";
+import { cookieShouldBeSecure, setSessionCookies } from "@/lib/security/restaurant-session";
 
 export const dynamic = "force-dynamic";
 
@@ -74,5 +75,13 @@ export async function POST(req: NextRequest) {
     return Response.json(result, { status: result.code === "STORE_ID_TAKEN" ? 409 : 400 });
   }
 
-  return Response.json(result, { status: 201 });
+  // A fresh listing is inert (is_active = false), so minting a session here
+  // carries no risk of publishing anything. It does mean the new restaurant is
+  // signed into the console the moment it exists — the owner key is still shown
+  // once for safekeeping, but the first request after that is already
+  // authenticated and nothing needs to re-send the key.
+  const session = await createRestaurantSession(result.restaurant.id);
+  const res = Response.json(result, { status: 201 });
+  setSessionCookies(res, session, cookieShouldBeSecure(req));
+  return res;
 }

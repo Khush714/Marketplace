@@ -78,7 +78,7 @@ export function SiteHeader() {
             <Link
               href="/profile"
               aria-label="Profile"
-              className="grid size-9 place-items-center rounded-full glass text-sm font-bold text-ember-300 press"
+              className="grid size-10 place-items-center rounded-full glass text-sm font-bold text-ember-300 press"
             >
               {name ? name.slice(0, 1).toUpperCase() : <CircleUserRound className="size-5 text-cream-300" />}
             </Link>
@@ -136,7 +136,7 @@ function HeaderCart({ itemCount, bump, labelled = false }: { itemCount: number; 
       aria-label={`Cart, ${itemCount} items`}
       className={cn(
         "press relative grid place-items-center rounded-full glass transition-colors hover:bg-white/10",
-        labelled ? "h-10 gap-1.5 px-4" : "size-9",
+        labelled ? "h-10 gap-1.5 px-4" : "size-10",
       )}
     >
       <span className="flex items-center gap-1.5">

@@ -22,7 +22,7 @@ import {
 import { RollingNumber } from "@/components/motion-primitives";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatINR } from "@/lib/domain";
-import { fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
+import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 
 /* Canonical Marketplace stage keys — always rendered from the server-provided
@@ -50,7 +50,22 @@ type CancelState =
   | { kind: "pending" }
   | { kind: "error"; message: string };
 
-export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrder; token: string }) {
+export function TrackingView({
+  initialOrder,
+  token,
+  trackingToken,
+}: {
+  initialOrder: PublicOrder;
+  /**
+   * The browser-held HMAC access token, when this browser placed the order.
+   * Without it (a shared `/order/<tracking-token>` link on another device), the
+   * view is read-only: polling goes through the tracking token and cancellation
+   * is simply not offered.
+   */
+  token?: string;
+  /** The Phase 6 bearer tracking token, when this screen arrived via it. */
+  trackingToken?: string;
+}) {
   const [order, setOrder] = useState(initialOrder);
   const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
 
@@ -58,13 +73,14 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
      Stops on its own once the order reaches a terminal stage, and while the tab
      is hidden; the interval is the only thing that had to keep running before. */
   const pollLoad = useCallback(
-    () => fetchPublicOrder(order.code, token),
-    [order.code, token],
+    () => trackingToken ? fetchOrderByTrackingToken(trackingToken) : fetchPublicOrder(order.code, token ?? ""),
+    [order.code, token, trackingToken],
   );
   const pollApply = useCallback((found: PublicOrder) => setOrder(found), []);
   useOrderPoll({ load: pollLoad, onData: pollApply, intervalMs: 4000, live: isOrderLive(order) });
 
   async function handleCancel() {
+    if (!token) return;
     setCancel({ kind: "sending" });
     try {
       const res = await fetch(`/api/orders/${order.code}/cancel`, {
@@ -272,8 +288,10 @@ export function TrackingView({ initialOrder, token }: { initialOrder: PublicOrde
           </div>
 
           {/* cancel order — not offered once the order never reached the kitchen,
-              where there is nothing to cancel and a refund is already under way */}
-          {inFlight && cancel.kind !== "cancelled" && (
+              where there is nothing to cancel and a refund is already under way.
+              Also not offered on a shared tracking link: cancelling needs the
+              per-browser HMAC token, not the more widely-shared tracking URL. */}
+          {inFlight && cancel.kind !== "cancelled" && token && (
             <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
           )}
           {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (

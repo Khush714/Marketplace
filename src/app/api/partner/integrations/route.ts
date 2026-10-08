@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import {
   findPendingTransferFor,
   getIntegrationRecord,
-  getRestaurantByOwnerKey,
+  getRestaurantManageById,
   MarketplaceIdTakenError,
   recordIntegrationAudit,
   requestIntegrationTransfer,
@@ -11,33 +11,24 @@ import {
 } from "@/db/queries";
 import { setWebhookContext } from "@/db/menu-sync";
 import { claimPosConnection, PosBridgeError, type PosConnectionIdentity } from "@/lib/pos-bridge";
+import { requirePartnerSession } from "@/lib/security/restaurant-session";
 import { sealWebhookSecret } from "@/lib/webhook-crypto";
 
 export const dynamic = "force-dynamic";
 
 /**
- * The owner key is accepted from the `x-owner-key` header (preferred) or the
- * request body, so a client following either convention works against the whole
- * route. It never rides a URL query — query strings land in proxy and access
- * logs, and this is a full-control credential.
+ * The restaurant is resolved from the session, from nothing else. This route used
+ * to accept an owner key from the `x-owner-key` header *or* the request body — a
+ * convenience that meant the full-control credential was also being written into
+ * bodies and logged wherever bodies are logged. The session is attached by the
+ * browser; there is no credential left here to send.
  */
-async function ownerKeyOf(req: NextRequest, body: Record<string, unknown> = {}): Promise<string> {
-  const fromHeader = String(req.headers.get("x-owner-key") ?? "").trim();
-  if (fromHeader) return fromHeader;
-  return String(body?.ownerKey ?? "").trim();
-}
-
 async function bodyOf(req: NextRequest): Promise<Record<string, unknown>> {
   try {
     return (await req.json()) as Record<string, unknown>;
   } catch {
     return {};
   }
-}
-
-function requireOwnerKey(ownerKey: string) {
-  if (!ownerKey) return Response.json({ ok: false, error: "ownerKey is required" }, { status: 400 });
-  return null;
 }
 
 /**
@@ -141,43 +132,44 @@ async function openTransferRequest(input: {
   );
 }
 
-/** Current POS integration record for an owner's listing. */
+/** Current POS integration record for the signed-in partner's listing. */
 export async function GET(req: NextRequest) {
-  const ownerKey = await ownerKeyOf(req);
-  const missing = requireOwnerKey(ownerKey);
-  if (missing) return missing;
+  const auth = await requirePartnerSession(req, { mutating: false });
+  if (!auth.ok) return auth.response;
+  const restaurantId = auth.session.restaurantId;
 
-  const restaurant = await getRestaurantByOwnerKey(ownerKey);
-  if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
+  const restaurant = await getRestaurantManageById(restaurantId);
+  if (!restaurant) return Response.json({ ok: false, error: "Not found" }, { status: 404 });
 
-  const record = await getIntegrationRecord(restaurant.id);
+  const record = await getIntegrationRecord(restaurantId);
   // Carried on GET as well so the UI can still show "transfer requested" after a
   // reload or on another tab. The claim response is where it is created, but the
   // operator's next visit is a page load.
-  const transfer = record?.posRestaurantId ? await findPendingTransferFor(restaurant.id) : null;
+  const transfer = record?.posRestaurantId ? await findPendingTransferFor(restaurantId) : null;
   return Response.json({ ok: true, restaurant, record, transfer });
 }
 
 /**
- * Connect (or reconnect) an owner's listing to the POS by claiming a POS-issued
+ * Connect (or reconnect) the signed-in listing to the POS by claiming a POS-issued
  * connection code. The POS redeems the code exactly once; the Marketplace then
  * records the one-to-one identity (restaurant / branch / outlet). Reconnecting
  * reuses the same external identity — the record is upserted, never duplicated.
+ *
+ * Redeeming a code is a write with real consequences (a listing becomes
+ * orderable), so it takes the session's CSRF check and write budget rather than
+ * the owner key's implicit preflight protection.
  */
 export async function POST(req: NextRequest) {
+  const auth = await requirePartnerSession(req, { mutating: true });
+  if (!auth.ok) return auth.response;
+  const restaurantId = auth.session.restaurantId;
+
   const body = await bodyOf(req);
-  const ownerKey = await ownerKeyOf(req, body);
   const connectionCode = String(body?.connection_code ?? "").trim();
 
-  if (!ownerKey || !connectionCode) {
-    return Response.json(
-      { ok: false, error: "ownerKey and connection_code are required" },
-      { status: 400 },
-    );
+  if (!connectionCode) {
+    return Response.json({ ok: false, error: "connection_code is required" }, { status: 400 });
   }
-
-  const restaurant = await getRestaurantByOwnerKey(ownerKey);
-  if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;
 
@@ -197,7 +189,7 @@ export async function POST(req: NextRequest) {
     // Checked for a collision before any write, because the code is already
     // consumed at this point — a generic failure here strands the operator with
     // a burned code and nothing to retry with.
-    await syncMarketplaceId(restaurant.id, identity.external_restaurant_id ?? "");
+    await syncMarketplaceId(restaurantId, identity.external_restaurant_id ?? "");
 
     // Seal the webhook secret BEFORE deciding the status. Delivery signs every
     // payload with it, so a record without one is not deliverable no matter what
@@ -219,7 +211,7 @@ export async function POST(req: NextRequest) {
     // secret. `hasActiveIntegration` then read false and the ordering gate
     // refused every checkout with INTEGRATION_NOT_CONNECTED.
     const record = await upsertIntegrationIdentity({
-      restaurantId: restaurant.id,
+      restaurantId,
       provider: "restaurant-ai",
       posRestaurantId: identity.external_restaurant_id,
       posBranchId: identity.branch?.id ?? null,
@@ -227,7 +219,7 @@ export async function POST(req: NextRequest) {
       status: deliverable ? "active" : "pending",
       sync: true,
     });
-    if (sealedSecret) await setWebhookContext(restaurant.id, sealedSecret);
+    if (sealedSecret) await setWebhookContext(restaurantId, sealedSecret);
 
     // Re-read instead of returning the upsert's DTO. The upsert ran BEFORE the
     // secret was sealed, so its readiness was computed against a record that did
@@ -236,10 +228,10 @@ export async function POST(req: NextRequest) {
     // blocked on a connection that was in fact deliverable. That self-contradiction
     // is exactly what this panel exists to eliminate, so the response has to
     // describe committed state.
-    const current = (await getIntegrationRecord(restaurant.id)) ?? record;
+    const current = (await getIntegrationRecord(restaurantId)) ?? record;
 
     await recordIntegrationAudit(
-      restaurant.id,
+      restaurantId,
       "pos_integration_connect",
       { actor: "partner", ipAddress },
       {
@@ -267,11 +259,11 @@ export async function POST(req: NextRequest) {
       );
     }
 
-return Response.json({ ok: true, record: current });
+    return Response.json({ ok: true, record: current });
   } catch (err) {
     if (err instanceof MarketplaceIdTakenError) {
       return await openTransferRequest({
-        restaurantId: restaurant.id,
+        restaurantId,
         holderId: err.ownedByRestaurantId,
         identity,
         ipAddress,
@@ -279,11 +271,11 @@ return Response.json({ ok: true, record: current });
     }
     if (err instanceof PosBridgeError) {
       if (err.status === 409 && err.code === "ALREADY_REDEEMED") {
-        const existing = await getIntegrationRecord(restaurant.id);
+        const existing = await getIntegrationRecord(restaurantId);
         const codeIdentity = String(err.payload?.external_restaurant_id ?? "");
         if (existing && existing.status === "active" && codeIdentity === existing.posRestaurantId) {
           // Idempotent redirect: the same POS identity was already claimed.
-          await syncMarketplaceId(restaurant.id, codeIdentity);
+          await syncMarketplaceId(restaurantId, codeIdentity);
           return Response.json({ ok: true, record: existing, already: true });
         }
         return Response.json(
@@ -311,18 +303,13 @@ return Response.json({ ok: true, record: current });
 }
 
 /**
- * Disconnect the POS for an owner's listing. History (orders, audit, identity
+ * Disconnect the POS for the signed-in listing. History (orders, audit, identity
  * records) is preserved — only the connection record is disabled.
  */
 export async function DELETE(req: NextRequest) {
-  const body = await bodyOf(req);
-  const ownerKey = await ownerKeyOf(req, body);
-  if (!ownerKey) {
-    return Response.json({ ok: false, error: "ownerKey is required" }, { status: 400 });
-  }
-
-  const restaurant = await getRestaurantByOwnerKey(ownerKey);
-  if (!restaurant) return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
+  const auth = await requirePartnerSession(req, { mutating: true });
+  if (!auth.ok) return auth.response;
+  const restaurantId = auth.session.restaurantId;
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;
 
@@ -330,17 +317,17 @@ export async function DELETE(req: NextRequest) {
   // rather than an upsert: the previous unconditional write INSERTED a disabled
   // record with null ids, and the console then reported "Disconnected" for a
   // listing that had never been connected at all.
-  const existing = await getIntegrationRecord(restaurant.id);
+  const existing = await getIntegrationRecord(restaurantId);
   if (!existing) {
     return Response.json({ ok: true, record: null, already: true });
   }
 
   const record = await upsertIntegrationIdentity({
-    restaurantId: restaurant.id,
+    restaurantId,
     status: "disabled",
   });
   await recordIntegrationAudit(
-    restaurant.id,
+    restaurantId,
     "pos_integration_disconnect",
     { actor: "partner", ipAddress },
     { pos_restaurant_id: record.posRestaurantId },

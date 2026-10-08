@@ -51,6 +51,7 @@ interface PlacedOrder {
   restaurantName: string;
   paid: boolean;
   method: PayChoice;
+  trackingToken?: string;
 }
 
 /**
@@ -124,6 +125,12 @@ export default function CheckoutPage() {
   const [placed, setPlaced] = useState<PlacedOrder | null>(null);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
+  /**
+   * The Phase 6 bearer token the order was minted — kept alongside `payTarget`
+   * here because `PaymentTarget` is shared with the payment stage and doesn't
+   * carry it. It rides onto the placed-order state on every success path.
+   */
+  const [placedTrackingToken, setPlacedTrackingToken] = useState<string | null>(null);
   // Stable per-checkout-session idempotency key: retried place attempts reuse
   // it so a lost-response retry never creates a duplicate order.
   const [placeRequestId] = useState(() => crypto.randomUUID());
@@ -243,10 +250,16 @@ export default function CheckoutPage() {
           instructions: instructions.trim(),
         }),
       });
-      const data = (await res.json()) as {
+      // Safari/WebKit throws a DOMException ("The string did not match the
+      // expected pattern") when json() meets a non-JSON body, which hides the
+      // real failure behind a validation-looking message. Parse defensively so
+      // a non-JSON 500 still reports the status instead of a regex error.
+      const raw = await res.text();
+      let data: {
         ok?: boolean;
         order?: OrderDto;
         orderToken?: string;
+        trackingToken?: string;
         error?: string;
         payment?: {
           reference?: string;
@@ -258,18 +271,27 @@ export default function CheckoutPage() {
           error?: string | null;
         };
       };
+      try {
+        data = JSON.parse(raw) as typeof data;
+      } catch {
+        throw new Error(
+          res.ok ? "Unexpected response from server" : `Server error (${res.status})`,
+        );
+      }
       if (!res.ok || !data.ok || !data.order || !data.orderToken) {
         throw new Error(data.error ?? "Could not place order");
       }
 
       const code = data.order.code;
       const token = data.orderToken;
-      profile.rememberOrder(code, token);
+      const trackingToken = data.trackingToken ?? null;
+      setPlacedTrackingToken(trackingToken);
+      profile.rememberOrder(code, token, trackingToken ?? undefined);
       cart.clear();
       toast("Order placed", { sub: `${data.order.restaurantName} · ${code}` });
 
       if (choice === "cod") {
-        setPlaced({ code, restaurantName: data.order.restaurantName, paid: false, method: "cod" });
+        setPlaced({ code, restaurantName: data.order.restaurantName, paid: false, method: "cod", trackingToken: trackingToken ?? undefined });
         setPlaceState("success");
         setRedirectIn(10);
         return;
@@ -315,6 +337,7 @@ export default function CheckoutPage() {
       restaurantName: payTarget.payeeName,
       paid: true,
       method: "online",
+      trackingToken: placedTrackingToken ?? undefined,
     });
     setRedirectIn(10);
   };
@@ -324,7 +347,7 @@ export default function CheckoutPage() {
     if (!payTarget) return;
     setPayTarget(null);
     setPlaceState("success");
-    setPlaced({ code: payTarget.code, restaurantName: payTarget.payeeName, paid: false, method: "online" });
+    setPlaced({ code: payTarget.code, restaurantName: payTarget.payeeName, paid: false, method: "online", trackingToken: placedTrackingToken ?? undefined });
     setRedirectIn(10);
   };
 
@@ -350,7 +373,13 @@ export default function CheckoutPage() {
         placed={placed}
         redirectIn={redirectIn}
         onView={goToOrder}
-        onTrack={() => router.replace(`/order/${placed.code}/track`)}
+        onTrack={() =>
+          router.replace(
+            placed.trackingToken
+              ? `/order/track/${placed.trackingToken}`
+              : `/order/${placed.code}/track`,
+          )
+        }
       />
     );
   }

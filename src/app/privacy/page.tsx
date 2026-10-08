@@ -148,9 +148,15 @@ export default function PrivacyPage() {
 
       <LegalSection id="tracking" heading="5. Cookies, analytics and advertising">
         <p>
-          <strong>{LEGAL.brand} sets no cookies.</strong> We do not use advertising cookies,
+          <strong>{LEGAL.brand} sets no tracking cookies.</strong> We set no advertising cookies,
           cross-site trackers, or third-party analytics scripts, so there is no cross-site profile
           of you to opt out of.
+        </p>
+        <p>
+          The only cookie we ever set is a strictly necessary sign-in session for restaurant
+          partners on the console. It is <code>HttpOnly</code> and expires within 30 days; it holds
+          nothing that could follow you around the web, and browsing this site as a customer sets
+          nothing at all.
         </p>
         <p>
           We do keep a small amount of information in your browser&rsquo;s local storage. It stays

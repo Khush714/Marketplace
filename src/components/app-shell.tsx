@@ -149,8 +149,8 @@ function SiteFooter() {
           Contact
         </Link>
         {/* Reachable on every page because a consent choice that cannot be changed
-            is not a choice. Scoped to the storage this site actually writes, not
-            cookies — there are none. */}
+            is not a choice. Scoped to the storage this site actually writes; the
+            only cookie in the whole app is an essential partner sign-in session. */}
         <span aria-hidden className="text-cream-600/50">·</span>
         <button type="button" onClick={openPreferences} className="transition-colors hover:text-cream-400">
           Storage preferences

@@ -32,11 +32,18 @@ export function OrderSuccess({
   order,
   onResumePayment,
   resumingPayment,
+  trackingHref,
 }: {
   order: PublicOrder;
   /** Present only while the order is still awaiting an online payment. */
   onResumePayment?: () => void;
   resumingPayment?: boolean;
+  /**
+   * The track link the success screen points at: the shareable Phase 6 token
+   * URL (`/order/<tracking-token>`) when this browser has one on file,
+   * otherwise the code+token page (`/order/<code>/track`).
+   */
+  trackingHref: string;
 }) {
   // Only say "payment confirmed" when the server says the payment is captured.
   // A COD order is with the kitchen but unpaid; an unpaid online order is not
@@ -161,7 +168,7 @@ export function OrderSuccess({
           </button>
         ) : (
           <Link
-            href={`/order/${order.code}/track`}
+            href={trackingHref}
             className="press group relative flex flex-1 items-center justify-center gap-2 overflow-hidden rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-3.5 text-sm font-bold text-white shadow-glow"
           >
             <span

@@ -5,7 +5,9 @@ import { localityByKey } from "@/lib/domain";
 import { clampSearchQuery, clampSlugList } from "@/lib/abuse-core";
 import { guardRead } from "@/lib/abuse";
 
-export const dynamic = "force-dynamic";
+export const revalidate = 60;
+
+const CACHE_HEADERS = { "Cache-Control": "public, s-maxage=60, stale-while-revalidate=600" };
 
 /**
  * Public listing data: browse, featured, and bulk-by-slug.
@@ -26,10 +28,16 @@ export async function GET(req: NextRequest) {
 
   const slugs = sp.get("slugs");
   if (slugs) {
-    return Response.json({ restaurants: await restaurantsBySlugs(clampSlugList(slugs)) });
+    return Response.json(
+      { restaurants: await restaurantsBySlugs(clampSlugList(slugs)) },
+      { headers: CACHE_HEADERS },
+    );
   }
   if (sp.get("featured") === "1") {
-    return Response.json({ restaurants: await featuredRestaurants(locality) });
+    return Response.json(
+      { restaurants: await featuredRestaurants(locality) },
+      { headers: CACHE_HEADERS },
+    );
   }
 
   const filters: BrowseFilters = {
@@ -41,5 +49,8 @@ export async function GET(req: NextRequest) {
     veg: sp.get("veg") === "1",
     locality,
   };
-  return Response.json({ restaurants: await browseRestaurants(filters) });
+  return Response.json(
+    { restaurants: await browseRestaurants(filters) },
+    { headers: CACHE_HEADERS },
+  );
 }

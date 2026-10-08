@@ -1,5 +1,5 @@
 import "server-only";
-import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
@@ -14,6 +14,7 @@ import {
   modifierGroups,
   modifierOptions,
   orders,
+  restaurantSessions,
   restaurants,
   type OrderItemSnapshot,
 } from "@/db/schema";
@@ -23,7 +24,6 @@ import {
   DEFAULT_LOCALITY,
   DEFAULT_RESTAURANT_HERO,
   DEFAULT_RESTAURANT_IMAGE,
-  INTEGRATION_SESSION_TTL_MS,
   LOCALITIES,
   makeConnectionCode,
   makeOrderCode,
@@ -33,9 +33,26 @@ import {
   type BillBreakdown,
 } from "@/lib/domain";
 import { hashOwnerKey, hashToken, integrationPasskeyMatches, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
+import {
+  INTEGRATION_SESSION_TTL_MS,
+  integrationSessionIsLive,
+  nextIdleExpiry,
+} from "@/lib/integration-session-core";
+import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONFIRM_TTL_MS } from "@/lib/restaurant-session-core";
+import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
+import { emitSecurityEvent } from "@/lib/security/security-events";
+import { MAX_ITEM_QUANTITY } from "@/lib/order-input-core";
+import {
+  blocksRedemption,
+  normalizeConnectionCode,
+  toCodeStatus,
+  UNREDEEMABLE_STATUS,
+  UNSPENT_CODE,
+  unspentCodeByCode,
+} from "@/lib/connection-codes";
 import { statusRank, TERMINAL_STATUSES } from "@/integrations/pos/order-status";
 import {
   OPEN_ORDER_PREDICATE,
@@ -569,6 +586,15 @@ export async function restaurantsBySlugs(slugs: string[]): Promise<RestaurantDto
 
 /* --------------------------- connection codes ---------------------------- */
 
+/**
+ * The three states a connection code can be in.
+ *
+ * Kept as a set rather than a `status === "used" ? … : "unused"` ternary because
+ * revocation added a third state, and a mapper that folds it into "unused" is
+ * exactly the bug that would make a revoked invite look redeemable — both in the
+ * ops console and, worse, in the redemption pre-check below. The mapping itself
+ * lives in lib/connection-codes.ts so it can be asserted in isolation.
+ */
 function toConnectionCodeDto(
   c: typeof connectionCodes.$inferSelect,
   restaurantId: number | null = null,
@@ -577,12 +603,13 @@ function toConnectionCodeDto(
   return {
     id: c.id,
     code: c.code,
-    status: c.status === "used" ? "used" : "unused",
+    status: toCodeStatus(c.status),
     restaurantId,
     restaurantName,
     createdAt: new Date(c.createdAt).toISOString(),
     usedAt: c.usedAt ? new Date(c.usedAt).toISOString() : null,
     expiresAt: c.expiresAt ? new Date(c.expiresAt).toISOString() : null,
+    revokedAt: c.revokedAt ? new Date(c.revokedAt).toISOString() : null,
   };
 }
 
@@ -629,11 +656,67 @@ export async function getConnectionCode(code: string): Promise<ConnectionCodeDto
     .from(connectionCodes)
     .leftJoin(connections, eq(connections.codeId, connectionCodes.id))
     .leftJoin(restaurants, eq(restaurants.id, connections.restaurantId))
-    .where(eq(connectionCodes.code, code.toUpperCase()))
+    .where(eq(connectionCodes.code, normalizeConnectionCode(code)))
     .limit(1);
   return row
     ? toConnectionCodeDto(row.c, row.restaurantId ?? null, row.restaurantName ?? null)
     : null;
+}
+
+export type RevokeConnectionCodeResult =
+  | { ok: true; code: ConnectionCodeDto }
+  | { ok: false; error: string; reason: "not_found" | "already_used" };
+
+/**
+ * Operator withdrawal of an unused onboarding code — the one way to kill an
+ * invite that was minted in good faith and then leaked, emailed to the wrong
+ * address, or issued twice to the same restaurant.
+ *
+ * Three properties are load-bearing:
+ *
+ *   - **Unused only.** The `status = 'unused'` predicate in the UPDATE is the
+ *     whole security property. A code that already produced a listing cannot be
+ *     returned to circulation, because redeeming it a second time would create a
+ *     duplicate live listing for one invitation. Revoking a spent code is
+ *     refused rather than silently ignored, so the operator learns the code they
+ *     are looking at is not the thing they think it is.
+ *   - **Atomic.** The predicate lives in the UPDATE rather than in a preceding
+ *     SELECT, so two operators revoking at once cannot both read "unused" and
+ *     both write. Same pattern as the redemption spend.
+ *   - **A flag, not a delete.** The row survives so `listConnectionCodes` can
+ *     still show that code was issued and withdrawn. Deleting it would also
+ *     break the `connections.code_id` foreign key for any code that had been
+ *     redeemed, which is the already_used case.
+ */
+export async function revokeConnectionCode(code: string): Promise<RevokeConnectionCodeResult> {
+  const normalized = normalizeConnectionCode(code);
+  if (!normalized) return { ok: false, error: "Enter a connection code", reason: "not_found" };
+
+  const [revoked] = await db
+    .update(connectionCodes)
+    .set({ status: "revoked", revokedAt: new Date() })
+    .where(unspentCodeByCode(normalized))
+    .returning();
+
+  if (revoked) return { ok: true, code: toConnectionCodeDto(revoked) };
+
+  // Nothing came back. Distinguish "no such code" from "already spent", but
+  // only after confirming the row exists so a typo is not reported as a
+  // redemption that already happened.
+  const [existing] = await db
+    .select()
+    .from(connectionCodes)
+    .where(eq(connectionCodes.code, normalized))
+    .limit(1);
+  if (!existing) return { ok: false, error: "Connection code not found", reason: "not_found" };
+  return {
+    ok: false,
+    error:
+      existing.status === "used"
+        ? "That code was already redeemed, so it cannot be revoked"
+        : "That code is already revoked",
+    reason: "already_used",
+  };
 }
 
 export async function listConnections(limit = 30): Promise<ConnectionDto[]> {
@@ -826,7 +909,7 @@ export async function redeemConnectionCode(
   | { ok: true; restaurant: RestaurantDto; ownerKey: string }
   | { ok: false; error: string }
 > {
-  const code = String(input.code ?? "").trim().toUpperCase();
+  const code = normalizeConnectionCode(input.code);
   if (!code) return { ok: false, error: "Enter the connection code" };
 
   const normalized = normalizeListingInput(input);
@@ -839,7 +922,11 @@ export async function redeemConnectionCode(
     .where(eq(connectionCodes.code, code))
     .limit(1);
   if (!c) return { ok: false, error: "Connection code not found" };
-  if (c.status === "used") return { ok: false, error: "Connection code already used" };
+  // Pre-check picks the *message* only. Authorisation is the conditional
+  // UPDATE below, which is the same UNSPENT_CODE fragment the revoke path uses.
+  if (blocksRedemption(c.status)) {
+    return { ok: false, error: UNREDEEMABLE_STATUS[toCodeStatus(c.status)] };
+  }
   if (c.expiresAt && new Date(c.expiresAt) < new Date()) return { ok: false, error: "Connection code has expired" };
 
   const ownerKey = makeOwnerKey();
@@ -847,11 +934,13 @@ export async function redeemConnectionCode(
 
   try {
     const restaurant = await db.transaction(async (tx) => {
-      // Atomic spend — only one concurrent redeemer can flip the code.
+      // Atomic spend — only one concurrent redeemer can flip the code. Shared
+      // with revokeConnectionCode on purpose: a code that is either spent or
+      // withdrawn must be unusable, and one predicate cannot drift from the other.
       const [spent] = await tx
         .update(connectionCodes)
         .set({ status: "used", usedAt: new Date() })
-        .where(and(eq(connectionCodes.id, c.id), eq(connectionCodes.status, "unused")))
+        .where(and(eq(connectionCodes.id, c.id), UNSPENT_CODE))
         .returning({ id: connectionCodes.id });
       if (!spent) throw new CodeAlreadyUsedError();
 
@@ -936,47 +1025,64 @@ export async function selfRegisterRestaurant(
 
 /** Restaurant-side handshake: present the owner key to prove control of a listing. */
 export async function verifyOwner(ownerKey: string): Promise<RestaurantDto | null> {
+  const id = await restaurantIdForOwnerKey(ownerKey);
+  if (id === null) return null;
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, id)).limit(1);
+  return r ? toRestaurantDto(r) : null;
+}
+
+/**
+ * The listing id an owner key controls, or null.
+ *
+ * The single place the owner key is turned into an identity. Everything that used
+ * to re-implement "hash the key, find the row" now goes through here and works
+ * from the id, so there is exactly one lookup to reason about and exactly one
+ * place that has to stay correct.
+ */
+async function restaurantIdForOwnerKey(ownerKey: string): Promise<number | null> {
   const key = String(ownerKey ?? "").trim();
   if (!key) return null;
-  const [r] = await db
-    .select()
+  const [row] = await db
+    .select({ id: restaurants.id })
     .from(restaurants)
     .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
     .limit(1);
-  return r ? toRestaurantDto(r) : null;
+  return row?.id ?? null;
 }
 
 function toRestaurantManageDto(r: typeof restaurants.$inferSelect): RestaurantManageDto {
   return { ...toRestaurantDto(r), isActive: r.isActive };
 }
 
-/** Full listing (plus live state) for the owner who holds the key. */
-export async function getRestaurantByOwnerKey(ownerKey: string): Promise<RestaurantManageDto | null> {
-  const key = String(ownerKey ?? "").trim();
-  if (!key) return null;
-  const [r] = await db
-    .select()
-    .from(restaurants)
-    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
-    .limit(1);
+/**
+ * Full listing (plus live state) for an authenticated owner.
+ *
+ * Takes the id, not the key. Under the old scheme this was `…ByOwnerKey`, and the
+ * difference is the whole point of the session work: the identity is now resolved
+ * once from a revocable, expiring credential and carried as a plain integer,
+ * rather than re-derived from a long-lived secret on every single request.
+ */
+export async function getRestaurantManageById(restaurantId: number): Promise<RestaurantManageDto | null> {
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
   return r ? toRestaurantManageDto(r) : null;
 }
 
-/** Pause (isActive=false) or resume (isActive=true) an owner's listing. */
-export async function setRestaurantActive(
-  ownerKey: string,
+/** Full listing (plus live state) for the owner who holds the key. */
+export async function getRestaurantByOwnerKey(ownerKey: string): Promise<RestaurantManageDto | null> {
+  const id = await restaurantIdForOwnerKey(ownerKey);
+  if (id === null) return null;
+  return getRestaurantManageById(id);
+}
+
+/** Pause (isActive=false) or resume (isActive=true) an authenticated owner's listing. */
+export async function setRestaurantActiveById(
+  restaurantId: number,
   active: boolean,
 ): Promise<
   { ok: true; restaurant: RestaurantManageDto } | { ok: false; error: string }
 > {
-  const key = String(ownerKey ?? "").trim();
-  if (!key) return { ok: false, error: "Owner key is required" };
-  const [r] = await db
-    .select()
-    .from(restaurants)
-    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
-    .limit(1);
-  if (!r) return { ok: false, error: "Invalid owner key" };
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
+  if (!r) return { ok: false, error: "Restaurant not found" };
   const next = Boolean(active);
   if (r.isActive !== next) {
     await db.update(restaurants).set({ isActive: next }).where(eq(restaurants.id, r.id));
@@ -1041,26 +1147,20 @@ export interface RestaurantProfileInput {
  * mistyped name, a wrong locality or a tag that is not on the filter rail, and
  * the only escape was deleting the listing and redeeming a new code.
  *
- * The tenant is resolved from the owner key and NEVER taken from the request
- * body — the same rule the menu editor follows (see db/partner-menu.ts). Ids
- * that are not partner-editable (slug, rating, distanceKm, featured, offer,
+ * The tenant is resolved from the caller's session and NEVER taken from the
+ * request body — the same rule the menu editor follows (see db/partner-menu.ts).
+ * Ids that are not partner-editable (slug, rating, distanceKm, featured, offer,
  * externalId, marketplaceId) are deliberately absent from the patch set.
  *
  * `slug` is intentionally NOT regenerated: it is already in shared links and
  * order history, so a rename leaves the old address working.
  */
-export async function updateRestaurantProfile(
-  ownerKey: string,
+export async function updateRestaurantProfileById(
+  restaurantId: number,
   input: RestaurantProfileInput,
 ): Promise<{ ok: true; restaurant: RestaurantManageDto } | { ok: false; error: string }> {
-  const key = String(ownerKey ?? "").trim();
-  if (!key) return { ok: false, error: "Owner key is required" };
-  const [r] = await db
-    .select()
-    .from(restaurants)
-    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
-    .limit(1);
-  if (!r) return { ok: false, error: "Invalid owner key" };
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
+  if (!r) return { ok: false, error: "Restaurant not found" };
 
   const name = String(input.name ?? "").trim().slice(0, 80);
   if (!name) return { ok: false, error: "Restaurant name is required" };
@@ -1093,19 +1193,26 @@ export async function updateRestaurantProfile(
  * Permanently remove an owner's listing together with its menu, connection,
  * integration sessions and order history. Requires the exact restaurant name
  * as an explicit, typed confirmation.
+ *
+ * Note what this function is NOT responsible for. By the time it is called the
+ * caller has already proven a live session, a matching CSRF token, a fresh
+ * single-use delete confirmation, and the typed name — the route owns that stack,
+ * because each of those is a credential check and this is a data operation. What
+ * it does own is the last line of defence on the tenant: the id comes from the
+ * resolved session, never from the request, so a caller cannot widen the blast
+ * radius by naming a different restaurant.
+ *
+ * `restaurant_sessions` rows are not listed in the cascade below because they do
+ * not need to be: the column is `ON DELETE CASCADE`, so the last statement takes
+ * this listing's sessions with it. Listing them explicitly would be redundant
+ * today and a silent no-op if someone ever changed that.
  */
-export async function deleteRestaurant(
-  ownerKey: string,
+export async function deleteRestaurantById(
+  restaurantId: number,
   confirmName: string,
 ): Promise<{ ok: true; restaurantName: string } | { ok: false; error: string }> {
-  const key = String(ownerKey ?? "").trim();
-  if (!key) return { ok: false, error: "Owner key is required" };
-  const [r] = await db
-    .select()
-    .from(restaurants)
-    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
-    .limit(1);
-  if (!r) return { ok: false, error: "Invalid owner key" };
+  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
+  if (!r) return { ok: false, error: "Restaurant not found" };
   if (String(confirmName ?? "").trim().toLowerCase() !== r.name.toLowerCase()) {
     return { ok: false, error: "Restaurant name does not match" };
   }
@@ -1117,6 +1224,235 @@ export async function deleteRestaurant(
     await tx.delete(restaurants).where(eq(restaurants.id, r.id));
   });
   return { ok: true, restaurantName: r.name };
+}
+
+/* --------------------------- partner sessions ----------------------------- */
+
+/**
+ * A live partner session, as the auth layer needs it.
+ *
+ * `csrfHash` and the delete-confirmation columns are carried on the same row as
+ * the session token on purpose: every one of them is only meaningful in
+ * combination with a valid session, so resolving them together is one query
+ * instead of three and there is no window in which a session is accepted but its
+ * CSRF secret has not been loaded.
+ */
+export interface RestaurantSession {
+  id: number;
+  restaurantId: number;
+  csrfHash: string;
+  deleteConfirmHash: string | null;
+  deleteConfirmExpiresAt: Date | null;
+  expiresAt: Date;
+  /**
+   * Carried because it is a liveness input, not bookkeeping. Omitting it here
+   * made `revokeRestaurantSession` a no-op as far as authentication was
+   * concerned: `sessionIsLive` reads `revokedAt`, an absent field arrives as
+   * `undefined`, and `undefined` is falsy — so "sign out", and the key rotation
+   * that revokes every session, left the stolen credential working for its
+   * remaining 30 days. Revocation only counts if the revoked row says so.
+   */
+  revokedAt: Date | null;
+}
+
+/**
+ * Exchange a proven owner key for a fresh session.
+ *
+ * This is the single point where the long-lived recovery credential becomes a
+ * short-lived working credential, and it is deliberately the only one. Every
+ * other partner route resolves the restaurant from the returned session, so a
+ * leaked owner key costs an attacker one 30-day session rather than permanent
+ * access — and because the owner key is never transmitted again, it stops
+ * appearing in request logs, proxy logs and browser history the moment the
+ * restaurant upgrades.
+ *
+ * `csrfToken` is returned rather than derived from the session token so the
+ * browser can hold it in memory while the session token stays HttpOnly and
+ * unreachable from script. That asymmetry is the point: an XSS that runs on the
+ * page cannot read the credential, only spend it while the user is looking.
+ */
+export async function createRestaurantSession(restaurantId: number): Promise<{
+  sessionToken: string;
+  csrfToken: string;
+  expiresAt: Date;
+}> {
+  const sessionToken = makeSessionToken();
+  const csrfToken = makeCsrfToken();
+  const expiresAt = new Date(Date.now() + RESTAURANT_SESSION_TTL_MS);
+  await db.insert(restaurantSessions).values({
+    tokenHash: hashToken(sessionToken),
+    restaurantId,
+    csrfHash: hashToken(csrfToken),
+    expiresAt,
+  });
+  // Phase 12: emitted here rather than at each caller so every mint path —
+  // owner-key login, signup, post-redemption — is covered by construction.
+  // Neither token crosses into the event; the restaurant id is all monitoring
+  // needs to join this line to the audit trail.
+  emitSecurityEvent("restaurant_session_created", { restaurantId, outcome: "success" });
+  return { sessionToken, csrfToken, expiresAt };
+}
+
+/**
+ * Resolve a session token to the session it names, or null.
+ *
+ * Returns the row even when it is expired or revoked; the caller decides what to
+ * do with it (see `sessionIsLive`). Collapsing "not found" and "expired" into
+ * null here would make a revoked session indistinguishable from a typo, which is
+ * the wrong thing to surface — the console needs to be able to tell a partner
+ * "sign in again" without also telling an attacker which of their guesses landed.
+ */
+export async function getRestaurantSession(token: string): Promise<RestaurantSession | null> {
+  const t = String(token ?? "").trim();
+  if (!t) return null;
+  const [row] = await db
+    .select()
+    .from(restaurantSessions)
+    .where(eq(restaurantSessions.tokenHash, hashToken(t)))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    restaurantId: row.restaurantId,
+    csrfHash: row.csrfHash,
+    deleteConfirmHash: row.deleteConfirmHash,
+    deleteConfirmExpiresAt: row.deleteConfirmExpiresAt,
+    expiresAt: row.expiresAt,
+    revokedAt: row.revokedAt,
+  };
+}
+
+/**
+ * Record that a session was just used.
+ *
+ * Best-effort by construction: it is awaited on the request path but nothing
+ * branches on the result, because failing to write an audit timestamp must never
+ * be the reason a restaurant cannot load its menu. Kept out of
+ * `getRestaurantSession` so the read stays a single statement, and fired rather
+ * than inlined so a caller can forget it without losing correctness.
+ */
+export async function touchRestaurantSession(sessionId: number): Promise<void> {
+  await db
+    .update(restaurantSessions)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(restaurantSessions.id, sessionId));
+}
+
+/**
+ * End one session now.
+ *
+ * This is the operation the owner key could not express. Rotating the key signs
+ * the restaurant out of its own console with no way back in; revoking a session
+ * signs out a device that is presumed lost and leaves the key valid for signing
+ * back in from another one.
+ */
+export async function revokeRestaurantSession(sessionId: number): Promise<void> {
+  await db
+    .update(restaurantSessions)
+    .set({ revokedAt: new Date() })
+    .where(eq(restaurantSessions.id, sessionId));
+  // Phase 12: the session id — never the token being revoked. Covers logout
+  // and any future caller that ends a single device.
+  emitSecurityEvent("restaurant_session_revoked", { sessionId, outcome: "success" });
+}
+
+/**
+ * End every session for a restaurant.
+ *
+ * Called when the owner key rotates. That has to happen: rotation exists to
+ * invalidate a credential someone else may hold, and a session minted from the
+ * old key would otherwise stay valid for its full 30 days and hand that someone
+ * exactly the access the rotation was performed to revoke. Sessions are revoked
+ * rather than deleted so `last_used_at` still says when each device was last seen
+ * — the useful half of the forensic record.
+ */
+export async function revokeRestaurantSessionsForRestaurant(restaurantId: number): Promise<void> {
+  await db
+    .update(restaurantSessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(restaurantSessions.restaurantId, restaurantId), isNull(restaurantSessions.revokedAt)));
+  // Phase 12: one line for the whole sweep (owner-key rotation, passkey
+  // rotation) — `allSessions` distinguishes it from a single-device logout.
+  emitSecurityEvent("restaurant_session_revoked", {
+    restaurantId,
+    allSessions: true,
+    outcome: "success",
+  });
+}
+
+/**
+ * Mint a single-use confirmation for the one irreversible action in the console.
+ *
+ * Why a server-minted token at all, when the typed restaurant name already exists:
+ * the name is not a secret. It is the public listing name — it is in the page
+ * title, in search results, and in the URL of the restaurant's own page — so
+ * anyone who has the session token (a stale cookie, a shared machine, an XSS that
+ * has not yet been caught) can read the exact string the confirmation demands.
+ * Typing it proves attention, not authorisation.
+ *
+ * What this adds is a value the attacker cannot derive: it is only ever held by
+ * the browser that just asked for it, it is bound to one session, and it is spent
+ * on the first delete attempt whether or not that attempt succeeded. Ten minutes is
+ * long enough to read a dialog and type a name.
+ *
+ * Issued on demand rather than at sign-in because a confirmation minted eagerly
+ * would sit valid in the database for the life of the session, which is a longer
+ * window than the operation it authorises warrants.
+ */
+export async function issueDeleteConfirmation(sessionId: number): Promise<{
+  token: string;
+  expiresAt: Date;
+}> {
+  const token = makeSessionToken();
+  const expiresAt = new Date(Date.now() + DELETE_CONFIRM_TTL_MS);
+  // Overwrites any previous confirmation for this session, so "request the
+  // token" always invalidates the last one rather than accumulating live
+  // equivalents.
+  await db
+    .update(restaurantSessions)
+    .set({ deleteConfirmHash: hashToken(token), deleteConfirmExpiresAt: expiresAt })
+    .where(eq(restaurantSessions.id, sessionId));
+  return { token, expiresAt };
+}
+
+/**
+ * Spend a delete confirmation.
+ *
+ * The clear is conditional on the hash still matching, which is what makes this
+ * single-use under concurrency rather than merely in the happy path: two
+ * simultaneous deletes both holding the same valid token race on the same UPDATE,
+ * the loser matches zero rows, and gets the "expired" answer instead of deleting
+ * a second time. Clearing unconditionally would let a replayed token work twice,
+ * and clearing nothing would leave a spent token live until it timed out.
+ *
+ * Expiry is part of the match, not a separate check: a confirmation older than
+ * its ten-minute lifetime is indistinguishable from one that was never issued,
+ * so it spends nothing and reports the same "refused" answer.
+ */
+export async function consumeDeleteConfirmation(sessionId: number, token: string): Promise<boolean> {
+  const presented = String(token ?? "").trim();
+  if (!presented) return false;
+  const [row] = await db
+    .update(restaurantSessions)
+    .set({ deleteConfirmHash: null, deleteConfirmExpiresAt: null })
+    .where(
+      and(
+        eq(restaurantSessions.id, sessionId),
+        eq(restaurantSessions.deleteConfirmHash, hashToken(presented)),
+        gt(restaurantSessions.deleteConfirmExpiresAt, new Date()),
+      ),
+    )
+    .returning({ id: restaurantSessions.id });
+  // Destructured, not measured: `row` is the first returned row or `undefined`,
+  // so a matched update is "a row came back" rather than "an array has length".
+  return row !== undefined;
+}
+
+/** Delete sessions that expired more than a day ago. */
+export async function purgeExpiredRestaurantSessions(now: number = Date.now()): Promise<void> {
+  await db
+    .delete(restaurantSessions)
+    .where(lt(restaurantSessions.expiresAt, new Date(now - 24 * 60 * 60 * 1000)));
 }
 
 /* ------------------------------ integration ------------------------------- */
@@ -1160,16 +1496,26 @@ export async function authenticateIntegration(
 
 export async function createIntegrationSession(
   identity: IntegrationIdentity,
-): Promise<{ token: string; expiresAtIso: string }> {
+  meta?: { ipAddress?: string | null; userAgent?: string | null },
+): Promise<{ token: string; expiresAtIso: string; idleExpiresAtIso: string }> {
   const token = makeAccessToken();
-  const expires = new Date(Date.now() + INTEGRATION_SESSION_TTL_MS);
+  const now = new Date();
+  const expires = new Date(now.getTime() + INTEGRATION_SESSION_TTL_MS);
+  // A session's two clocks start here and their policy lives in
+  // `integration-session-core.ts`: the absolute ceiling above, and a sliding
+  // idle window below that every authenticated request pushes back out.
+  const idleAt = nextIdleExpiry(now.getTime());
   await db.insert(integrationSessions).values({
     tokenHash: hashToken(token),
     restaurantId: identity.restaurant.id,
     codeId: identity.codeId,
     expiresAt: expires,
+    idleExpiresAt: idleAt,
+    lastUsedAt: now,
+    ipAddress: meta?.ipAddress ?? null,
+    userAgent: meta?.userAgent ?? null,
   });
-  return { token, expiresAtIso: expires.toISOString() };
+  return { token, expiresAtIso: expires.toISOString(), idleExpiresAtIso: idleAt.toISOString() };
 }
 
 export async function getIntegrationSession(token: string): Promise<RestaurantDto | null> {
@@ -1185,13 +1531,41 @@ export async function getIntegrationSession(token: string): Promise<RestaurantDt
     .where(eq(integrationSessions.tokenHash, hashToken(t)))
     .limit(1);
   if (!row) return null;
-  if (row.s.revokedAt) return null;
-  if (new Date(row.s.expiresAt) <= new Date()) return null;
+  // The liveness policy is shared with the tests: revoked, absolute ceiling and
+  // idle window are all decided here, not scattered across the query.
+  if (
+    !integrationSessionIsLive({
+      expiresAt: row.s.expiresAt,
+      idleExpiresAt: row.s.idleExpiresAt,
+      revokedAt: row.s.revokedAt,
+    })
+  ) {
+    return null;
+  }
+  const now = new Date();
+  // One write per authenticated request: prove the session is being used and
+  // slide its idle window in the same statement as the lastUsedAt touch.
   await db
     .update(integrationSessions)
-    .set({ lastUsedAt: new Date() })
+    .set({ lastUsedAt: now, idleExpiresAt: nextIdleExpiry(now.getTime()) })
     .where(eq(integrationSessions.id, row.s.id));
   return toRestaurantDto(row.r);
+}
+
+/**
+ * End exactly one session — the one that presented the given token — without
+ * touching the restaurant's other POS terminals. The inverse of
+ * `revokeIntegrationSessions`, which is the "sign out everywhere" fire-drill.
+ */
+export async function logoutIntegrationSession(token: string): Promise<boolean> {
+  const t = String(token ?? "").trim();
+  if (!t) return false;
+  const [row] = await db
+    .update(integrationSessions)
+    .set({ revokedAt: new Date() })
+    .where(and(eq(integrationSessions.tokenHash, hashToken(t)), isNull(integrationSessions.revokedAt)))
+    .returning({ id: integrationSessions.id });
+  return !!row;
 }
 
 export async function listIntegrationOrders(restaurantId: number, limit = 30): Promise<OrderDto[]> {
@@ -1202,22 +1576,6 @@ export async function listIntegrationOrders(restaurantId: number, limit = 30): P
     .orderBy(desc(orders.createdAt))
     .limit(limit);
   return rows.map(toOrderDto);
-}
-
-export async function rotatePasskey(
-  code: string,
-  currentPasskey: string,
-): Promise<{ ok: true; passkey: string } | { ok: false; error: string }> {
-  const identity = await authenticateIntegration(code, currentPasskey);
-  if (!identity) return { ok: false, error: "Invalid credentials" };
-  const next = makeOwnerKey();
-  // Only the POS credential moves. The restaurant's owner key is untouched, so
-  // rotating the integration secret no longer locks the owner out of /partner.
-  await db
-    .update(restaurants)
-    .set({ integrationPasskeyHash: hashOwnerKey(next) })
-    .where(eq(restaurants.id, identity.restaurant.id));
-  return { ok: true, passkey: next };
 }
 
 /* ------------------------------- identity -------------------------------- */
@@ -1420,6 +1778,7 @@ export type IntegrationAuditContext = {
   /** `ops` is an operator acting through the privileged surface, not the restaurant. */
   actor: "restaurant" | "partner" | "system" | "ops";
   ipAddress?: string | null;
+  userAgent?: string | null;
 };
 
 /** Append an entry to the integration audit trail (best-effort, never throws). */
@@ -1434,7 +1793,10 @@ export async function recordIntegrationAudit(
       restaurantId,
       actor: ctx.actor,
       event,
-      detail: detail ?? {},
+      // `userAgent` rides in the JSONB detail rather than its own column: it is
+      // free-form diagnostic context, not something the trail is ever queried
+      // on, and the audit table's columns are the ones support queries against.
+      detail: ctx.userAgent != null ? { ...(detail ?? {}), userAgent: ctx.userAgent } : (detail ?? {}),
       ipAddress: ctx.ipAddress ?? null,
     });
   } catch {
@@ -1954,21 +2316,29 @@ class TransferAbortedError extends Error {
 }
 
 /**
- * Rotate the passkey for an already-authenticated restaurant. Requires the
- * current passkey as proof so session theft cannot silently rotate credentials.
+ * Rotate the passkey for an already-authenticated restaurant.
+ *
+ * The BEARER session is the proof. `POST
+ * /api/integration/passkey/rotate` requires a live integration session, and
+ * `requireIntegrationAuth` has already resolved that session to this
+ * restaurant — so the passkey being replaced no longer has to travel back over
+ * the wire as a body field. A credential's rotation should not require
+ * sending the credential. That is the whole reason the session endpoint
+ * exists; the old code+passkey body was a fallback from before sessions, and
+ * the route that could be reached with nothing but the secret being replaced
+ * is gone.
  *
  * Writes `integration_passkey_hash` only. `owner_key_hash` is a different
  * credential now and is left alone — a rotated integration must never strand
  * the restaurant owner with a dead /partner key.
+ *
+ * The caller is expected to `revokeIntegrationSessions` afterwards: an old
+ * passkey holder who had already minted sessions must not outlive the
+ * rotation in them.
  */
 export async function rotatePasskeyAsRestaurant(
   restaurantId: number,
-  currentPasskey: string,
 ): Promise<{ ok: true; passkey: string } | { ok: false; error: string }> {
-  const p = String(currentPasskey ?? "");
-  if (!p) return { ok: false, error: "Current passkey is required" };
-  const [r] = await db.select().from(restaurants).where(eq(restaurants.id, restaurantId)).limit(1);
-  if (!r || !integrationPasskeyMatches(r, p)) return { ok: false, error: "Invalid passkey" };
   const next = makeOwnerKey();
   await db
     .update(restaurants)
@@ -2111,11 +2481,12 @@ export interface ProvisionListingInput {
  * Ops-only bootstrap for a listing that cannot complete the POS handshake:
  * backfills `external_id` if it is missing and issues a fresh owner key.
  *
- * Why this exists instead of reusing rotatePasskey: rotation requires the
- * CURRENT key, so a lost key is unrecoverable by design. Seeded listings never
- * had a key at all, and the /partner redemption flow that normally issues one
- * requires an `external_id` they also never had. Without an ops path, every such
- * listing is stranded and has to be repaired by hand-editing the database.
+ * Why this exists instead of reusing rotateOwnerKeyAsRestaurant: rotation
+ * requires the CURRENT key, so a lost key is unrecoverable by design. Seeded
+ * listings never had a key at all, and the /partner redemption flow that
+ * normally issues one requires an `external_id` they also never had. Without
+ * an ops path, every such listing is stranded and has to be repaired by
+ * hand-editing the database.
  *
  * The new key is returned exactly once, like every other owner key.
  */
@@ -2236,7 +2607,8 @@ export interface DroppedCartItem {
 export interface CreateOrderInput {
   restaurantSlug: string;
   items: CartLineSubmit[];
-  addressLabel: string;
+  /** Absent → the row's "Home" default applies. */
+  addressLabel?: string;
   addressText: string;
   customerName: string;
   phone: string;
@@ -2329,7 +2701,13 @@ export async function computeBill(
   for (const item of items) {
     const m = byId.get(item.menuItemId);
     if (!m || m.restaurantId !== r.id) return { ok: false, error: "Invalid item in cart" };
-    const qty = Math.min(20, Math.max(1, Math.floor(item.quantity) || 1));
+    // Backstop, not the gate: checkout and the bill preview both reject
+    // quantities outside 1..MAX_ITEM_QUANTITY before this runs (see
+    // order-input-core). The clamp stays so a future direct caller cannot bill
+    // a quantity the customer did not ask for — and its bound is the SAME
+    // bound the routes enforce, or a quantity the routes accepted would be
+    // silently rewritten here.
+    const qty = Math.min(MAX_ITEM_QUANTITY, Math.max(1, Math.floor(item.quantity) || 1));
 
     if (!m.available) {
       dropped.push({ menuItemId: m.id, name: m.name, reason: "sold_out" });
@@ -2489,7 +2867,7 @@ export async function getMenuModifierGroups(
 
 export async function createOrder(
   input: CreateOrderInput,
-): Promise<{ ok: true; order: OrderDto } | { ok: false; error: string; code?: string }> {
+): Promise<{ ok: true; order: OrderDto; trackingToken?: string } | { ok: false; error: string; code?: string }> {
   const clientRequestId = String(input.clientRequestId ?? "").trim().slice(0, 80) || null;
 
   if (clientRequestId) {
@@ -2498,8 +2876,17 @@ export async function createOrder(
       .from(orders)
       .where(eq(orders.clientRequestId, clientRequestId))
       .limit(1);
+    // An idempotent retry only has the hash on disk, never the plaintext token
+    // (that was returned once, on the winning request), so `trackingToken` is
+    // absent here. The checkout route simply omits it and the browser keeps the
+    // code + HMAC pair for this order.
     if (existing) return { ok: true, order: toOrderDto(existing) };
   }
+
+  // Phase 6 — mint the bearer tracking token once, here at creation. Only its
+  // hash is stored; the plaintext rides back through the checkout response the
+  // single time it is ever available.
+  const trackingToken = makeTrackingToken();
 
   const computed = await computeBill(input.restaurantSlug, input.items);
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
@@ -2543,6 +2930,7 @@ export async function createOrder(
       .insert(orders)
       .values({
         code: makeOrderCode(),
+        trackingTokenHash: hashTrackingToken(trackingToken),
         restaurantId: r.id,
         restaurantName: r.name,
         restaurantSlug: r.slug,
@@ -2575,7 +2963,7 @@ export async function createOrder(
         .where(eq(orders.id, created.id));
     }
 
-    return { ok: true, order: toOrderDto(created) };
+    return { ok: true, order: toOrderDto(created), trackingToken };
   } catch (e) {
     // Concurrent retry with the same key: the unique constraint let one win;
     // return the surviving order so the caller sees a single result.
@@ -2606,6 +2994,21 @@ export async function getIntegrationOrderByCodeForRestaurant(
 
 export async function getOrderByCode(code: string): Promise<OrderDto | null> {
   const [o] = await db.select().from(orders).where(eq(orders.code, code.toUpperCase())).limit(1);
+  return o ? toOrderDto(o) : null;
+}
+
+/**
+ * Resolve an order by its bearer tracking token (Phase 6). The caller validates
+ * the token's shape before this runs; here the token is only ever hashed and
+ * compared against the stored digest — the plaintext never touches the query,
+ * so a leaked query log cannot be used as a working tracking URL either.
+ */
+export async function getOrderByTrackingToken(token: string): Promise<OrderDto | null> {
+  const [o] = await db
+    .select()
+    .from(orders)
+    .where(eq(orders.trackingTokenHash, hashTrackingToken(token)))
+    .limit(1);
   return o ? toOrderDto(o) : null;
 }
 

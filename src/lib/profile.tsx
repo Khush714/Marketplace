@@ -21,11 +21,15 @@ export interface Address {
 /**
  * A placed order as this browser remembers it. The token is the signed
  * per-order credential (see lib/order-token) — without it the order can no
- * longer be read, so the pair is stored together and never separated.
+ * longer be read or cancelled, so the pair is stored together and never
+ * separated. `trackingToken` (Phase 6) is the shareable bearer token behind
+ * `/order/<tracking-token>`; pre-existing orders simply don't have one yet, so
+ * they fall back to code+token URLs.
  */
 export interface StoredOrder {
   code: string;
   token: string;
+  trackingToken?: string;
   at: number;
 }
 
@@ -89,7 +93,7 @@ interface ProfileOrdersValue {
   orders: StoredOrder[];
   /** Codes only, for counters and links. Reading an order needs its token. */
   orderCodes: string[];
-  rememberOrder: (code: string, token: string) => void;
+  rememberOrder: (code: string, token: string, trackingToken?: string) => void;
 }
 
 interface SearchHistoryValue {
@@ -207,12 +211,15 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     [personalisationAllowed, state.favorites],
   );
 
-  const rememberOrder = useCallback((code: string, token: string) => {
+  const rememberOrder = useCallback((code: string, token: string, trackingToken?: string) => {
     const clean = code.trim().toUpperCase();
     if (!clean) return;
     setState((s) => ({
       ...s,
-      orders: [{ code: clean, token, at: Date.now() }, ...s.orders.filter((o) => o.code !== clean)].slice(0, 30),
+      orders: [
+        { code: clean, token, ...(trackingToken ? { trackingToken } : {}), at: Date.now() },
+        ...s.orders.filter((o) => o.code !== clean),
+      ].slice(0, 30),
     }));
   }, []);
 

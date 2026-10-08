@@ -94,6 +94,10 @@ export default function OrdersPage() {
         <ul className="mt-7 space-y-4">
           {orders.map((o, idx) => {
             const live = isOrderLive(o);
+            // Prefer the shareable Phase 6 tracking URL when this browser has
+            // the token on file; pre-existing orders fall back to code+token.
+            const storedToken = stored.find((s) => s.code === o.code)?.trackingToken;
+            const trackingHref = storedToken ? `/order/track/${storedToken}` : `/order/${o.code}/track`;
             return (
               <li key={o.code} style={{ animationDelay: `${idx * 60}ms` }} className="animate-rise">
                 <div className="glass lift rounded-3xl p-4 hover:shadow-lift md:p-5">
@@ -146,7 +150,7 @@ export default function OrdersPage() {
 
                   <div className="mt-4 flex gap-2.5 border-t border-white/8 pt-4">
                     <Link
-                      href={`/order/${o.code}/track`}
+                      href={trackingHref}
                       className="press group flex flex-1 items-center justify-center gap-1.5 rounded-xl bg-white/8 py-2.5 text-sm font-semibold text-cream-100 transition-colors hover:bg-white/12"
                     >
                       {live ? "Track live" : "View order"}

@@ -7,7 +7,6 @@ import {
   ArrowLeft,
   Check,
   ImageOff,
-  KeyRound,
   Layers,
   Pencil,
   Plus,
@@ -18,31 +17,21 @@ import {
   Utensils,
 } from "lucide-react";
 import { cn, formatINR } from "@/lib/domain";
-import { readStoredOwnerKey, storeOwnerKey } from "@/lib/owner-key-store";
+import { partnerFetch, RequirePartnerSession, usePartnerSession } from "@/lib/partner-session";
 import { useToast } from "@/lib/toast";
 import type { PartnerMenuDto, PartnerMenuItemDto, PartnerModifierGroupDto } from "@/lib/types";
 
 type Reply<T> = { ok: true } & T | { ok: false; error: string };
 
-/** Owner key rides the `x-owner-key` header — never the query string. */
-async function call<T>(
-  path: string,
-  key: string,
-  init: RequestInit = {},
-): Promise<Reply<T>> {
-  try {
-    const res = await fetch(path, {
-      ...init,
-      headers: {
-        "x-owner-key": key,
-        ...(init.body ? { "Content-Type": "application/json" } : {}),
-        ...init.headers,
-      },
-    });
-    return (await res.json()) as Reply<T>;
-  } catch {
-    return { ok: false, error: "Network error" };
-  }
+/**
+ * Every partner call rides the session; nothing here touches the owner key.
+ * `partnerFetch` attaches the CSRF token from the readable cookie, so the session
+ * cannot be exercised cross-site even though it travels as a cookie.
+ */
+async function call<T>(path: string, init: RequestInit = {}): Promise<Reply<T>> {
+  const res = await partnerFetch<T>(path, init);
+  if (res.ok) return { ...res, ok: true as const };
+  return { ok: false, error: res.error };
 }
 
 const inputCls =
@@ -53,7 +42,7 @@ const ghostBtn =
 
 export default function PartnerMenuPage() {
   const { toast } = useToast();
-  const [ownerKey, setOwnerKey] = useState("");
+  const session = usePartnerSession();
   const [menu, setMenu] = useState<PartnerMenuDto | null>(null);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
@@ -61,11 +50,9 @@ export default function PartnerMenuPage() {
   const [busyId, setBusyId] = useState<number | "new" | null>(null);
 
   const load = useCallback(
-    async (key: string, quiet = false) => {
-      const trimmed = key.trim();
-      if (!trimmed) return;
+    async (quiet = false) => {
       setLoading(true);
-      const d = await call<{ menu: PartnerMenuDto }>("/api/partner/menu", trimmed);
+      const d = await call<{ menu: PartnerMenuDto }>("/api/partner/menu");
       setLoading(false);
       if (!d.ok) {
         setMenu(null);
@@ -73,28 +60,21 @@ export default function PartnerMenuPage() {
         return;
       }
       setMenu(d.menu);
-      setOwnerKey(trimmed);
-      storeOwnerKey(trimmed);
       if (!quiet) toast("Menu loaded", { sub: d.menu.restaurant.name });
     },
     [toast],
   );
 
-  // Pick up the key the /partner page already verified, so a partner who just
-  // connected does not have to paste it again. The `Promise.resolve().then`
-  // yields first: the effect body itself must not set state synchronously.
+  // Load once a session exists. The gate is what decides whether one does: on a
+  // fresh sign-in the exchange has already set cookies, so this page just reads
+  // the result. A partner who lands here signed out sees the gate instead.
+  // Deferred to a macrotask so load()'s setState runs in a callback, not
+  // synchronously in the effect body (react-hooks/set-state-in-effect).
   useEffect(() => {
-    let cancelled = false;
-    const stored = readStoredOwnerKey();
-    if (stored) {
-      void Promise.resolve().then(() => {
-        if (!cancelled) void load(stored, true);
-      });
-    }
-    return () => {
-      cancelled = true;
-    };
-  }, [load]);
+    if (session.status !== "signed-in") return;
+    const t = window.setTimeout(() => void load(), 0);
+    return () => window.clearTimeout(t);
+  }, [session.status, load]);
 
   const run = async <T,>(
     work: () => Promise<Reply<T>>,
@@ -106,7 +86,7 @@ export default function PartnerMenuPage() {
       return false;
     }
     if (success) toast(success.title, success.sub ? { sub: success.sub } : undefined);
-    await load(ownerKey, true);
+    await load(true);
     return true;
   };
 
@@ -126,15 +106,8 @@ export default function PartnerMenuPage() {
         goes live immediately.
       </p>
 
-      <KeyPanel
-        ownerKey={ownerKey}
-        onChange={setOwnerKey}
-        onLoad={() => void load(ownerKey)}
-        loading={loading}
-        loaded={!!menu}
-      />
-
-      {menu && (
+      <RequirePartnerSession>
+        {menu && (
         <div className="mt-7 space-y-6">
           <div className="flex flex-wrap items-center gap-2.5">
             <span className="font-display text-xl font-bold text-cream-50">
@@ -151,6 +124,15 @@ export default function PartnerMenuPage() {
                 POS connected — its dishes sync alongside yours
               </span>
             )}
+            <button
+              type="button"
+              onClick={() => void load()}
+              disabled={loading}
+              className="press ml-auto inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
+            >
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+              Refresh
+            </button>
           </div>
 
           <DishSection
@@ -160,7 +142,6 @@ export default function PartnerMenuPage() {
             busyId={busyId}
             setBusyId={setBusyId}
             run={run}
-            ownerKey={ownerKey}
           />
           <GroupSection
             menu={menu}
@@ -169,58 +150,11 @@ export default function PartnerMenuPage() {
             busyId={busyId}
             setBusyId={setBusyId}
             run={run}
-            ownerKey={ownerKey}
           />
         </div>
-      )}
+        )}
+      </RequirePartnerSession>
     </div>
-  );
-}
-
-/* ------------------------------- key panel -------------------------------- */
-
-function KeyPanel({
-  ownerKey,
-  onChange,
-  onLoad,
-  loading,
-  loaded,
-}: {
-  ownerKey: string;
-  onChange: (v: string) => void;
-  onLoad: () => void;
-  loading: boolean;
-  loaded: boolean;
-}) {
-  return (
-    <section className="glass mt-6 rounded-3xl p-5 md:p-6">
-      <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
-        <KeyRound className="size-4.5 text-ember-400" /> Owner key
-      </h2>
-      <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
-        The key you received when connecting. It stays in this browser tab only.
-      </p>
-      <div className="mt-4 flex flex-col gap-3 sm:flex-row">
-        <input
-          value={ownerKey}
-          onChange={(e) => onChange(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") onLoad();
-          }}
-          placeholder="Paste your owner key"
-          className={cn(inputCls, "flex-1 font-mono font-bold")}
-        />
-        <button
-          type="button"
-          onClick={onLoad}
-          disabled={loading || !ownerKey.trim()}
-          className="press flex shrink-0 items-center justify-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-sm font-bold text-white shadow-glow transition-opacity disabled:opacity-60"
-        >
-          {loading ? <RefreshCw className="size-4 animate-spin" /> : <Store className="size-4" />}
-          {loaded ? "Refresh menu" : "Load menu"}
-        </button>
-      </div>
-    </section>
   );
 }
 
@@ -233,7 +167,6 @@ function DishSection({
   busyId,
   setBusyId,
   run,
-  ownerKey,
 }: {
   menu: PartnerMenuDto;
   adding: boolean;
@@ -241,7 +174,6 @@ function DishSection({
   busyId: number | "new" | null;
   setBusyId: (v: number | "new" | null) => void;
   run: <T>(work: () => Promise<Reply<T>>, success: { title: string; sub?: string } | null) => Promise<boolean>;
-  ownerKey: string;
 }) {
   const byCategory = useMemo(() => {
     const groups = new Map<string, PartnerMenuItemDto[]>();
@@ -280,7 +212,7 @@ function DishSection({
             setBusyId("new");
             const ok = await run(
               () =>
-                call<{ item: PartnerMenuItemDto }>("/api/partner/menu/items", ownerKey, {
+                call<{ item: PartnerMenuItemDto }>("/api/partner/menu/items", {
                   method: "POST",
                   body: JSON.stringify(payload),
                 }),
@@ -353,7 +285,6 @@ function DishSection({
                         () =>
                           call<{ item: PartnerMenuItemDto }>(
                             `/api/partner/menu/items/${item.id}`,
-                            ownerKey,
                             { method: "PATCH", body: JSON.stringify({ available: !item.available }) },
                           ),
                         { title: item.available ? "Dish hidden" : "Dish available" },
@@ -377,7 +308,7 @@ function DishSection({
                       setBusyId(item.id);
                       void run(
                         () =>
-                          call(`/api/partner/menu/items/${item.id}`, ownerKey, {
+                          call(`/api/partner/menu/items/${item.id}`, {
                             method: "DELETE",
                           }),
                         { title: "Dish deleted" },
@@ -520,7 +451,6 @@ function GroupSection({
   busyId,
   setBusyId,
   run,
-  ownerKey,
 }: {
   menu: PartnerMenuDto;
   editor: number | "new" | null;
@@ -528,7 +458,6 @@ function GroupSection({
   busyId: number | "new" | null;
   setBusyId: (v: number | "new" | null) => void;
   run: <T>(work: () => Promise<Reply<T>>, success: { title: string; sub?: string } | null) => Promise<boolean>;
-  ownerKey: string;
 }) {
   return (
     <section className="glass rounded-3xl p-5 md:p-6">
@@ -559,7 +488,6 @@ function GroupSection({
               () =>
                 call<{ group: PartnerModifierGroupDto }>(
                   "/api/partner/menu/modifier-groups",
-                  ownerKey,
                   { method: "POST", body: JSON.stringify(payload) },
                 ),
               { title: "Modifier group created", sub: payload.name },
@@ -605,7 +533,7 @@ function GroupSection({
                   setBusyId(group.id);
                   void run(
                     () =>
-                      call(`/api/partner/menu/modifier-groups/${group.id}`, ownerKey, {
+                      call(`/api/partner/menu/modifier-groups/${group.id}`, {
                         method: "DELETE",
                       }),
                     { title: "Group deleted" },
@@ -635,7 +563,7 @@ function GroupSection({
         ))}
       </ul>
 
-      <LinkGroups menu={menu} run={run} ownerKey={ownerKey} />
+      <LinkGroups menu={menu} run={run} />
     </section>
   );
 }
@@ -644,11 +572,9 @@ function GroupSection({
 function LinkGroups({
   menu,
   run,
-  ownerKey,
 }: {
   menu: PartnerMenuDto;
   run: <T>(work: () => Promise<Reply<T>>, success: { title: string; sub?: string } | null) => Promise<boolean>;
-  ownerKey: string;
 }) {
   if (menu.modifierGroups.length === 0 || menu.items.length === 0) return null;
   return (
@@ -672,7 +598,6 @@ function LinkGroups({
                     () =>
                       call(
                         `/api/partner/menu/items/${item.id}/modifier-groups/${g.id}`,
-                        ownerKey,
                         { method: "DELETE" },
                       ),
                     { title: `Removed "${g.name}"`, sub: item.name },
@@ -690,7 +615,7 @@ function LinkGroups({
               if (!groupId) return;
               void run(
                 () =>
-                  call(`/api/partner/menu/items/${item.id}/modifier-groups`, ownerKey, {
+                  call(`/api/partner/menu/items/${item.id}/modifier-groups`, {
                     method: "POST",
                     body: JSON.stringify({ groupId: Number(groupId) }),
                   }),

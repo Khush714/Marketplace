@@ -5,12 +5,21 @@ import { getRestaurantIdByMarketplaceId, getWebhookContext } from "@/db/menu-syn
 import { applyOrderStatusTransition } from "@/db/pos-delivery";
 import { mapPosEventToMarketplaceStatus } from "@/integrations/pos/order-status";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
+import { readRawBodyCapped } from "@/lib/abuse";
 import {
   computeWebhookSignature,
   menuWebhookTimestampValid,
   openWebhookSecret,
   webhookSignaturesEqual,
 } from "@/lib/webhook-crypto";
+
+/**
+ * Upstream body cap for a status frame. A status event carries a few fields;
+ * 256 KB is several orders of magnitude more than the real frame, and bounds
+ * what an unsigned flood can make the platform buffer before the signature is
+ * verified.
+ */
+const WEBHOOK_MAX_BODY_BYTES = 256 * 1024;
 
 /**
  * Single verified handler backing all four POS status webhook paths
@@ -29,7 +38,9 @@ import {
 type JsonObject = Record<string, unknown>;
 
 export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Response> {
-  const rawBody = await req.text();
+  const raw = await readRawBodyCapped(req, WEBHOOK_MAX_BODY_BYTES);
+  if (!raw.ok) return raw.response;
+  const rawBody = raw.text;
 
   const integrationId = (req.headers.get("x-integration-id") ?? "").trim();
   const tsHeader = (req.headers.get("x-timestamp") ?? "").trim();

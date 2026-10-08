@@ -11,6 +11,7 @@ import {
   verifyCheckoutSignature,
 } from "@/integrations/payments/provider-session";
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { guardWrite, readJsonBody } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,8 +30,16 @@ export const runtime = "nodejs";
  *
  * Without this route a lost or slow webhook would leave a paid customer staring
  * at a pending screen until reconciliation notices 24h later.
+ *
+ * Budgeted before the token check: every call can cost a provider API read, so
+ * the order token is not a licence to spend quota (ABUSE_BUDGETS.paymentVerify).
+ * Capture polling deliberately reads GET /api/orders/[code] instead, so a slow
+ * bank transfer never consumes this budget.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {
+  const blocked = await guardWrite(req, "paymentVerify");
+  if (blocked) return blocked;
+
   const { code } = await ctx.params;
   if (!verifyOrderToken(code, readOrderToken(req.headers))) {
     return Response.json({ error: "Not found" }, { status: 404 });
@@ -54,17 +63,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     return Response.json({ ok: false, error: "Payments are not configured" }, { status: 503 });
   }
 
-  let body: {
+  // The body is read under the standard 16 KB cap rather than with a bare
+  // `req.json()`: guardWrite has already refused an absurd declared length,
+  // and this bounds the streamed case too — a signature payload is a few
+  // hundred bytes.
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = parsed.body as {
     razorpay_payment_id?: unknown;
     razorpay_order_id?: unknown;
     razorpay_signature?: unknown;
     dev?: unknown;
   };
-  try {
-    body = (await req.json()) as typeof body;
-  } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
-  }
 
   // Local stand-in provider: no keys are configured, so there is no real money
   // and no real signature to check. `providerMode()` can only be "dev" outside
@@ -76,6 +86,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     const applied = await applyProviderPaymentEvent({
       eventId: `dev:${payment.reference}:payment.captured`,
       eventType: "payment.captured",
+      // No signature exists locally: the row must record that the money fact
+      // arrived on an unverified channel (payment-security-core).
+      channel: "dev",
       entity: {
         id: `dev_pay_${payment.reference}`,
         amount: payment.amountCents,
@@ -135,6 +148,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   const applied = await applyProviderPaymentEvent({
     eventId: `rzp:checkout:${providerPaymentId}:${eventType}`,
     eventType,
+    // The checkout triple passed HMAC verification above and the money facts
+    // were re-read from the provider's authenticated API — this is provider
+    // evidence, not a browser claim.
+    channel: "checkout",
     entity: {
       id: remote.id,
       amount: remote.amount,

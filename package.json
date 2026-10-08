@@ -14,7 +14,8 @@
     "verify": "npm run typecheck && npm run lint && npm test",
     "db:reset": "tsx src/db/reset.ts --confirm",
     "db:seed": "tsx src/db/seed.ts --confirm",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts tests/security/*.test.ts",
+    "test:security": "tsx --test tests/security/*.test.ts"
   },
   "dependencies": {
     "clsx": "^2.1.1",

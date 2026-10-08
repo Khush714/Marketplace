@@ -9,8 +9,13 @@
  * What this file defends against is *unauthenticated volume*, not
  * unauthenticated access. Every route below is either public by design or gated
  * by a capability the caller already holds (a connection code, an HMAC order
- * token, an owner key). The job is to make the capability expensive to grind
- * and to stop a single request from being large enough to hurt on its own.
+ * token, an owner key, an ops token, an integration session). The job is to
+ * make the capability expensive to grind and to stop a single request from
+ * being large enough to hurt on its own.
+ *
+ * For the credential-grade scopes the guard is charged *before* the capability
+ * is checked, so a caller presenting the wrong credential is counted rather
+ * than answered for free — a limiter that runs after a 401 bounds nothing.
  */
 
 /** One minute, in ms. Windows below are expressed in these. */
@@ -83,6 +88,84 @@ export const ABUSE_BUDGETS = {
    * a real partner who cannot find their saved key needs.
    */
   ownerVerify: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * POS login. The passkey is a capability, but the endpoint answers with a
+   * distinct success, so a script can grind it for a live tenant and burn a
+   * query — plus an audit row — per guess. A POS recovering a lost session
+   * needs a handful of attempts; 10 per ten minutes is what that looks like,
+   * and far below sustained script rates.
+   */
+  integrationLogin: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Provider checkout start. Token-gated, but each accepted call can allocate
+   * a REAL provider order — spending the tenant's API quota and writing an
+   * audit row — so a leaked or shoulder-surfed order token must not buy a
+   * grinding loop. A customer resuming a dropped payment does this a handful
+   * of times; a script doing it hundreds of times per minute is the case this
+   * budget exists for.
+   */
+  paymentStart: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Payment confirmation. Also token-gated, and each call runs an HMAC
+   * verification plus a live read of the payment from the provider — the most
+   * expensive per-request work on a customer route, and quota that competes
+   * with real captures. Polling for a late capture deliberately does NOT use
+   * this endpoint (it reads GET /api/orders/[code], budgeted under
+   * orderLookup), so 30 per ten minutes covers every checkout attempt a person
+   * can realistically make in that window, retries included.
+   */
+  paymentVerify: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * POS passkey rotation. Not a guessing endpoint — it is bearer-gated by a
+   * live integration session — but every call mints a replacement passkey AND
+   * revokes every session the restaurant holds, so a stolen session grinding
+   * it locks the POS terminals out once per call and writes an audit row each
+   * time. The budget is charged before the session check, so an
+   * unauthenticated flood is counted too. Same grade as `integrationLogin`
+   * because both are keyed on the client address, and a POS backend's address
+   * is shared across every tenant it serves.
+   */
+  passkeyRotate: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Enumerate every onboarding code. This is the ops console's working set —
+   * refetched after every mint and revoke — so it gets the headroom the
+   * single-code lookup does not: 120 per ten minutes clears any real console
+   * session and still stops a scripted walk of the list in development, where
+   * the token is optional. Volume-class on purpose; the rows it returns are
+   * exactly the rows the caller is entitled to see once past the token.
+   */
+  opsCodeList: { limit: 120, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Mint an onboarding code. Ops-token gated, but the guard runs before
+   * `requireOpsToken`, so a wrong token is charged instead of answered for
+   * free — this budget is part of the credential defence, not decoration
+   * beside it. Ten per ten minutes covers an operator onboarding a batch and
+   * is far below a scripted run against the 401.
+   */
+  opsCodeMint: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Look up one onboarding code. Charged before the token check for the same
+   * reason as minting. It also covers the development surface, where the ops
+   * token is optional and this route answers for a 5-symbol code with no
+   * credential in front of it: a state oracle over a 30^5 space that ten per
+   * ten minutes from one address takes decades to walk.
+   */
+  opsCodeRead: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Withdraw an onboarding code. Same charge-before-token reasoning, plus the
+   * one denial of service this route can perform while the ops token is
+   * optional in development: burning an operator's codes faster than they can
+   * mint replacements.
+   */
+  opsCodeRevoke: { limit: 10, windowMs: 10 * MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

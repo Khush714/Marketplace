@@ -144,8 +144,10 @@ export function makeConnectionCode(): string {
   return `CNX-${out.join("")}`;
 }
 
-/** Lifetime of an integration session token issued after code+passkey login. */
-export const INTEGRATION_SESSION_TTL_MS = 60 * 60 * 1000;
+/**
+ * Integration session lifetimes now live in `integration-session-core.ts`
+ * (absolute `expires_at` + sliding `idle_expires_at`), not here.
+ */
 
 /** Fallback imagery for restaurants onboarded via a connection code. */
 export const DEFAULT_RESTAURANT_IMAGE =

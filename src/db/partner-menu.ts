@@ -9,7 +9,6 @@ import {
   modifierOptions,
   restaurants,
 } from "@/db/schema";
-import { hashOwnerKey } from "@/lib/owner-key";
 import { DEFAULT_DISH_IMAGE, sanitizeImageUrl } from "@/lib/domain";
 import type {
   PartnerMenuDto,
@@ -23,9 +22,9 @@ import type {
  *
  * Two rules govern every function in this file:
  *
- *  1. The restaurant is resolved from the owner key, never from the request.
- *     Every statement is scoped by that resolved id, so a partner can only ever
- *     reach their own rows even if they guess another tenant's item id.
+ *  1. The restaurant is resolved from the caller's session id, never from the
+ *     request. Every statement is scoped by that resolved id, so a partner can only
+ *     ever reach their own rows even if they guess another tenant's item id.
  *  2. Partner rows carry POS columns that can never collide with a real POS.
  *     `modifier_groups.pos_group_id` and `modifier_options.pos_option_id` are
  *     NOT NULL, so a partner row needs a synthetic id. We mint them NEGATIVE
@@ -119,10 +118,20 @@ interface OwnerRow {
   isActive: boolean;
 }
 
-/** Resolve the listing that an owner key controls, or null. */
-async function resolveOwner(ownerKey: string): Promise<OwnerRow | null> {
-  const key = String(ownerKey ?? "").trim();
-  if (!key) return null;
+/**
+ * Load the listing a session resolved to, or null.
+ *
+ * Takes an id, not a key. The tenant used to be re-derived here on every call by
+ * hashing a long-lived secret the request had to carry; now it arrives as a plain
+ * integer from a revocable, expiring session, and this function is just a fetch.
+ *
+ * The id is still never taken from the request body or a URL segment — it comes
+ * from `restaurant_sessions.restaurant_id` — so the scoping below is still the
+ * whole tenant boundary.
+ */
+async function resolveOwner(restaurantId: number): Promise<OwnerRow | null> {
+  const id = Number(restaurantId);
+  if (!Number.isInteger(id) || id <= 0) return null;
   const [row] = await db
     .select({
       id: restaurants.id,
@@ -131,12 +140,19 @@ async function resolveOwner(ownerKey: string): Promise<OwnerRow | null> {
       isActive: restaurants.isActive,
     })
     .from(restaurants)
-    .where(eq(restaurants.ownerKeyHash, hashOwnerKey(key)))
+    .where(eq(restaurants.id, id))
     .limit(1);
   return row ?? null;
 }
 
-const OWNER_REQUIRED: PartnerMenuFailure = { ok: false, error: "Invalid owner key" };
+/**
+ * Reachable only if a live session points at a listing that no longer exists.
+ *
+ * Worded as an expired sign-in rather than a bad key because that is what it now
+ * is: the routes above this layer already resolved a session, so there is no owner
+ * key in play to be invalid.
+ */
+const SESSION_REQUIRED: PartnerMenuFailure = { ok: false, error: "Sign in with your owner key" };
 
 /** Assemble one group (with its options and usage count) for the editor. */
 async function loadGroupDto(groupId: number): Promise<PartnerModifierGroupDto> {
@@ -178,8 +194,8 @@ async function loadGroupDto(groupId: number): Promise<PartnerModifierGroupDto> {
 
 /* ---------------------------------- read ---------------------------------- */
 
-export async function getPartnerMenu(ownerKey: string): Promise<PartnerMenuDto | null> {
-  const owner = await resolveOwner(ownerKey);
+export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuDto | null> {
+  const owner = await resolveOwner(restaurantId);
   if (!owner) return null;
 
   const [rows, groups, options, links, integration] = await Promise.all([
@@ -301,11 +317,11 @@ function parseItemInput(input: MenuItemInput) {
 }
 
 export async function createMenuItem(
-  ownerKey: string,
+  restaurantId: number,
   input: MenuItemInput,
 ): Promise<{ ok: true; item: PartnerMenuItemDto } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   let parsed: ReturnType<typeof parseItemInput>;
   try {
     parsed = parseItemInput(input);
@@ -370,12 +386,12 @@ async function ownedItem(ownerId: number, itemId: number) {
 }
 
 export async function updateMenuItem(
-  ownerKey: string,
+  restaurantId: number,
   itemId: number,
   patch: MenuItemInput,
 ): Promise<{ ok: true; item: PartnerMenuItemDto } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const existing = await ownedItem(owner.id, itemId);
   if (!existing) return { ok: false, error: "Dish not found" };
 
@@ -430,11 +446,11 @@ export async function updateMenuItem(
 }
 
 export async function deleteMenuItem(
-  ownerKey: string,
+  restaurantId: number,
   itemId: number,
 ): Promise<{ ok: true } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const existing = await ownedItem(owner.id, itemId);
   if (!existing) return { ok: false, error: "Dish not found" };
   // menu_item_modifier_groups cascade on the item, so attachments go with it.
@@ -447,12 +463,12 @@ export async function deleteMenuItem(
 /* ----------------------------- dish <-> group ----------------------------- */
 
 export async function linkModifierGroup(
-  ownerKey: string,
+  restaurantId: number,
   itemId: number,
   groupId: unknown,
 ): Promise<{ ok: true } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const item = await ownedItem(owner.id, itemId);
   if (!item) return { ok: false, error: "Dish not found" };
 
@@ -473,12 +489,12 @@ export async function linkModifierGroup(
 }
 
 export async function unlinkModifierGroup(
-  ownerKey: string,
+  restaurantId: number,
   itemId: number,
   groupId: number,
 ): Promise<{ ok: true } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const item = await ownedItem(owner.id, itemId);
   if (!item) return { ok: false, error: "Dish not found" };
   await db
@@ -547,11 +563,11 @@ function parseBounds(min: unknown, max: unknown): { minSelect: number; maxSelect
 }
 
 export async function createModifierGroup(
-  ownerKey: string,
+  restaurantId: number,
   input: ModifierGroupInput,
 ): Promise<{ ok: true; group: PartnerModifierGroupDto } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
 
   let name: string;
   let bounds: { minSelect: number; maxSelect: number };
@@ -606,12 +622,12 @@ export async function createModifierGroup(
 }
 
 export async function updateModifierGroup(
-  ownerKey: string,
+  restaurantId: number,
   groupId: number,
   patch: ModifierGroupInput,
 ): Promise<{ ok: true; group: PartnerModifierGroupDto } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const id = Number(groupId);
   if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "Modifier group not found" };
 
@@ -698,11 +714,11 @@ export async function updateModifierGroup(
   }
 }
 export async function deleteModifierGroup(
-  ownerKey: string,
+  restaurantId: number,
   groupId: number,
 ): Promise<{ ok: true } | PartnerMenuFailure> {
-  const owner = await resolveOwner(ownerKey);
-  if (!owner) return OWNER_REQUIRED;
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
   const id = Number(groupId);
   if (!Number.isInteger(id) || id <= 0) return { ok: false, error: "Modifier group not found" };
   const [existing] = await db
