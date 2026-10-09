@@ -268,7 +268,7 @@ export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuD
     name: m.name,
     description: m.description,
     priceCents: m.priceCents,
-    imageUrl: m.imageUrl,
+    imageUrl: sanitizeImageUrl(m.imageUrl, DEFAULT_DISH_IMAGE),
     isVeg: m.isVeg,
     isBestseller: m.isBestseller,
     available: m.available,

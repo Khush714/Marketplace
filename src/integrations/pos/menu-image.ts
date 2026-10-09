@@ -21,7 +21,7 @@
  *     not blank it.
  */
 
-import { sanitizeImageUrl } from "@/lib/domain";
+import { validateImageUrl } from "@/lib/image-policy";
 
 /**
  * Keys the POS has used for a dish image. The first two are the ones the sync
@@ -65,12 +65,18 @@ export const POS_IMAGE_KEYS: readonly string[] = [
 export const MAX_POS_IMAGE_URL_LENGTH = 2048;
 
 export type PosImageRejection =
-  /** Present, but not a usable http(s) URL (e.g. `javascript:`, `ftp:`). */
+  /** Present, but not a usable https URL (e.g. `javascript:`, plain `http:`, `ftp:`). */
   | "unsupported-scheme"
   /** A `data:` image URI — inline bytes, not a link. See `readPosImage`. */
   | "data-uri"
   /** A path or protocol-relative reference with no origin. */
   | "relative"
+  /**
+   * Absolute https, but a host this marketplace will not fetch: not on the
+   * image allowlist, or a private/reserved address that would make the
+   * optimizer request our own network. See `lib/image-policy.ts`.
+   */
+  | "host-not-allowed"
   /** Longer than `MAX_POS_IMAGE_URL_LENGTH`. */
   | "too-long"
   /** Present but not a string (a nested object, an array, a number). */
@@ -79,7 +85,7 @@ export type PosImageRejection =
   | "blank";
 
 export type PosImageOutcome =
-  /** A sanitized, absolute http(s) URL — safe to write to `image_url`. */
+  /** A canonical, allowlisted https URL — safe to write to `image_url`. */
   | { kind: "url"; url: string; key: string }
   /**
    * The payload carried no image field, or every known key was absent. The
@@ -97,7 +103,7 @@ function classify(value: string): PosImageRejection | null {
   if (scheme) {
     const protocol = `${scheme[1]!.toLowerCase()}:`;
     if (protocol === "data:") return "data-uri";
-    if (protocol === "http:" || protocol === "https:") return null;
+    if (protocol === "https:") return null;
     return "unsupported-scheme";
   }
   return "relative";
@@ -107,13 +113,19 @@ function classify(value: string): PosImageRejection | null {
  * Read the dish image from one POS menu payload (a `menu.sync` item, or the body
  * of an `item.created` / `item.updated` frame).
  *
- * Only absolute http(s) URLs are accepted. A `data:` URI is rejected rather than
- * stored: `menu_items.image_url` feeds `next/image` with the default optimizer,
- * which cannot serve inline base64, and a multi-megabyte string in a `text`
- * column would be copied into every menu query, cart payload and order snapshot
- * that touches the dish. Persisting POS bytes needs a media store, which this
- * codebase does not have; until then the caller falls back to the default dish
- * artwork and the dish stays visible.
+ * Only absolute https URLs from the image allowlist are accepted. A `data:` URI
+ * is rejected rather than stored: `menu_items.image_url` feeds `next/image` with
+ * the default optimizer, which cannot serve inline base64, and a multi-megabyte
+ * string in a `text` column would be copied into every menu query, cart payload
+ * and order snapshot that touches the dish. Persisting POS bytes needs a media
+ * store, which this codebase does not have; until then the caller falls back to
+ * the default dish artwork and the dish stays visible.
+ *
+ * A POS that serves plain `http` photos from a LAN address is ALSO rejected
+ * here: the optimizer only fetches https (remotePatterns are https-only) and
+ * would refuse the private address anyway, and mixed content would be blocked
+ * on the page regardless. Keeping the contract at https means the stored value
+ * is always one the renderer can actually fetch.
  */
 export function readPosImage(body: Record<string, unknown> | null | undefined): PosImageOutcome {
   if (!body || typeof body !== "object") return { kind: "unchanged" };
@@ -136,9 +148,13 @@ export function readPosImage(body: Record<string, unknown> | null | undefined): 
     const rejection = classify(value);
     if (rejection) return { kind: "invalid", reason: rejection, key };
 
-    // `sanitizeImageUrl` is the same guard the partner editor applies, so a POS
-    // dish and a hand-authored one cannot disagree about what is renderable.
-    return { kind: "url", url: sanitizeImageUrl(value, value), key };
+    // `validateImageUrl` is the same policy the partner editor and the DTO
+    // readers apply, so a POS dish and a hand-authored one cannot disagree
+    // about which host is renderable — or about which host the optimizer is
+    // allowed to fetch server-side.
+    const url = validateImageUrl(value);
+    if (!url) return { kind: "invalid", reason: "host-not-allowed", key };
+    return { kind: "url", url, key };
   }
 
   return { kind: "unchanged" };

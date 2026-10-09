@@ -5,6 +5,7 @@ import {
   type RazorpayPaymentEntity,
   type RazorpayRefundEntity,
 } from "@/db/payments";
+import { captureProviderPayment } from "@/integrations/payments/provider-session";
 import { enqueuePaymentDelivery, coordinateCaptureDelivery } from "@/integrations/pos/payment-bridge";
 import { readRawBodyCapped } from "@/lib/abuse";
 import { emitSecurityEvent } from "@/lib/security/security-events";
@@ -180,14 +181,42 @@ export async function POST(req: NextRequest): Promise<Response> {
     return Response.json({ success: true, received: true, skipped: true, skippedReason: "NO_ENTITY" });
   }
 
+  // Auto-capture may be OFF on the provider account: a completed payment then
+  // arrives as payment.authorized and would sit at `authorized` forever without
+  // a capture. Settle it server-side — for the amount the provider reports for
+  // the payment, so only the authorised money can move — and apply the
+  // resulting capture as the authoritative money event. If the capture is not
+  // confirmed, the frame is still acknowledged and converges as unhandled.
+  let applyEventType = eventType;
+  let applyEntity: RazorpayPaymentEntity | RazorpayRefundEntity = entity;
+  if (eventType === "payment.authorized" && !isRefund) {
+    const authEntity = entity as RazorpayPaymentEntity;
+    const paymentId = String(authEntity.id ?? "").trim();
+    const captured = paymentId
+      ? await captureProviderPayment({
+          paymentId,
+          amountCents: Number(authEntity.amount ?? 0),
+          currency: String(authEntity.currency ?? "INR"),
+        })
+      : null;
+    if (captured?.status === "captured") {
+      applyEventType = "payment.captured";
+      applyEntity = { ...authEntity, status: "captured" };
+    }
+  }
+
   // Refund events are keyed on the REFUND id (not the webhook event id) so two
   // different provider events for the same refund can never double-count it.
-  // Payment events keep the webhook id — retries of one capture are stable.
+  // Payment events keep the webhook id — retries of one capture are stable. A
+  // capture we initiated is keyed on the payment id, so redelivering the
+  // authorization can neither capture nor apply twice.
   const resolvedEventId = isRefund
     ? `rzp:refund:${(entity as RazorpayRefundEntity).id ?? eventId}`
-    : `rzp:${eventId}:${eventType}`;
+    : applyEventType !== eventType
+      ? `rzp:capture:${String((entity as RazorpayPaymentEntity).id ?? "")}`
+      : `rzp:${eventId}:${eventType}`;
 
-  const result = await applyProviderPaymentEvent({ eventId: resolvedEventId, eventType, entity, rawBody, channel: "webhook" });
+  const result = await applyProviderPaymentEvent({ eventId: resolvedEventId, eventType: applyEventType, entity: applyEntity, rawBody, channel: "webhook" });
 
   // Same event_id, different bytes: acknowledge so the provider stops retrying,
   // but surface the conflict explicitly (the POS outbox must converge, not loop).
@@ -220,7 +249,7 @@ export async function POST(req: NextRequest): Promise<Response> {
   }
 
   // Applied — push money events to the POS through the bridge.
-  if (result.deliverToPos && eventType === "payment.captured") {
+  if (result.deliverToPos && applyEventType === "payment.captured") {
     const p = result.payment;
     await coordinateCaptureDelivery({
       id: p.id,
@@ -233,7 +262,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       currency: p.currency,
       method: p.method,
     });
-  } else if (result.deliverToPos && eventType.startsWith("refund.")) {
+  } else if (result.deliverToPos && applyEventType.startsWith("refund.")) {
     const p = result.payment;
     const refundEntity = entity as RazorpayRefundEntity;
     await enqueuePaymentDelivery({
@@ -270,7 +299,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     deduplicated: false,
     applied: true,
     event_id: eventId,
-    event_type: eventType,
+    event_type: applyEventType,
     payment_reference: result.payment.reference,
     payment_status: result.payment.status,
   });

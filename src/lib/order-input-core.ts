@@ -41,6 +41,20 @@ export const MAX_ITEM_QUANTITY = 99;
 export const MAX_CART_ITEMS = 50;
 
 /**
+ * Free-text bounds. Checkout body fields used to be `trim()`-ed and stored
+ * as-is into unbounded `text` columns, so a single request could park a
+ * megabyte of customer name in an order row (and have it forwarded to the POS).
+ * The JSON body cap stops the *aggregate*, not any one field, so each field
+ * carries its own bound here — the same numbers the columns and the POS bridge
+ * are sized for.
+ */
+export const MAX_CUSTOMER_NAME = 80;
+export const MAX_ADDRESS_TEXT = 500;
+export const MAX_INSTRUCTIONS = 500;
+/** Matches the slug length the listing pages and `restaurants.slug` allow. */
+export const MAX_RESTAURANT_SLUG = 120;
+
+/**
  * The payment methods checkout accepts: UPI and card go through the provider,
  * cash on delivery settles at the door. Anything else — `netbanking`, `wallet`,
  * `paypal`, an attacker's invented string — would previously have been stored
@@ -55,7 +69,8 @@ export type OrderInputErrorCode =
   | "EMPTY_CART"
   | "QUANTITY_OUT_OF_RANGE"
   | "CART_TOO_LARGE"
-  | "PAYMENT_METHOD_NOT_ALLOWED";
+  | "PAYMENT_METHOD_NOT_ALLOWED"
+  | "TERMS_NOT_ACCEPTED";
 
 /**
  * A cart line after validation: every field read here was checked, every other
@@ -197,12 +212,32 @@ export function sanitizeCart(raw: unknown): CartResult {
 export function validateCheckout(raw: unknown): CheckoutResult {
   const body = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
 
-  const restaurantSlug = typeof body.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
-  const customerName = typeof body.customerName === "string" ? body.customerName.trim() : "";
-  const addressText = typeof body.addressText === "string" ? body.addressText.trim() : "";
+  const restaurantSlug =
+    typeof body.restaurantSlug === "string"
+      ? body.restaurantSlug.trim().slice(0, MAX_RESTAURANT_SLUG)
+      : "";
+  const customerName =
+    typeof body.customerName === "string"
+      ? body.customerName.trim().slice(0, MAX_CUSTOMER_NAME)
+      : "";
+  const addressText =
+    typeof body.addressText === "string"
+      ? body.addressText.trim().slice(0, MAX_ADDRESS_TEXT)
+      : "";
   const digits = String(body.phone ?? "").replace(/\D/g, "");
   if (!restaurantSlug || !customerName || !addressText || digits.length < 10) {
     return { ok: false, error: "Missing or invalid required fields", code: "MISSING_FIELDS" };
+  }
+
+  // Consent is enforced here, not only by the checkbox in `checkout/page.tsx`.
+  // The UI binding decides whether the button lights up; this decides whether
+  // the order exists, so a direct POST cannot place one without it.
+  if (body.acceptedTerms !== true) {
+    return {
+      ok: false,
+      error: "Accept the terms and privacy policy to place your order",
+      code: "TERMS_NOT_ACCEPTED",
+    };
   }
 
   const cart = sanitizeCart(body.items);
@@ -221,7 +256,10 @@ export function validateCheckout(raw: unknown): CheckoutResult {
     typeof body.addressLabel === "string" && body.addressLabel.trim()
       ? body.addressLabel.trim().slice(0, 80)
       : undefined;
-  const instructions = typeof body.instructions === "string" ? body.instructions : undefined;
+  const instructions =
+    typeof body.instructions === "string" && body.instructions.trim()
+      ? body.instructions.trim().slice(0, MAX_INSTRUCTIONS)
+      : undefined;
   const clientRequestId =
     typeof body.clientRequestId === "string" && body.clientRequestId.trim()
       ? body.clientRequestId.trim().slice(0, 80)

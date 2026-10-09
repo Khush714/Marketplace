@@ -30,8 +30,12 @@ import { join } from "node:path";
 
 import {
   CHECKOUT_PAYMENT_METHODS,
+  MAX_ADDRESS_TEXT,
   MAX_CART_ITEMS,
+  MAX_CUSTOMER_NAME,
+  MAX_INSTRUCTIONS,
   MAX_ITEM_QUANTITY,
+  MAX_RESTAURANT_SLUG,
   checkoutPaymentMethod,
   quantityIsValid,
   sanitizeCart,
@@ -55,6 +59,7 @@ function checkoutBody(overrides: Record<string, unknown> = {}): Record<string, u
     instructions: "Ring twice",
     clientRequestId: "  attempt-1  ",
     outletId: "  outlet-9  ",
+    acceptedTerms: true,
     // Client-priced fields. None of these may survive validation.
     total: 99999,
     subtotal: 1,
@@ -71,6 +76,10 @@ function checkoutBody(overrides: Record<string, unknown> = {}): Record<string, u
 test("the checkout bounds are the documented ones", () => {
   assert.equal(MAX_ITEM_QUANTITY, 99);
   assert.equal(MAX_CART_ITEMS, 50);
+  assert.equal(MAX_CUSTOMER_NAME, 80);
+  assert.equal(MAX_ADDRESS_TEXT, 500);
+  assert.equal(MAX_INSTRUCTIONS, 500);
+  assert.equal(MAX_RESTAURANT_SLUG, 120);
   assert.deepEqual([...CHECKOUT_PAYMENT_METHODS], ["upi", "card", "cod"]);
 });
 
@@ -249,6 +258,52 @@ test("validateCheckout bounds the fields it trims so a body cannot park a blob i
   assert.equal(result.request.clientRequestId?.length, 80);
   assert.equal(result.request.outletId?.length, 64);
   assert.equal(result.request.addressLabel?.length, 80);
+});
+
+test("the free-text fields are bounded, so a body cannot park a blob in a text column", () => {
+  // The JSON body cap bounds the aggregate, not any single field: before these
+  // bounds an order row could carry a megabyte of `customerName`, and the same
+  // string is forwarded to the POS on delivery.
+  const result = validateCheckout(
+    checkoutBody({
+      customerName: "N".repeat(5_000),
+      addressText: "A".repeat(9_000),
+      instructions: "I".repeat(9_000),
+      restaurantSlug: "p".repeat(500),
+    }),
+  );
+  assert.ok(result.ok, result.ok ? "" : result.error);
+  if (!result.ok) return;
+  assert.equal(result.request.customerName.length, MAX_CUSTOMER_NAME);
+  assert.equal(result.request.addressText.length, MAX_ADDRESS_TEXT);
+  assert.equal(result.request.instructions?.length, MAX_INSTRUCTIONS);
+  assert.equal(result.request.restaurantSlug.length, MAX_RESTAURANT_SLUG);
+});
+
+test("blank instructions are dropped rather than stored as an empty string", () => {
+  const result = validateCheckout(checkoutBody({ instructions: "   " }));
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal("instructions" in result.request, false);
+});
+
+test("consent is enforced by the server, not only by the checkbox", () => {
+  // `canPlace` in checkout/page.tsx decides whether the button lights up; this
+  // decides whether the order exists. A POST straight to /api/orders must not be
+  // able to skip the gate the UI applies.
+  for (const value of [undefined, null, false, "true", "yes", 1, {}]) {
+    const result = validateCheckout(checkoutBody({ acceptedTerms: value }));
+    assert.equal(result.ok, false, `${JSON.stringify(value)} must not pass`);
+    if (!result.ok) assert.equal(result.code, "TERMS_NOT_ACCEPTED");
+  }
+  assert.ok(validateCheckout(checkoutBody({ acceptedTerms: true })).ok);
+});
+
+test("the shipped checkout form sends the consent flag the server checks", () => {
+  const source = readSource("src/app/checkout/page.tsx");
+  assert.match(source, /acceptedTerms,\n?\s*\}\)/);
+  // The consent state is read by the request, not merely by the button.
+  assert.match(source, /canPlace = detailsComplete && acceptedTerms/);
 });
 
 test("an address label the client never sent falls back to the row default", () => {

@@ -23,9 +23,14 @@
  *   - PostgreSQL 13+ reachable at 127.0.0.1:5432 with superuser
  *     `postgres`/`postgres` (the same dev database the rest of the repo uses).
  *
- * If that connection cannot be made the harness reports `ok: false` and the
- * test file skips every case with `t.skip(...)`, so `npm test` stays green on
- * machines without the local server.
+ * If that connection cannot be made the harness reports `ok: false`. What the
+ * test file then does depends on `securityTestsRequired()`:
+ *
+ *   - locally (plain `npm test`): every case skips with `t.skip(...)`, so the
+ *     suite stays green on machines without the local server;
+ *   - in CI (`CI` set, or `REQUIRE_SECURITY_TESTS=1`): the run FAILS instead.
+ *     A skipped security suite must never read as a pass, so a missing or dead
+ *     PostgreSQL service turns the job red rather than green.
  *
  * ## Environment applied to the server process
  *
@@ -618,6 +623,20 @@ export async function loginPartner(ownerKey: string, ip: string): Promise<{ resu
 
 /* ------------------------------------------------------------- bootstrap */
 
+/**
+ * Whether a missing harness must FAIL the run instead of skipping.
+ *
+ * Fail-closed whenever `CI` is truthy (GitHub Actions sets `CI=true` on every
+ * job, so this holds even if the workflow forgets `REQUIRE_SECURITY_TESTS`) or
+ * when `REQUIRE_SECURITY_TESTS=1` is set explicitly. Only a local run without
+ * either marker keeps the skip-and-stay-green behaviour.
+ */
+export function securityTestsRequired(): boolean {
+  if (process.env.REQUIRE_SECURITY_TESTS === "1") return true;
+  const ci = process.env.CI;
+  return ci !== undefined && ci !== "" && ci !== "false" && ci !== "0";
+}
+
 async function probePostgres(): Promise<boolean> {
   const probe = new Client({ connectionString: TEST_ADMIN_URL, connectionTimeoutMillis: 1500 });
   try {
@@ -746,7 +765,8 @@ function stateOf(p: string) {
 /**
  * Create the scratch database, apply the real migrations, seed the fixtures and
  * boot `next start`. Returns `{ ok: false, reason }` if the local PostgreSQL
- * prerequisite is missing, which the test file turns into skips.
+ * prerequisite is missing (or anything else fails), which the test file turns
+ * into skips locally and into hard failures when `securityTestsRequired()`.
  */
 export async function prepare(): Promise<{ ok: boolean; reason?: string }> {
   if (prepared) return prepared;

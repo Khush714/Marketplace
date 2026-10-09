@@ -5,6 +5,7 @@ import {
   revokeRestaurantSessionsForRestaurant,
   rotateOwnerKeyAsRestaurant,
 } from "@/db/queries";
+import { readJsonBody } from "@/lib/abuse";
 import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
 
 export const dynamic = "force-dynamic";
@@ -35,15 +36,13 @@ export async function POST(req: NextRequest) {
   const limit = checkRateLimit(clientKey(req, "partner-owner-key-rotate"), ROTATE_LIMIT, ROTATE_WINDOW_MS);
   if (!limit.allowed) return rateLimited(limit.retryAfterSeconds);
 
-  let currentOwnerKey: unknown;
-  try {
-    const body = (await req.json()) as { currentOwnerKey?: unknown };
-    currentOwnerKey = body.currentOwnerKey;
-  } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
-  }
-
-  const key = String(currentOwnerKey ?? "").trim();
+  // Capped read: a chunked body declares no length, so parsing the request body
+  // directly would buffer whatever the caller streams into a route whose only
+  // input is one key.
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = (parsed.body ?? {}) as { currentOwnerKey?: unknown };
+  const key = String(body.currentOwnerKey ?? "").trim();
   if (!key) {
     return Response.json({ ok: false, error: "Enter your current owner key" }, { status: 400 });
   }

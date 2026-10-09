@@ -32,6 +32,7 @@ import { join } from "node:path";
 import {
   PAID_STATUSES,
   channelVerifiesSignature,
+  isAuthorizedAwaitingCapture,
   isPaidStatus,
 } from "../src/lib/payment-security-core";
 import { ABUSE_BUDGETS } from "../src/lib/abuse-core";
@@ -71,6 +72,38 @@ test("only captured-money statuses count as paid", () => {
     assert.equal(isPaidStatus(status), false, `${status} must not read as paid`);
   }
   assert.deepEqual([...PAID_STATUSES], ["PAID", "CAPTURED"]);
+});
+
+/* ------------------------- capture-on-authorize ------------------------- */
+
+test("only an authorized payment is awaiting a capture", () => {
+  // Auto-capture off leaves a completed payment at `authorized`; that is the
+  // one provider status the server must actively capture. Everything else is
+  // either already settled or still in flight and must be left alone.
+  for (const s of ["authorized", "AUTHORIZED", " authorized "]) {
+    assert.equal(isAuthorizedAwaitingCapture(s), true, `${s} awaits a capture`);
+  }
+  for (const s of ["captured", "created", "failed", "refunded", "", null, undefined]) {
+    assert.equal(isAuthorizedAwaitingCapture(s), false, `${String(s)} is not awaiting a capture`);
+  }
+});
+
+test("the checkout callback and the webhook capture an authorized payment", () => {
+  // Both provider-verified entry points must settle an authorized payment
+  // themselves, so a deployment with auto-capture off and no capture webhook
+  // still completes real money.
+  for (const route of [VERIFY_ROUTE, WEBHOOK_ROUTE]) {
+    assert.match(
+      readSource(route),
+      /captureProviderPayment\(/,
+      `${route} must capture an authorized payment`,
+    );
+  }
+  // The capture must POST to the provider's capture endpoint, using the
+  // server-held secret — never an amount a client supplied.
+  const session = readSource("src/integrations/payments/provider-session.ts");
+  assert.match(session, /\/capture`/);
+  assert.match(session, /method:\s*"POST"/);
 });
 
 /* --------------------------- provenance column -------------------------- */

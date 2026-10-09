@@ -13,7 +13,28 @@ concurrency:
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      # Fail-closed: if the security harness cannot reach PostgreSQL the
+      # security suite FAILS instead of skipping (see tests/security/harness.ts).
+      # CI is set by GitHub Actions too, so this holds even if this line is lost.
+      REQUIRE_SECURITY_TESTS: "1"
 
     steps:
       - uses: actions/checkout@v4
@@ -29,12 +50,18 @@ jobs:
       - name: Typecheck
         run: npm run typecheck
 
-      - name: Test
-        run: npm test
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm run test:unit
+
+      - name: Security E2E tests (fail-closed)
+        run: npm run test:security
+
+      - name: Audit (high severity only, advisory)
+        run: npm audit --audit-level=high
+        continue-on-error: true
 
       - name: Build
         run: npm run build
-
-      - name: Audit (high severity only)
-        run: npm audit --audit-level=high
-        continue-on-error: true

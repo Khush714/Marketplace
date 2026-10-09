@@ -21,6 +21,7 @@ import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 
 const CREATE_ORDER_TIMEOUT_MS = 6000;
 const FETCH_PAYMENT_TIMEOUT_MS = 6000;
+const CAPTURE_PAYMENT_TIMEOUT_MS = 6000;
 const RAZORPAY_API = "https://api.razorpay.com/v1";
 
 export type ProviderMode = "razorpay" | "dev" | "unavailable";
@@ -146,6 +147,32 @@ export interface ProviderPaymentView {
   errorDescription: string | null;
 }
 
+interface RazorpayPaymentJson {
+  id?: string;
+  order_id?: string | null;
+  status?: string;
+  amount?: number;
+  currency?: string;
+  method?: string | null;
+  error_code?: string | null;
+  error_description?: string | null;
+}
+
+/** Normalise a Razorpay payment object; null when it carries no usable id. */
+function mapPaymentView(d: RazorpayPaymentJson): ProviderPaymentView | null {
+  if (!d.id) return null;
+  return {
+    id: d.id,
+    orderId: d.order_id ?? null,
+    status: d.status ?? "",
+    amount: Number(d.amount ?? 0),
+    currency: (d.currency ?? "INR").toUpperCase(),
+    method: d.method ?? null,
+    errorCode: d.error_code ?? null,
+    errorDescription: d.error_description ?? null,
+  };
+}
+
 /** Read a payment straight from the provider (used to confirm before the webhook lands). */
 export async function fetchProviderPayment(paymentId: string): Promise<ProviderPaymentView | null> {
   const creds = keys();
@@ -158,27 +185,54 @@ export async function fetchProviderPayment(paymentId: string): Promise<ProviderP
       signal: controller.signal,
     });
     if (!res.ok) return null;
-    const d = (await res.json()) as {
-      id?: string;
-      order_id?: string | null;
-      status?: string;
-      amount?: number;
-      currency?: string;
-      method?: string | null;
-      error_code?: string | null;
-      error_description?: string | null;
-    };
-    if (!d.id) return null;
-    return {
-      id: d.id,
-      orderId: d.order_id ?? null,
-      status: d.status ?? "",
-      amount: Number(d.amount ?? 0),
-      currency: (d.currency ?? "INR").toUpperCase(),
-      method: d.method ?? null,
-      errorCode: d.error_code ?? null,
-      errorDescription: d.error_description ?? null,
-    };
+    return mapPaymentView((await res.json()) as RazorpayPaymentJson);
+  } catch {
+    return null;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Capture an AUTHORIZED payment.
+ *
+ * Auto-capture is a choice the PROVIDER account makes. When it is off — or the
+ * account is configured for manual capture — a completed payment stops at
+ * `authorized`, and the only other actor that would settle it is a capture
+ * webhook, which a self-hosted deployment may not have configured. Capturing
+ * here is what lets the checkout path settle a real payment on its own.
+ *
+ * The amount is always the one the provider reports for the payment (the
+ * caller re-reads the payment first), so a capture can only ever move exactly
+ * the money the customer authorised — never an amount a client supplied.
+ *
+ * Returns the payment's post-capture state, or null when the provider could
+ * not be reached or refused (the caller keeps waiting rather than guessing).
+ */
+export async function captureProviderPayment(input: {
+  paymentId: string;
+  amountCents: number;
+  currency: string;
+}): Promise<ProviderPaymentView | null> {
+  const creds = keys();
+  if (!creds || !input.paymentId) return null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), CAPTURE_PAYMENT_TIMEOUT_MS);
+  try {
+    const res = await fetch(`${RAZORPAY_API}/payments/${encodeURIComponent(input.paymentId)}/capture`, {
+      method: "POST",
+      headers: {
+        Authorization: basicAuth(creds.keyId, creds.keySecret),
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      // amount is the smallest currency unit (paise), exactly what the payment
+      // row stores and what the customer authorised.
+      body: JSON.stringify({ amount: input.amountCents, currency: input.currency }),
+      signal: controller.signal,
+    });
+    if (!res.ok) return null;
+    return mapPaymentView((await res.json()) as RazorpayPaymentJson);
   } catch {
     return null;
   } finally {

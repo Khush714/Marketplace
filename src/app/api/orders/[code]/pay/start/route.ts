@@ -39,7 +39,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   if (payment.status === "PAID") {
     return Response.json({ ok: true, status: "PAID", alreadyPaid: true });
   }
-  if (payment.status !== "PAYMENT_PENDING") {
+  // FAILED is still payable: the customer declined once and is retrying
+  // against the same provider order. Everything else (refunds, cancelled,
+  // already captured) is genuinely no longer payable.
+  if (payment.status !== "PAYMENT_PENDING" && payment.status !== "FAILED") {
     return Response.json({ ok: false, error: "Payment is no longer payable", status: payment.status }, { status: 409 });
   }
 

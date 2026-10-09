@@ -1,3 +1,5 @@
+import { validateImageUrl } from "./image-policy";
+
 /* ------------------------------- formatting ------------------------------ */
 
 export function formatINR(cents: number): string {
@@ -159,21 +161,19 @@ export const DEFAULT_DISH_IMAGE =
   "https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg?auto=compress&cs=tinysrgb&fit=crop&h=627&w=800";
 
 /**
- * Accept only absolute http(s) image URLs. Partner-authored rows feed straight
- * into `next/image`, so a `javascript:`/`data:`/relative value would either
- * throw at render time or widen the optimizer's fetch surface.
+ * The write-boundary filter for image URLs: keep only what `lib/image-policy.ts`
+ * allows `next/image` to fetch, otherwise fall back to known-good artwork.
+ *
+ * Partner-authored rows and POS payloads feed straight into `next/image`, which
+ * optimizes remote images by having the SERVER fetch them — so this is not just
+ * a rendering guard. A `javascript:`/`data:`/relative value throws at render
+ * time, but an arbitrary absolute https URL is worse: it points the optimizer's
+ * request at a host (or an internal address) of the writer's choosing. The
+ * shared policy narrows that to the allowlisted CDNs and refuses private and
+ * reserved hosts; see that module for the full rationale.
  */
 export function sanitizeImageUrl(raw: unknown, fallback: string): string {
-  const value = String(raw ?? "").trim();
-  if (!value) return fallback;
-  let parsed: URL;
-  try {
-    parsed = new URL(value);
-  } catch {
-    return fallback;
-  }
-  if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return fallback;
-  return parsed.toString();
+  return validateImageUrl(raw) ?? fallback;
 }
 
 export const DELIVERY_FREE_ABOVE_CENTS = 49900;

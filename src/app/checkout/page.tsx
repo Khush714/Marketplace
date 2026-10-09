@@ -248,6 +248,8 @@ export default function CheckoutPage() {
           phone: digits,
           paymentMethod: choice === "online" ? "upi" : "cod",
           instructions: instructions.trim(),
+          // The server re-checks this: `canPlace` only gates the button.
+          acceptedTerms,
         }),
       });
       // Safari/WebKit throws a DOMException ("The string did not match the

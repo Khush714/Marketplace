@@ -240,8 +240,12 @@ export function buildClearedSessionCookies(opts: { secure: boolean }): string[] 
  * than a constant because it is the *only* attribute that differs between them,
  * which is exactly the kind of thing that should be visible at the call site
  * rather than buried in a shared helper.
+ *
+ * Exported for the customer session cookie (see `customer-session-core.ts`):
+ * both are "a credential in a cookie" and sharing the attribute set is what
+ * keeps `Path`/`SameSite` from drifting between the two as either evolves.
  */
-function cookieAttributes(opts: SessionCookieOptions & { httpOnly: boolean }): string[] {
+export function cookieAttributes(opts: SessionCookieOptions & { httpOnly: boolean }): string[] {
   const parts = ["Path=/"];
   if (opts.httpOnly) parts.push("HttpOnly");
   parts.push("SameSite=Lax", `Max-Age=${Math.max(0, Math.floor(opts.maxAgeSeconds))}`);

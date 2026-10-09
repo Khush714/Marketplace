@@ -62,3 +62,17 @@ export const PAID_STATUSES = ["PAID", "CAPTURED"] as const;
 export function isPaidStatus(status: string): boolean {
   return (PAID_STATUSES as readonly string[]).includes(status.toUpperCase());
 }
+
+/**
+ * Whether a provider payment status is authorized-but-not-captured — a
+ * completed payment that only a capture will settle.
+ *
+ * Auto-capture is the provider account's choice; when it is off a payment
+ * stops here. Both the checkout callback and the webhook use this to decide to
+ * capture server-side (for the amount the provider reports), so a deployment
+ * without a capture webhook still completes real payments. Kept pure and here
+ * so the decision is testable without the network.
+ */
+export function isAuthorizedAwaitingCapture(status: string | null | undefined): boolean {
+  return (status ?? "").trim().toLowerCase() === "authorized";
+}

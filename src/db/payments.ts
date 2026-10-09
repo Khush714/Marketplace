@@ -175,7 +175,12 @@ export async function bindProviderOrderId(reference: string, providerOrderId: st
     .where(eq(marketplacePayments.paymentReference, reference));
 }
 
-/** The live (awaiting provider) payment for an order, if any. */
+/**
+ * The live payment for an order, if any. FAILED is live too: a declined
+ * attempt is exactly what the retry paths (/pay/start, /pay/verify) must find
+ * again — leaving it out of this set made every resume answer 404/409 after
+ * the first card decline, even though the customer was still owed a payment.
+ */
 export async function getActivePaymentByOrder(orderId: number): Promise<PaymentRecordView | null> {
   const rows = await db
     .select()
@@ -183,7 +188,7 @@ export async function getActivePaymentByOrder(orderId: number): Promise<PaymentR
     .where(
       and(
         eq(marketplacePayments.marketplaceOrderId, orderId),
-        inArray(marketplacePayments.status, ["UNPAID", "PAYMENT_PENDING", "REFUND_PENDING", "PAID"]),
+        inArray(marketplacePayments.status, ["UNPAID", "PAYMENT_PENDING", "FAILED", "REFUND_PENDING", "PAID"]),
       ),
     )
     .orderBy(marketplacePayments.id)
@@ -207,6 +212,16 @@ export type ProviderEventOutcome =
   | { outcome: "replay_conflict" }
   | { outcome: "ignored"; reason: string }
   | { outcome: "applied"; payment: PaymentRecordView; orderId: number; deliverToPos: boolean };
+
+/**
+ * Whether a NEW provider attempt may still land on this row. A row that is
+ * captured (PAID) or inside the refund lifecycle is settled money: a late
+ * event for a superseded attempt must neither rebind `provider_payment_id`
+ * (the refund would then target the wrong payment) nor rewrite its status.
+ */
+function paymentStatusAllowsRetry(status: string): boolean {
+  return status === "UNPAID" || status === "PAYMENT_PENDING" || status === "FAILED";
+}
 
 /**
  * Process one Razorpay provider webhook transactionally:
@@ -290,6 +305,19 @@ export async function applyProviderPaymentEvent(opts: {
           .where(and(eq(marketplacePayments.provider, provider), eq(marketplacePayments.providerOrderId, orderId)))
           .limit(1);
         if (!byOrder) return { outcome: "ignored", reason: "PAYMENT_NOT_FOUND" } as const;
+        // Rebinding this way IS the retry story — a declined attempt leaves the
+        // row bound to the old pay_…, and the successful attempt's capture
+        // arrives under a new id. But only while the row is still retryable:
+        // Razorpay redelivers payment.failed out of order (a 429/5xx here is
+        // retried for days), so a late failure for a superseded attempt must
+        // never rebind or downgrade a capture that already settled.
+        if (
+          byOrder.providerPaymentId &&
+          byOrder.providerPaymentId !== providerPaymentId &&
+          !paymentStatusAllowsRetry(byOrder.status)
+        ) {
+          return { outcome: "ignored", reason: "PAYMENT_ATTEMPT_SUPERSEDED" } as const;
+        }
         pay = byOrder;
         await tx
           .update(marketplacePayments)
@@ -376,6 +404,12 @@ export async function applyProviderPaymentEvent(opts: {
     }
 
     if (eventType === "payment.failed") {
+      // Captured or refunding money is never downgraded by a failure event —
+      // not on a duplicate for the same payment id, not on a redelivery that
+      // resolved through the order-id fallback above.
+      if (!paymentStatusAllowsRetry(pay.status)) {
+        return { outcome: "ignored", reason: "PAYMENT_ALREADY_SETTLED" } as const;
+      }
       const code = String((entity as RazorpayPaymentEntity).error_code ?? "PAYMENT_FAILED").slice(0, 64) || "PAYMENT_FAILED";
       const message = String((entity as RazorpayPaymentEntity).error_description ?? "").slice(0, 500) || null;
       await tx

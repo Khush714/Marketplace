@@ -318,7 +318,16 @@ export function classifyPosVerifyFailure(err: unknown): PosVerifyOutcome {
       status: err.status,
     };
   }
-  return { kind: "fatal", message: err.message, code: err.code, status: err.status };
+  // Fall-through used to return `err.message` verbatim, which is POS-controlled
+  // text travelling back to whoever holds a partner session (and, before the
+  // session gate, to anyone). The status and code carry the diagnosis; the
+  // remote's wording does not.
+  return {
+    kind: "fatal",
+    message: "The POS rejected the connection code",
+    code: err.code,
+    status: err.status,
+  };
 }
 
 /** Attest a connection code WITHOUT consuming it. */

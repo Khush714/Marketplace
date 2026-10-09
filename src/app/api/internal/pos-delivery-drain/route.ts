@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { processPendingPosDeliveries } from "@/integrations/pos/order-bridge";
 import { processPendingPaymentDeliveries } from "@/integrations/pos/payment-bridge";
+import { requireCronAuth } from "@/lib/cron-auth";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -20,18 +21,15 @@ export const maxDuration = 60;
  * cannot cover: a POS that was briefly down, a request that timed out, or a
  * row enqueued by any other path.
  *
- * Requires `CRON_SECRET`; Vercel sends it as `Authorization: Bearer <secret>`
- * on cron invocations.
+ * Requires `CRON_SECRET` (or the ops token) through `requireCronAuth`; Vercel
+ * sends it as `Authorization: Bearer <secret>` on cron invocations. The
+ * comparison, the fail-closed-on-unconfigured decision and the refusal to trust
+ * a spoofed `x-vercel-cron` header all live in `cron-auth-core` so there is one
+ * answer shared by this route and the two `/api/cron/*` drains.
  */
 export async function GET(req: NextRequest) {
-  const secret = process.env.CRON_SECRET;
-  const provided = (req.headers.get("authorization") ?? "").replace(/^Bearer\s+/i, "").trim();
-
-  // Fail closed when no secret is configured, otherwise this route would be an
-  // unauthenticated way to force outbound traffic at the POS.
-  if (!secret || !provided || provided !== secret) {
-    return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
-  }
+  const denied = requireCronAuth(req);
+  if (denied) return denied;
 
   try {
     const [orders, payments] = await Promise.all([

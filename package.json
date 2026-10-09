@@ -15,6 +15,7 @@
     "db:reset": "tsx src/db/reset.ts --confirm",
     "db:seed": "tsx src/db/seed.ts --confirm",
     "test": "tsx --test tests/*.test.ts tests/security/*.test.ts",
+    "test:unit": "tsx --test tests/*.test.ts",
     "test:security": "tsx --test tests/security/*.test.ts"
   },
   "dependencies": {

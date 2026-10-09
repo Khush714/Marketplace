@@ -6,12 +6,14 @@ import {
 } from "@/db/payments";
 import { coordinateCaptureDelivery } from "@/integrations/pos/payment-bridge";
 import {
+  captureProviderPayment,
   fetchProviderPayment,
   providerMode,
   verifyCheckoutSignature,
 } from "@/integrations/payments/provider-session";
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { isAuthorizedAwaitingCapture } from "@/lib/payment-security-core";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -54,7 +56,12 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   if (payment.status === "PAID") {
     return Response.json({ ok: true, status: "PAID", reference: payment.reference });
   }
-  if (payment.status !== "PAYMENT_PENDING") {
+  // A FAILED payment is still confirmable: the decline that produced it may
+  // have come from attempt #1 while attempt #2 (the one this triple proves)
+  // succeeded — refusing here told a paying customer "No payment for this
+  // order". The money facts are re-read from the provider below regardless,
+  // so admitting the row costs no trust.
+  if (payment.status !== "PAYMENT_PENDING" && payment.status !== "FAILED") {
     return Response.json({ ok: false, status: payment.status, error: "Payment is no longer payable" }, { status: 409 });
   }
 
@@ -131,7 +138,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   }
 
   // Money facts come from the provider, never from the request body.
-  const remote = await fetchProviderPayment(providerPaymentId);
+  let remote = await fetchProviderPayment(providerPaymentId);
   if (!remote) {
     return Response.json({ ok: true, status: payment.status, pending: true }, { status: 202 });
   }
@@ -139,9 +146,22 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     return Response.json({ ok: false, error: "Payment does not belong to this order" }, { status: 409 });
   }
 
-  if (remote.status === "authorized") {
-    // Not captured yet: the capture webhook is what settles it.
-    return Response.json({ ok: true, status: payment.status, pending: true }, { status: 202 });
+  // Auto-capture may be OFF on the provider account: a completed payment then
+  // sits at `authorized` until someone captures it, and if no capture webhook
+  // is configured nothing ever would. Capture it here — for the amount the
+  // provider reports, so only the authorised money can move — then re-read so
+  // the money facts still come from the provider, never from a claim. If the
+  // capture is still not confirmed, keep waiting instead of guessing.
+  if (isAuthorizedAwaitingCapture(remote.status)) {
+    await captureProviderPayment({
+      paymentId: providerPaymentId,
+      amountCents: remote.amount,
+      currency: remote.currency,
+    });
+    remote = (await fetchProviderPayment(providerPaymentId)) ?? remote;
+    if (isAuthorizedAwaitingCapture(remote.status)) {
+      return Response.json({ ok: true, status: payment.status, pending: true }, { status: 202 });
+    }
   }
 
   const eventType = remote.status === "captured" ? "payment.captured" : "payment.failed";

@@ -68,9 +68,12 @@ export const CSP_HEADER = "Content-Security-Policy";
  *     `checkout.razorpay.com` is the one external script (razorpay-checkout.ts).
  *   - React renders `style={...}` as attributes, so `style-src` carries
  *     `'unsafe-inline'`; every stylesheet the app ships is same-origin.
- *   - Partner dish photos are pasted from any HTTPS host by design
- *     (`next.config.ts` images.remotePatterns is `https://**`), so `img-src`
- *     admits any `https:` source, plus `data:`/`blob:` for decoded artwork.
+ *   - `img-src` admits any `https:` source (plus `data:`/`blob:` for decoded
+ *     artwork). The CSP is the BROWSER-side half of the boundary. The
+ *     server-side half — the hosts `next/image` is actually allowed to fetch,
+ *     which is the part that matters against SSRF — is the allowlist in
+ *     `lib/image-policy.ts`, mirrored by `images.remotePatterns` in
+ *     `next.config.ts`; this directive does not need to repeat it.
  *
  * The directives that cannot break a page are already strict from day one:
  * `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`,

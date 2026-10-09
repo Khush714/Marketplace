@@ -1,5 +1,6 @@
 import { NextRequest } from "next/server";
 
+import { readJsonBody } from "@/lib/abuse";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
 
 /**
@@ -44,16 +45,24 @@ export function badRequest(error: string) {
   return Response.json({ ok: false, error }, { status: 400 });
 }
 
-/** Parse a JSON object body, or null when it is absent/unusable. */
+/**
+ * Parse a JSON object body, or null when it is absent/unusable.
+ *
+ * Reads through the shared capped reader rather than `req.json()`: Next has
+ * already buffered the body by the time a handler runs, and `req.json()` alone
+ * only respects the *declared* `content-length`, which a chunked request does
+ * not send. The 16 KB cap is the same one the unauthenticated routes use, so a
+ * session holder cannot park an arbitrarily large payload in memory either. An
+ * over-sized body comes back as `null`, which every caller already maps to a
+ * 400.
+ */
 export async function readBody(req: NextRequest): Promise<Record<string, unknown> | null> {
-  try {
-    const parsed: unknown = await req.json();
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>)
-      : null;
-  } catch {
-    return null;
-  }
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return null;
+  const value: unknown = parsed.body;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 /** Path segment → number, or null when it is not a positive row id. */

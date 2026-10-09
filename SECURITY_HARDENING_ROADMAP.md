@@ -127,7 +127,7 @@ The policy ships in a first stage that cannot break the UI:
 |---|---|---|
 | `script-src` | `'self' 'unsafe-inline' https://checkout.razorpay.com` (+ `'unsafe-eval'` outside production) | Next bootstraps with inline script chunks; dropping `'unsafe-inline'` without a nonce is the classic way to ship a blank page |
 | `style-src` | `'self' 'unsafe-inline'` | React renders `style={...}` as attributes |
-| `img-src` | `'self' data: blob: https:` | Partner dish photos are pasted from any HTTPS host by design (`images.remotePatterns` is `https://**`) |
+| `img-src` | `'self' data: blob: https:` | External artwork is https-only; the server-side fetch surface is the allowlist in `lib/image-policy.ts` (mirrored by `images.remotePatterns`) |
 | `font-src` | `'self' data:` | `next/font` self-hosts every woff2 |
 | `connect-src` / `frame-src` | self + `*.razorpay.com` + checkout/api origins | checkout.js XHRs and the checkout dialog iframe |
 | `object-src 'none'`, `base-uri 'self'`, `form-action 'self'`, `frame-ancestors 'none'` | strict from day one | These cannot break a page |

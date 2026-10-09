@@ -10,6 +10,7 @@ import {
   upsertIntegrationIdentity,
 } from "@/db/queries";
 import { setWebhookContext } from "@/db/menu-sync";
+import { readJsonBody } from "@/lib/abuse";
 import { claimPosConnection, PosBridgeError, type PosConnectionIdentity } from "@/lib/pos-bridge";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
 import { sealWebhookSecret } from "@/lib/webhook-crypto";
@@ -24,11 +25,16 @@ export const dynamic = "force-dynamic";
  * browser; there is no credential left here to send.
  */
 async function bodyOf(req: NextRequest): Promise<Record<string, unknown>> {
-  try {
-    return (await req.json()) as Record<string, unknown>;
-  } catch {
-    return {};
-  }
+  // Through the shared 16 KB capped reader: parsing the request body directly
+  // honours only the declared `content-length`, which a chunked body does not
+  // send. A refused body lands here as `{}`, and the field checks below turn
+  // that into a 400.
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return {};
+  const value: unknown = parsed.body;
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 /**
@@ -295,7 +301,9 @@ export async function POST(req: NextRequest) {
             ? "Connection not accepted by the POS"
             : err.status === 502 || err.status === 503
               ? "The POS is unreachable — try again"
-              : err.message;
+              : // Never the remote's own wording: this body reaches a client, and
+                // the status plus `err.code` already carry the diagnosis.
+                "The POS rejected the connection code";
       return Response.json({ ok: false, error: message, code: err.code }, { status: err.status });
     }
     return Response.json({ ok: false, error: "Could not connect the POS" }, { status: 500 });

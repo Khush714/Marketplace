@@ -71,6 +71,10 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
   // Spoofed / unknown tenant → 403 so the acceptance contract holds: a
   // restaurant that doesn't exist on this Marketplace is a hard rejection,
   // distinguishable from a wrong-signature (401) on a known tenant.
+  //
+  // Neither refusal carries the diagnostics block: that body goes back to a caller who has
+  // not proven anything yet, and the three booleans would tell them which check
+  // to work on next. `_diag` starts at the first verified frame.
   if (!restaurantValid) {
     return Response.json(
       {
@@ -80,7 +84,6 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
         deduplicated: false,
         applied: false,
         error: "unknown_marketplace_id",
-        _diag: diag,
       },
       { status: 403 },
     );
@@ -96,7 +99,6 @@ export async function handlePosOrderStatusWebhook(req: NextRequest): Promise<Res
         deduplicated: false,
         applied: false,
         error: "invalid_signature",
-        _diag: diag,
       },
       { status: 401 },
     );

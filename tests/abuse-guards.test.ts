@@ -403,6 +403,28 @@ test("the signature webhooks read their bodies under an explicit cap", () => {
   }
 });
 
+test("the authenticated JSON routes read their bodies under the same cap", () => {
+  // `req.json()` honours only the declared `content-length`, and a chunked
+  // request sends none — so a session holder could stream an arbitrary payload
+  // into memory before anything refused it. These routes go through
+  // `readJsonBody` / `readBody`, which count the stream as it arrives.
+  const routes = [
+    "src/app/api/partner/menu/items/route.ts",
+    "src/app/api/partner/menu/items/[id]/route.ts",
+    "src/app/api/partner/menu/items/[id]/modifier-groups/route.ts",
+    "src/app/api/partner/menu/modifier-groups/route.ts",
+    "src/app/api/partner/menu/modifier-groups/[id]/route.ts",
+    "src/app/api/partner/integrations/route.ts",
+    "src/app/api/partner/integrations/verify/route.ts",
+    "src/app/api/partner/owner-key/rotate/route.ts",
+  ];
+  for (const path of routes) {
+    const source = readSource(path);
+    assert.match(source, /\b(readJsonBody|readBody)\(/, `${path} must use the capped reader`);
+    assert.doesNotMatch(source, /req\.json\(\)/, `${path} must not fall back to an uncapped read`);
+  }
+});
+
 test("the public read surface is CDN-cacheable behind the guards", () => {
   // Browse, search and the slug page are the anonymous-volume surface. Caching
   // the responses for 60 seconds means a repeated-URL flood is absorbed by the

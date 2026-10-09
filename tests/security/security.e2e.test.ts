@@ -3,8 +3,10 @@
  *
  * Exercises the security decisions the app makes at the HTTP boundary against
  * a scratch database and a real `next start` server (see ./harness.ts). The
- * harness needs local PostgreSQL at 127.0.0.1:5432 (postgres/postgres); when it
- * is absent every case here skips, so the plain `npm test` stays green elsewhere.
+ * harness needs local PostgreSQL at 127.0.0.1:5432 (postgres/postgres). When
+ * it is absent, plain local `npm test` skips every case and stays green; in CI
+ * (any truthy `CI`, or `REQUIRE_SECURITY_TESTS=1`) the same condition FAILS
+ * the run instead — a skipped security suite must never read as a pass.
  *
  * One file on purpose: `node --test` runs test files in separate processes, and
  * every suite below contends on one server, one database and the server's
@@ -26,11 +28,14 @@ import {
   makeSecretToken,
   makeTrackingToken,
   OPS_TOKEN,
+  orderTokenFor,
   prepare,
   queryRow,
   queryRows,
+  RAZORPAY_KEY_SECRET,
   resetAndSeed,
   revokeIntegrationSession,
+  securityTestsRequired,
   seedConnectionCode,
   seedOrder,
   seedPayment,
@@ -56,18 +61,31 @@ const IPS = {
 let harnessReady = false;
 let harnessReason = "harness not prepared";
 
+/**
+ * Guard for every case below. Skips only when skipping is allowed (local runs);
+ * when the suite is required (CI / `REQUIRE_SECURITY_TESTS=1`) an unavailable
+ * harness is a hard failure, never a silent green.
+ */
 function skipIfUnavailable(t: TestContext): boolean {
-  if (!harnessReady) {
-    t.skip(harnessReason);
-    return true;
+  if (harnessReady) return false;
+  if (securityTestsRequired()) {
+    assert.fail(
+      `security tests are required in this environment but the harness is unavailable: ${harnessReason}`,
+    );
   }
-  return false;
+  t.skip(harnessReason);
+  return true;
 }
 
 before(async () => {
   const r = await prepare();
   harnessReady = r.ok;
   harnessReason = r.reason ?? "harness could not start";
+  if (!harnessReady && securityTestsRequired()) {
+    throw new Error(
+      `security tests are required in this environment but the harness could not start: ${harnessReason}`,
+    );
+  }
 });
 
 after(async () => {
@@ -810,7 +828,7 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
     orderId: string,
     paymentReference: string,
     amountCents = 18000,
-  ): Promise<{ orderId: number; providerOrderId: string; paymentReference: string }> {
+  ): Promise<{ orderId: number; code: string; providerOrderId: string; paymentReference: string }> {
     const r = await seedRestaurant({
       slug: `pay-${tag}`,
       name: `Pay ${tag}`,
@@ -832,7 +850,7 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
       providerOrderId: orderId,
       amountCents,
     });
-    return { orderId: order.id, providerOrderId: orderId, paymentReference };
+    return { orderId: order.id, code: order.code, providerOrderId: orderId, paymentReference };
   }
 
   function captureFrame(
@@ -843,6 +861,27 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
       id: eventId,
       event: "payment.captured",
       payload: { payment: { entity } },
+    });
+  }
+
+  function failedFrame(
+    eventId: string,
+    entity: Record<string, unknown>,
+  ): string {
+    return JSON.stringify({
+      id: eventId,
+      event: "payment.failed",
+      payload: { payment: { entity } },
+    });
+  }
+
+  /** POST /pay/start exactly the way the browser does: code + access token. */
+  function startPayment(code: string): ReturnType<typeof api> {
+    return api({
+      path: `/api/orders/${encodeURIComponent(code)}/pay/start`,
+      method: "POST",
+      ip: IPS.payment,
+      headers: { "x-order-token": orderTokenFor(code) },
     });
   }
 
@@ -1016,5 +1055,147 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
       0,
       "forged capture must never advance the payment to PAID",
     );
+  });
+
+  /* ---- the decline → retry story (order placement's recovery path) ------ */
+
+  it("a declined payment stays resumable: /pay/start answers after payment.failed", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const fx = await seedPaidFixture("resume", "ord_py_resume", "PAY-SEC-RESUME");
+    const declined = await sendWebhook(
+      failedFrame("evt_py_resume_fail", {
+        id: "pay_py_resume_1",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "failed",
+        error_code: "CARD_DECLINED",
+        error_description: "declined",
+      }),
+    );
+    assert.equal(declined.status, 200);
+    assert.equal(declined.json?.["payment_status"], "FAILED");
+
+    // The order-success screen's "Resume payment" button hits exactly this.
+    const started = await startPayment(fx.code);
+    assert.equal(started.status, 200, `a FAILED payment must stay resumable: ${started.text}`);
+    assert.equal(started.json?.["ok"], true);
+    assert.equal(started.json?.["providerOrderId"], fx.providerOrderId);
+  });
+
+  it("a retried checkout can be confirmed: /pay/verify finds a FAILED payment", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const fx = await seedPaidFixture("reverify", "ord_py_reverify", "PAY-SEC-REVERIFY");
+    await sendWebhook(
+      failedFrame("evt_py_reverify_fail", {
+        id: "pay_py_reverify_1",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "failed",
+        error_code: "CARD_DECLINED",
+        error_description: "declined",
+      }),
+    );
+
+    // Attempt #2 succeeds: the browser hands back a signature-valid triple
+    // for a payment id the row has never seen (the row still reads FAILED).
+    const paymentId = "pay_py_reverify_2";
+    const signature = hmacSha256Hex(RAZORPAY_KEY_SECRET, `${fx.providerOrderId}|${paymentId}`);
+    const res = await api({
+      path: `/api/orders/${encodeURIComponent(fx.code)}/pay/verify`,
+      method: "POST",
+      ip: IPS.payment,
+      headers: { "x-order-token": orderTokenFor(fx.code) },
+      body: {
+        razorpay_order_id: fx.providerOrderId,
+        razorpay_payment_id: paymentId,
+        razorpay_signature: signature,
+      },
+    });
+    // The route then re-reads the money from the provider; the harness keys
+    // are not real Razorpay credentials, so it stops at "not confirmed yet".
+    // Before the fix this was a 404 — the FAILED row was invisible here.
+    assert.equal(res.status, 202, res.text);
+    assert.equal(res.json?.["pending"], true);
+  });
+
+  it("a capture after a decline still lands PAID (rebind to the successful attempt)", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const fx = await seedPaidFixture("rebind", "ord_py_rebind", "PAY-SEC-REBIND");
+    await sendWebhook(
+      failedFrame("evt_py_rebind_fail", {
+        id: "pay_py_rebind_1",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "failed",
+        error_code: "CARD_DECLINED",
+        error_description: "declined",
+      }),
+    );
+    const captured = await sendWebhook(
+      captureFrame("evt_py_rebind_ok", {
+        id: "pay_py_rebind_2",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "captured",
+        method: "upi",
+      }),
+    );
+    assert.equal(captured.json?.["payment_status"], "PAID");
+    const pay = await queryRow<{ status: string; provider_payment_id: string | null }>(
+      "select status, provider_payment_id from marketplace_payments where payment_reference = $1",
+      [fx.paymentReference],
+    );
+    assert.equal(pay?.status, "PAID");
+    assert.equal(pay?.provider_payment_id, "pay_py_rebind_2", "the row must rebind to the successful attempt");
+    const order = await queryRow<{ paymentStatus: string }>(
+      'select payment_status as "paymentStatus" from orders where id = $1',
+      [fx.orderId],
+    );
+    assert.equal(order?.paymentStatus, "PAID");
+  });
+
+  it("a late payment.failed for a superseded attempt cannot un-pay a capture", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const fx = await seedPaidFixture("latefail", "ord_py_latefail", "PAY-SEC-LATEFAIL");
+    await sendWebhook(
+      captureFrame("evt_py_latefail_ok", {
+        id: "pay_py_latefail_2",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "captured",
+        method: "upi",
+      }),
+    );
+    // Attempt #1's decline webhook arrives AFTER the capture — Razorpay
+    // redelivers frames we 429'd or 500'd earlier, out of order with the retry.
+    const late = await sendWebhook(
+      failedFrame("evt_py_latefail_old", {
+        id: "pay_py_latefail_1",
+        amount: 18000,
+        currency: "INR",
+        order_id: fx.providerOrderId,
+        status: "failed",
+        error_code: "CARD_DECLINED",
+        error_description: "declined",
+      }),
+    );
+    assert.equal(late.json?.["skipped"], true);
+    assert.equal(late.json?.["skippedReason"], "PAYMENT_ATTEMPT_SUPERSEDED");
+    const pay = await queryRow<{ status: string; provider_payment_id: string | null }>(
+      "select status, provider_payment_id from marketplace_payments where payment_reference = $1",
+      [fx.paymentReference],
+    );
+    assert.equal(pay?.status, "PAID", "a late failure must never downgrade captured money");
+    assert.equal(pay?.provider_payment_id, "pay_py_latefail_2", "the refund must still target the captured payment");
+    const order = await queryRow<{ paymentStatus: string }>(
+      'select payment_status as "paymentStatus" from orders where id = $1',
+      [fx.orderId],
+    );
+    assert.equal(order?.paymentStatus, "PAID");
   });
 });

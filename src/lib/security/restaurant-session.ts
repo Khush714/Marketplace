@@ -68,8 +68,13 @@ export function readSessionToken(req: NextRequest): string {
  * `x-forwarded-proto`; trusting it to *add* an attribute is safe, because the
  * failure mode of being wrong is a cookie marked `Secure` on an HTTP dev host,
  * which the browser drops — not a cookie shipped in the clear over HTTPS.
+ *
+ * Typed against `Request` rather than `NextRequest` because the logic reads
+ * only `headers` and `url`, both of which every request type has — the
+ * customer session cookie (see `@/lib/customer-session.ts`) shares this
+ * helper rather than growing a second copy that could drift.
  */
-export function cookieShouldBeSecure(req: NextRequest): boolean {
+export function cookieShouldBeSecure(req: Request): boolean {
   const proto = (req.headers.get("x-forwarded-proto") ?? "").split(",")[0]?.trim().toLowerCase();
   if (proto === "https") return true;
   if (proto === "http") return false;

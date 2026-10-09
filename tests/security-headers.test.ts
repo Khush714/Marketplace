@@ -86,8 +86,9 @@ test("the policy still allows what the app renders", () => {
   const style = directive(PRODUCTION, "style-src") ?? "";
   assert.match(style, /'unsafe-inline'/);
 
-  // Partner dish photos come from any HTTPS host (images.remotePatterns is
-  // `https://**`), and next/font serves its woff2 files same-origin.
+  // External artwork is https-only (the BROWSER-side half; the hosts the
+  // optimizer may fetch server-side are the allowlist in lib/image-policy.ts),
+  // and next/font serves its woff2 files same-origin.
   const img = directive(PRODUCTION, "img-src") ?? "";
   assert.match(img, /'self'/);
   assert.match(img, /\bhttps:/, "external artwork must keep loading");

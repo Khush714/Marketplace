@@ -120,6 +120,31 @@ export const ABUSE_BUDGETS = {
   paymentVerify: { limit: 30, windowMs: 10 * MINUTE_MS },
 
   /**
+   * Attach order codes to this browser's anonymous session
+   * (`POST /api/orders/attach`). Cheap per call — a few HMAC verifications and
+   * one jsonb merge — but it is the credential-creation endpoint: unverified
+   * pairs are rejected, yet every accepted call grows the session's bound
+   * history, and a loop presenting one valid token would otherwise rewrite the
+   * row as fast as it can. Charged before verification for the usual reason:
+   * a wrong token is counted, not answered for free. 60 per ten minutes clears
+   * a whole order history being flushed from an old browser in one go (the
+   * boot-time claim retry does exactly that) while staying a per-hour
+   * rounding error next to scripted volume.
+   */
+  customerSession: { limit: 60, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Cancel an order. Previously unguarded entirely — it was bearer-token-only
+   * and nothing else — but the same credential now rides a cookie, so the
+   * route needs the origin check `guardWrite` pairs with this budget. Each
+   * accepted call writes the order to CANCELLED and can roll back a payment
+   * intent, so a holder of one session token grinding it is the threat: 30 per
+   * ten minutes is every retry a real cancellation flow produces, and the
+   * guard runs before `orderAuthorized` so a wrong credential is charged too.
+   */
+  orderCancel: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
    * POS passkey rotation. Not a guessing endpoint — it is bearer-gated by a
    * live integration session — but every call mints a replacement passkey AND
    * revokes every session the restaurant holds, so a stolen session grinding

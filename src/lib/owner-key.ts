@@ -1,5 +1,5 @@
 import "server-only";
-import { createHash, randomBytes } from "node:crypto";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
 /** Server-generated ownership secret, returned to a restaurant exactly once. */
 export function makeOwnerKey(): string {
@@ -28,12 +28,19 @@ export function hashToken(token: string): string {
   return sha256hex(token);
 }
 
-/** Constant-time-ish compare for ownership checks. */
+/**
+ * Constant-time compare for ownership checks.
+ *
+ * Both sides are SHA-256 digests, so a bytewise compare is already only a
+ * theoretical leak — but `Buffer.compare` returns on the first differing byte,
+ * and this is an authentication path. `timingSafeEqual` is the same cost and
+ * removes the argument.
+ */
 export function ownerKeyMatches(hash: string | null, ownerKey: string): boolean {
   if (!hash) return false;
   const a = Buffer.from(hash);
   const b = Buffer.from(hashOwnerKey(ownerKey));
-  return a.length === b.length && Buffer.compare(a, b) === 0;
+  return a.length === b.length && timingSafeEqual(a, b);
 }
 
 /**

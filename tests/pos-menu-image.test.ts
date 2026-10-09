@@ -15,6 +15,12 @@
  * The central contract is the THREE-state outcome. "This payload says nothing
  * about the image" must be distinguishable from "this payload carries a broken
  * image", because only the first may leave the stored photo alone.
+ *
+ * The payload is also untrusted input to a SERVER-SIDE fetcher: the value is
+ * stored in a column `next/image` optimizes, and the optimizer fetches it. So
+ * a syntactically valid https URL is not enough — it must name an allowlisted
+ * host and not a private/reserved address. See `lib/image-policy.ts` and
+ * `tests/image-ssrf.test.ts` for that half of the boundary.
  */
 
 import { test } from "node:test";
@@ -28,7 +34,9 @@ import {
   type PosImageOutcome,
 } from "../src/integrations/pos/menu-image";
 
-const DISH = "https://cdn.pos.example/dishes/paneer-tikka.jpg";
+// A dish photo on an allowlisted host — Supabase Storage is where the POS
+// uploads its `dish-images` bucket, so this is the real production shape.
+const DISH = "https://abc.supabase.co/storage/v1/object/public/dishes/paneer-tikka.jpg";
 const FALLBACK = "https://images.pexels.com/photos/1640777/pexels-photo-1640777.jpeg";
 
 function expectUrl(outcome: PosImageOutcome, url: string): void {
@@ -130,8 +138,43 @@ test("rejects an implausibly long image value before storing it", () => {
   assert.equal(outcome.kind === "invalid" ? outcome.reason : null, "too-long");
 });
 
-test("accepts plain http, which a LAN or quick-tunnel POS actually serves", () => {
-  expectUrl(readPosImage({ image_url: "http://192.168.1.40:5000/dish.jpg" }), "http://192.168.1.40:5000/dish.jpg");
+test("rejects plain http — the optimizer only fetches https and the page would block it", () => {
+  const outcome = readPosImage({ image_url: "http://192.168.1.40:5000/dish.jpg" });
+  assert.equal(outcome.kind, "invalid");
+  assert.equal(outcome.kind === "invalid" ? outcome.reason : null, "unsupported-scheme");
+});
+
+test("rejects an https image whose host is not on the allowlist", () => {
+  // Well-formed https, but `next/image` would fetch this server-side. An
+  // arbitrary host makes the marketplace an open proxy, so it is refused even
+  // though the scheme is fine.
+  for (const bad of [
+    "https://cdn.pos.example/dishes/paneer-tikka.jpg",
+    "https://images.pexels.com.evil.example/x.jpg",
+    "https://notimages.pexels.com/x.jpg",
+  ]) {
+    const outcome = readPosImage({ image_url: bad });
+    assert.equal(outcome.kind, "invalid", `expected ${bad} to be rejected`);
+    assert.equal(outcome.kind === "invalid" ? outcome.reason : null, "host-not-allowed");
+  }
+});
+
+test("rejects private and reserved hosts even over https", () => {
+  // The classic SSRF targets: loopback, RFC 1918, and the cloud metadata
+  // service. The optimizer refuses these at fetch time too; the contract
+  // refuses them so they are never even stored.
+  for (const bad of [
+    "https://127.0.0.1/dish.jpg",
+    "https://10.0.0.8/dish.jpg",
+    "https://192.168.1.40:8443/dish.jpg",
+    "https://169.254.169.254/latest/meta-data/",
+    "https://[::1]/dish.jpg",
+    "https://localhost/dish.jpg",
+  ]) {
+    const outcome = readPosImage({ image_url: bad });
+    assert.equal(outcome.kind, "invalid", `expected ${bad} to be rejected`);
+    assert.equal(outcome.kind === "invalid" ? outcome.reason : null, "host-not-allowed");
+  }
 });
 
 test("an update keeps the stored photo only when the payload said nothing", () => {
@@ -155,6 +198,12 @@ test("an update HEALS a stored value the POS cannot render", () => {
   assert.equal(posImageForUpdate(readPosImage({ img: "Dessert" }), FALLBACK), FALLBACK);
   assert.equal(posImageForUpdate(readPosImage({ image_url: "javascript:alert(1)" }), FALLBACK), FALLBACK);
   assert.equal(posImageForUpdate(readPosImage({ image_url: "/uploads/p.jpg" }), FALLBACK), FALLBACK);
+  // A syntactically valid URL on a host the optimizer will not fetch is just
+  // as broken as a category name, so it heals the same way.
+  assert.equal(
+    posImageForUpdate(readPosImage({ image_url: "https://cdn.pos.example/x.jpg" }), FALLBACK),
+    FALLBACK,
+  );
 });
 
 test("an insert falls back to default artwork and never writes an empty src", () => {

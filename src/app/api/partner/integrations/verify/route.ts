@@ -1,5 +1,10 @@
 import { NextRequest } from "next/server";
-import { verifyPosConnection, classifyPosVerifyFailure } from "@/lib/pos-bridge";
+import { readJsonBody } from "@/lib/abuse";
+import {
+  verifyPosConnection,
+  classifyPosVerifyFailure,
+  type PosConnectionIdentity,
+} from "@/lib/pos-bridge";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
 
 export const dynamic = "force-dynamic";
@@ -18,7 +23,9 @@ export async function POST(req: NextRequest) {
   const auth = await requirePartnerSession(req, { mutating: true });
   if (!auth.ok) return auth.response;
 
-  const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
+  const parsed = await readJsonBody(req);
+  if (!parsed.ok) return parsed.response;
+  const body = (parsed.body ?? {}) as Record<string, unknown>;
   const connectionCode = String(body?.connection_code ?? "").trim();
   if (!connectionCode) {
     return Response.json({ ok: false, error: "connection_code is required" }, { status: 400 });
@@ -26,7 +33,13 @@ export async function POST(req: NextRequest) {
 
   try {
     const detected = await verifyPosConnection(connectionCode);
-    return Response.json({ ok: true, detected });
+    // `PosConnectionIdentity.webhook_secret` is documented as never echoed back
+    // to clients. The claim route already answers with the stored record rather
+    // than the attestation, so this is the one path that could leak it — the
+    // field is dropped here rather than trusted to stay empty upstream.
+    const safe: PosConnectionIdentity = { ...detected };
+    delete safe.webhook_secret;
+    return Response.json({ ok: true, detected: safe });
   } catch (err) {
     const outcome = classifyPosVerifyFailure(err);
     if (outcome.kind === "redeemed") {

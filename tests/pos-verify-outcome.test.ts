@@ -77,6 +77,20 @@ test("a 409 that is not a redemption is not mistaken for one", () => {
   assert.equal(outcome.kind === "fatal" ? outcome.status : 0, 409);
 });
 
+test("an unmatched POS failure never echoes the remote's wording back to a client", () => {
+  // Everything the classifier maps explicitly (401, 502, 503) already has fixed
+  // copy. The fall-through used to return `err.message`, which is text the POS
+  // chose, travelling to whoever holds a partner session. The status and code
+  // carry the diagnosis; the wording does not.
+  const remoteSaid = "connect to 10.0.0.7 with token sk-live-abc";
+  const outcome = classifyPosVerifyFailure(new PosBridgeError(remoteSaid, 418, "TEAPOT"));
+
+  assert.equal(outcome.kind, "fatal");
+  assert.equal(outcome.kind === "fatal" ? outcome.message : "", "The POS rejected the connection code");
+  assert.equal(outcome.kind === "fatal" ? outcome.code : "", "TEAPOT");
+  assert.equal(outcome.kind === "fatal" ? outcome.status : 0, 418);
+});
+
 test("a non-bridge error is reported as a 500 rather than crashing", () => {
   const outcome = classifyPosVerifyFailure(new Error("boom"));
 

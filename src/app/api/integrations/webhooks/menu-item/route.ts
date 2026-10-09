@@ -116,6 +116,10 @@ export async function POST(req: NextRequest) {
 
   if (!verified) {
     const status = signatureValid === false ? 401 : timestampValid === false ? 401 : 403;
+    // The diagnostics block is not on the refusal: this body is what an unsigned caller reads, and
+    // telling them which of the three checks failed is a free oracle for
+    // probing signatures and timestamps. The verified branches keep it — the
+    // caller already proved they hold the secret.
     return Response.json(
       {
         received: true,
@@ -123,7 +127,6 @@ export async function POST(req: NextRequest) {
         deduplicated: false,
         event: eventType,
         event_id: eventId,
-        _diag: diag,
       },
       { status },
     );

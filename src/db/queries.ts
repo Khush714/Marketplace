@@ -5,6 +5,7 @@ import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
   connectionCodes,
   connections,
+  customerSessions,
   integrationAudit,
   integrationRecords,
   integrationSessions,
@@ -21,6 +22,7 @@ import {
 import {
   billFor,
   CUISINES,
+  DEFAULT_DISH_IMAGE,
   DEFAULT_LOCALITY,
   DEFAULT_RESTAURANT_HERO,
   DEFAULT_RESTAURANT_IMAGE,
@@ -39,6 +41,7 @@ import {
   nextIdleExpiry,
 } from "@/lib/integration-session-core";
 import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONFIRM_TTL_MS } from "@/lib/restaurant-session-core";
+import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes } from "@/lib/customer-session-core";
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
@@ -79,6 +82,14 @@ import type {
 
 /* ------------------------------- mappers --------------------------------- */
 
+/*
+ * Every DTO that carries an image re-applies `sanitizeImageUrl`, so a row
+ * written before `lib/image-policy.ts` existed — or by a path that somehow
+ * bypassed it — still cannot reach `next/image` with a host the optimizer
+ * refuses. Read-through validation, not just write-time, is what keeps the
+ * rendered catalogue and the fetch surface in agreement.
+ */
+
 function toRestaurantDto(r: typeof restaurants.$inferSelect): RestaurantDto {
   return {
     id: r.id,
@@ -92,8 +103,8 @@ function toRestaurantDto(r: typeof restaurants.$inferSelect): RestaurantDto {
     deliveryMinutes: r.deliveryMinutes,
     distanceKm: r.distanceKm,
     offer: r.offer,
-    imageUrl: r.imageUrl,
-    heroUrl: r.heroUrl,
+    imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
+    heroUrl: sanitizeImageUrl(r.heroUrl, DEFAULT_RESTAURANT_HERO),
     featured: r.featured,
     pureVeg: r.pureVeg,
     locality: r.locality,
@@ -112,7 +123,7 @@ function toMenuItemDto(
     name: m.name,
     description: m.description,
     priceCents: m.priceCents,
-    imageUrl: m.imageUrl,
+    imageUrl: sanitizeImageUrl(m.imageUrl, DEFAULT_DISH_IMAGE),
     isVeg: m.isVeg,
     isBestseller: m.isBestseller,
     ...(modifierGroups?.length ? { modifierGroups } : {}),
@@ -254,7 +265,13 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
     restaurantName: o.restaurantName,
     restaurantId: o.restaurantId,
     externalOrderId: o.externalOrderId,
-    items: o.items as OrderItemSnapshot[],
+    // Snapshots freeze the item at order time; re-sanitising on the way out
+    // means an order placed while an image URL was still unvalidated cannot
+    // surface a host the optimizer now refuses.
+    items: (o.items as OrderItemSnapshot[]).map((it) => ({
+      ...it,
+      imageUrl: sanitizeImageUrl(it.imageUrl, DEFAULT_DISH_IMAGE),
+    })),
     addressLabel: o.addressLabel,
     addressText: o.addressText,
     customerName: o.customerName,
@@ -380,7 +397,10 @@ export interface BrowseFilters {
 export async function browseRestaurants(filters: BrowseFilters = {}): Promise<RestaurantDto[]> {
   const conditions: (SQL | undefined)[] = [discoverableRestaurant];
   if (filters.q) {
-    const like = `%${filters.q}%`;
+    // Escaped the same way `searchAll` escapes: `%`/`_` in a typed term are
+    // literals, not pattern syntax, so a query of "%" does not match the whole
+    // catalogue (and browse has no `.limit()` to absorb it).
+    const like = `%${escapeLike(filters.q)}%`;
     conditions.push(
       or(
         ilike(restaurants.name, like),
@@ -524,7 +544,7 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     rating: r.rating,
     ratingsCount: r.ratingsCount,
     deliveryMinutes: r.deliveryMinutes,
-    imageUrl: r.imageUrl,
+    imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
     offer: r.offer,
   }));
 
@@ -562,7 +582,7 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     name: d.name,
     priceCents: d.priceCents,
     isVeg: d.isVeg,
-    imageUrl: d.imageUrl,
+    imageUrl: sanitizeImageUrl(d.imageUrl, DEFAULT_DISH_IMAGE),
     restaurantSlug: d.restaurantSlug,
     restaurantName: d.restaurantName,
   }));
@@ -1177,8 +1197,11 @@ export async function updateRestaurantProfileById(
   }
 
   const tagline = String(input.tagline ?? "").trim().slice(0, 80);
-  const imageUrl = sanitizeImageUrl(input.imageUrl, r.imageUrl);
-  const heroUrl = sanitizeImageUrl(input.heroUrl, r.heroUrl);
+  // Fall back to the CURRENT image only when it is itself still valid; a value
+  // from before the allowlist existed is healed to the shared default rather
+  // than kept alive by a no-op profile save.
+  const imageUrl = sanitizeImageUrl(input.imageUrl, sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE));
+  const heroUrl = sanitizeImageUrl(input.heroUrl, sanitizeImageUrl(r.heroUrl, DEFAULT_RESTAURANT_HERO));
   const pureVeg = Boolean(input.pureVeg);
 
   const [updated] = await db
@@ -1453,6 +1476,134 @@ export async function purgeExpiredRestaurantSessions(now: number = Date.now()): 
   await db
     .delete(restaurantSessions)
     .where(lt(restaurantSessions.expiresAt, new Date(now - 24 * 60 * 60 * 1000)));
+}
+
+/* --------------------------- customer sessions --------------------------- */
+
+/**
+ * A customer session, as the order routes need it.
+ *
+ * Deliberately carries `orderCodes` alongside the liveness fields: every
+ * authorized request answers "is this session live?" and "does it hold this
+ * code?" together, so one read answers both rather than two queries racing a
+ * concurrent attach.
+ */
+export interface CustomerSession {
+  id: number;
+  orderCodes: string[];
+  expiresAt: Date;
+  revokedAt: Date | null;
+}
+
+/**
+ * Mint an anonymous session for this browser.
+ *
+ * Created empty and populated by `bindOrderCodesToSession`, so one code path
+ * owns binding whether the session is being born from a checkout or renewed
+ * from a boot-time flush. No security event is emitted: the event vocabulary
+ * is a fixed set, and a customer placing an order is the app's normal path,
+ * not an auditable anomaly — the row's own `last_used_at`/`created_at` carry
+ * what monitoring needs.
+ */
+export async function createCustomerSession(): Promise<{ id: number; sessionToken: string; expiresAt: Date }> {
+  const sessionToken = makeCustomerSessionToken();
+  const expiresAt = new Date(Date.now() + CUSTOMER_SESSION_TTL_MS);
+  const [row] = await db
+    .insert(customerSessions)
+    .values({
+      tokenHash: hashToken(sessionToken),
+      orderCodes: [],
+      expiresAt,
+    })
+    .returning({ id: customerSessions.id });
+  return { id: row.id, sessionToken, expiresAt };
+}
+
+/**
+ * Resolve a session token to the session it names, or null.
+ *
+ * Returns the row even when expired or revoked — the caller decides via
+ * `customerSessionIsLive`, for the same reason `getRestaurantSession` does:
+ * collapsing "not found" and "expired" would make a revoked session
+ * indistinguishable from a typo to anyone watching response shapes.
+ */
+export async function getCustomerSession(token: string): Promise<CustomerSession | null> {
+  const t = String(token ?? "").trim();
+  if (!t) return null;
+  const [row] = await db
+    .select()
+    .from(customerSessions)
+    .where(eq(customerSessions.tokenHash, hashToken(t)))
+    .limit(1);
+  if (!row) return null;
+  return {
+    id: row.id,
+    orderCodes: Array.isArray(row.orderCodes) ? row.orderCodes : [],
+    expiresAt: row.expiresAt,
+    revokedAt: row.revokedAt,
+  };
+}
+
+/**
+ * Record that a session was just used.
+ *
+ * Best-effort by construction, mirroring `touchRestaurantSession`: nothing
+ * branches on the result, because failing to write an audit timestamp must
+ * never be the reason a customer cannot read their order history.
+ */
+export async function touchCustomerSession(sessionId: number): Promise<void> {
+  await db
+    .update(customerSessions)
+    .set({ lastUsedAt: new Date() })
+    .where(eq(customerSessions.id, sessionId));
+}
+
+/**
+ * Push a session's expiry a full TTL out, on an attach that also rewrites the
+ * cookie.
+ *
+ * Renewal lives here rather than on every read on purpose: the cookie's
+ * `Max-Age` is only refreshed by responses that set it, so extending the row
+ * on a read would leave the browser holding a cookie that dies before the row
+ * it names. Attaches (checkouts, boot-time claim flushes) are the one place
+ * both are rewritten together, which is what keeps the two windows in step.
+ */
+export async function renewCustomerSession(sessionId: number): Promise<Date> {
+  const expiresAt = new Date(Date.now() + CUSTOMER_SESSION_TTL_MS);
+  await db
+    .update(customerSessions)
+    .set({ expiresAt, lastUsedAt: new Date() })
+    .where(eq(customerSessions.id, sessionId));
+  return expiresAt;
+}
+
+/**
+ * Bind verified order codes to a session — newest first, deduplicated, capped.
+ *
+ * Read-modify-write under `SELECT ... FOR UPDATE`, not a blind jsonb append:
+ * two attaches racing (a checkout flush and a boot-time flush for the same
+ * browser) would otherwise each compute their own array and the loser's codes
+ * would vanish silently — and a customer whose order fell out of the bound
+ * list sees their own history as empty, which reads as data loss. The lock
+ * serialises them; `normalizeOrderCodes` on the merged array is what makes the
+ * second writer's append idempotent.
+ */
+export async function bindOrderCodesToSession(sessionId: number, codes: string[]): Promise<void> {
+  const clean = normalizeOrderCodes(codes);
+  if (!clean.length) return;
+  await db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({ orderCodes: customerSessions.orderCodes })
+      .from(customerSessions)
+      .where(eq(customerSessions.id, sessionId))
+      .for("update");
+    if (!row) return;
+    const existing = Array.isArray(row.orderCodes) ? row.orderCodes : [];
+    await tx
+      .update(customerSessions)
+      .set({ orderCodes: normalizeOrderCodes([...clean, ...existing]), lastUsedAt: new Date() })
+      .where(eq(customerSessions.id, sessionId));
+  });
 }
 
 /* ------------------------------ integration ------------------------------- */

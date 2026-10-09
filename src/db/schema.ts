@@ -168,6 +168,52 @@ export const restaurantSessions = pgTable(
 export type RestaurantSessionRow = typeof restaurantSessions.$inferSelect;
 
 /**
+ * Anonymous customer sessions: the order credential that used to live in
+ * localStorage beside the customer's phone number and addresses.
+ *
+ * `crave.profile.v1` used to hold everything this browser knew — identity,
+ * addresses, favourites, and every placed order's `code` + signed token +
+ * tracking token in one JSON blob. One XSS that read that blob got PII *and*
+ * the bearer credentials to read or cancel every order the person ever
+ * placed. Splitting the data into separate storage keys would help a naive
+ * scraper; it does nothing about script already running on the page. So the
+ * credential moved server-side, and the browser holds only an HttpOnly cookie
+ * naming a row here: script can spend the session (same-origin fetches attach
+ * the cookie automatically) but cannot read it, cannot exfiltrate a list of
+ * order tokens, and cannot carry the credential away.
+ *
+ * - `order_codes` is jsonb rather than a join table on purpose: it is written
+ *   once per checkout, always read as a whole, and never queried *by* code —
+ *   a child table would add an FK and migration churn to get set semantics an
+ *   array already has. Newest first, capped at the history limit.
+ * - No PII, deliberately. A leaked row grants history access for one browser
+ *   for the rest of the session's life — addresses and phone numbers are not
+ *   in it, and the bounded `expires_at` caps the window.
+ * - `token_hash` is hashed at rest like every other token in this schema, so
+ *   a database read does not yield a usable cookie.
+ */
+export const customerSessions = pgTable(
+  "customer_sessions",
+  {
+    id: serial("id").primaryKey(),
+    tokenHash: text("token_hash").notNull().unique(),
+    /** Order codes this browser may read/cancel. Newest first, deduplicated. */
+    orderCodes: jsonb("order_codes").notNull().default(sql`'[]'::jsonb`).$type<string[]>(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("customer_sessions_token_hash_idx").on(t.tokenHash),
+    // Supports the expiry sweep — same reason as restaurant_sessions above.
+    index("customer_sessions_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type CustomerSessionRow = typeof customerSessions.$inferSelect;
+
+/**
  * One restaurant's synced menu mirror (server-authoritative POS source).
  * `restaurantId` + `posCategoryId` is identity: a Marketplace minted id is
  * assigned once and retried/re-synced payloads resolve to it (never re-minted
