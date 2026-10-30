@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { processPendingPosDeliveries } from "@/integrations/pos/order-bridge";
 import { processPendingPaymentDeliveries } from "@/integrations/pos/payment-bridge";
 import { requireCronAuth } from "@/lib/cron-auth";
+import { internalError } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -39,6 +40,6 @@ export async function GET(req: NextRequest) {
     return Response.json({ ok: true, orders, payments });
   } catch (e) {
     console.error("[pos-delivery] cron drain failed", e);
-    return Response.json({ ok: false, error: "drain failed" }, { status: 500 });
+    return internalError("drain failed");
   }
 }

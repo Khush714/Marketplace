@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { computeBill } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
 import { sanitizeCart } from "@/lib/order-input-core";
+import { apiError } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -24,10 +25,7 @@ export async function POST(req: NextRequest) {
 
   const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
   if (!restaurantSlug) {
-    return Response.json(
-      { ok: false, error: "Missing or invalid required fields", code: "MISSING_FIELDS" },
-      { status: 400 },
-    );
+    return apiError(400, "Missing or invalid required fields", "MISSING_FIELDS");
   }
 
   // Same cart rules as POST /api/orders: empty carts, out-of-range quantities
@@ -37,7 +35,7 @@ export async function POST(req: NextRequest) {
   // a preview that omits a line disagrees with the order it claims to preview.
   const cart = sanitizeCart(body?.items);
   if (!cart.ok) {
-    return Response.json({ ok: false, error: cart.error, code: cart.code }, { status: 400 });
+    return apiError(400, cart.error, cart.code);
   }
 
   const result = await computeBill(restaurantSlug, cart.items);
@@ -47,7 +45,7 @@ export async function POST(req: NextRequest) {
     // everything else stays a client 400.
     const status =
       result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
-    return Response.json({ ok: false, error: result.error, code: result.code }, { status });
+    return apiError(status, result.error, result.code);
   }
   return Response.json({ ok: true, bill: result.bill });
 }

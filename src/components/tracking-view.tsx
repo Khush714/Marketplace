@@ -485,7 +485,7 @@ function CancelCard({
         <Ban className="size-5 text-chili-400" /> Changed your mind?
       </p>
       <p className="mt-1 text-sm leading-relaxed text-cream-400">
-        You can cancel while the restaurant is still preparing. The restaurant decides instantly, so no
+        You can cancel up until the kitchen starts preparing. The restaurant confirms instantly, so no
         back-and-forth.
       </p>
       {!disabled && (

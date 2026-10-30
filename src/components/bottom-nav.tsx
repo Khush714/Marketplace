@@ -46,7 +46,7 @@ export function BottomNav() {
         {/* sliding liquid indicator — 1/5 width, translated by column */}
         <span
           aria-hidden
-          className="absolute inset-y-1.5 left-0 w-1/5 px-1 transition-transform duration-[520ms] ease-[cubic-bezier(0.34,1.4,0.64,1)]"
+          className="absolute inset-y-1.5 left-0 w-1/5 px-1 transition-transform duration-[320ms] ease-[cubic-bezier(0.34,1.4,0.64,1)] will-change-transform"
           style={{ transform: `translateX(${Math.max(0, activeColumn) * 100}%)`, opacity: activeColumn === -1 ? 0 : 1 }}
         >
           <span className="block h-full rounded-2xl bg-gradient-to-b from-white/10 to-white/[0.04] ring-1 ring-white/10" />
@@ -104,15 +104,15 @@ function NavContents({ icon: Icon, label, active }: { icon: LucideIcon; label: s
   return (
     <>
       <span
-        className={cn(
-          "relative grid place-items-center transition-all duration-[420ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]",
-          active ? "-translate-y-1 scale-115 text-ember-400" : "text-cream-500",
-        )}
+          className={cn(
+            "relative grid place-items-center transition-all duration-[280ms] ease-[cubic-bezier(0.34,1.56,0.64,1)]",
+            active ? "-translate-y-0.5 scale-110 text-ember-400" : "text-cream-500",
+          )}
       >
         {active && (
           <span
             aria-hidden
-            className="animate-glow-breathe absolute inset-0 -z-10 rounded-full bg-ember-400/20 blur-md"
+            className="absolute inset-0 -z-10 rounded-full bg-ember-400/15 blur-sm"
           />
         )}
         <Icon className="size-5" strokeWidth={active ? 2.5 : 2} />

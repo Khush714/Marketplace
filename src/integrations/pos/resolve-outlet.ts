@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/db";
 import { integrationRecords } from "@/db/schema";
 import { canDeliverToPos } from "@/integrations/pos/readiness";
+import { petpoojaConfigured } from "@/integrations/pos/petpooja";
 
 export type OutletResolution =
   | {
@@ -41,10 +42,12 @@ export async function resolveOutletForRestaurant(
   const [record] = await db
     .select({
       status: integrationRecords.status,
+      provider: integrationRecords.provider,
       posRestaurantId: integrationRecords.posRestaurantId,
       posOutletId: integrationRecords.posOutletId,
       posBranchId: integrationRecords.posBranchId,
       webhookSecret: integrationRecords.webhookSecret,
+      webhookUrl: integrationRecords.webhookUrl,
     })
     .from(integrationRecords)
     .where(eq(integrationRecords.restaurantId, restaurantId))
@@ -53,7 +56,15 @@ export async function resolveOutletForRestaurant(
   // Deliberately the shared predicate rather than a fourth inline copy of
   // "ACTIVE and routable and signable" — see readiness.ts for why these copies
   // used to disagree.
-  if (!record || !canDeliverToPos(record)) {
+  if (!record) {
+    return { ok: false, code: "INTEGRATION_NOT_CONNECTED" };
+  }
+  const deliverable = canDeliverToPos({
+    ...record,
+    // Petpooja's credential is partner-level, not the sealed secret.
+    partnerCredentialsConfigured: petpoojaConfigured(),
+  });
+  if (!deliverable) {
     return { ok: false, code: "INTEGRATION_NOT_CONNECTED" };
   }
 

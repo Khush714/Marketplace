@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
     return NextResponse.json(
       {
         ok: false,
-        error: "queue health unavailable",
+        error: { code: "SERVICE_UNAVAILABLE", message: "queue health unavailable" },
         drain: readDrainHealth(),
         requestedByOps,
       },

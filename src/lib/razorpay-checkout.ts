@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { apiErrorMessage } from "@/lib/api-errors-core";
 
 /**
  * Browser side of the Razorpay checkout (Phase 6).
@@ -133,9 +134,8 @@ async function callOrder<T>(target: PaymentTarget, path: string, init?: RequestI
   return data;
 }
 
-function statusMessage(data: { error?: string }, fallback: string): string {
-  const raw = (data.error ?? "").trim();
-  return raw || fallback;
+function statusMessage(data: unknown, fallback: string): string {
+  return apiErrorMessage(data, fallback);
 }
 
 /* -------------------------------- polling -------------------------------- */

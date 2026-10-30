@@ -8,6 +8,7 @@
  */
 
 import type { OrderItemSnapshot } from "@/db/schema";
+import { isPaidStatus } from "@/lib/payment-security-core";
 
 /**
  * Payment methods the POS books as SETTLED money. This must mirror the POS's own
@@ -35,6 +36,22 @@ const ONLINE_PAYMENT_METHODS: ReadonlySet<string> = new Set([
 export function isOnlinePaymentMethod(method: string | null | undefined): boolean {
   if (!method) return false;
   return ONLINE_PAYMENT_METHODS.has(String(method).trim().toLowerCase());
+}
+
+/**
+ * Whether an order is cleared to be handed to the POS.
+ *
+ * An online order is only processed once the money is actually captured. The
+ * payload labels every online order `PAID`, so delivering one before capture
+ * would tell the restaurant it was paid when it was not, and would put food in
+ * the kitchen for an order nobody paid for. COD/cash are collect-in-person and
+ * are always cleared (the POS books them `amount_paid = 0`).
+ *
+ * This is the fail-closed gate both the delivery journal (enqueue) and the
+ * send path consult, so no unpaid online order can be processed at all.
+ */
+export function isClearedForPos(order: { paymentMethod: string; paymentStatus: string }): boolean {
+  return !isOnlinePaymentMethod(order.paymentMethod) || isPaidStatus(order.paymentStatus);
 }
 
 /**

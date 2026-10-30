@@ -3,6 +3,7 @@ import { browseRestaurants, featuredRestaurants, restaurantsBySlugs } from "@/db
 import type { BrowseFilters } from "@/db/queries";
 import { localityByKey } from "@/lib/domain";
 import { clampSearchQuery, clampSlugList } from "@/lib/abuse-core";
+import { decodeCursor, nextCursor, parsePageSize } from "@/lib/api-pagination-core";
 import { guardRead } from "@/lib/abuse";
 
 export const revalidate = 60;
@@ -34,8 +35,9 @@ export async function GET(req: NextRequest) {
     );
   }
   if (sp.get("featured") === "1") {
+    const limit = parsePageSize(sp.get("limit"));
     return Response.json(
-      { restaurants: await featuredRestaurants(locality) },
+      { restaurants: await featuredRestaurants(locality, { limit }) },
       { headers: CACHE_HEADERS },
     );
   }
@@ -49,8 +51,11 @@ export async function GET(req: NextRequest) {
     veg: sp.get("veg") === "1",
     locality,
   };
+  const limit = parsePageSize(sp.get("limit"));
+  const offset = decodeCursor(sp.get("cursor"));
+  const restaurants = await browseRestaurants(filters, { limit, offset });
   return Response.json(
-    { restaurants: await browseRestaurants(filters) },
+    { restaurants, nextCursor: nextCursor(offset, limit, restaurants.length) },
     { headers: CACHE_HEADERS },
   );
 }

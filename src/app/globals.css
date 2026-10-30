@@ -76,7 +76,7 @@
   --animate-sheet-up: sheet-up 0.42s var(--ease-out-expo) both;
   --animate-overlay-in: overlay-in 0.24s ease both;
   --animate-spin-slow: spin 1s linear infinite;
-  --animate-marquee: marquee 26s linear infinite;
+  --animate-marquee: marquee 18s linear infinite;
   --animate-count-pop: count-pop 0.28s var(--ease-spring);
   --animate-aurora: aurora 26s ease-in-out infinite alternate;
   --animate-morph: morph 17s ease-in-out infinite;
@@ -179,11 +179,11 @@
   0% { transform: translateY(-60%) scale(0.6); opacity: 0; }
   100% { transform: translateY(0) scale(1); opacity: 1; }
 }
-@keyframes aurora {
-  0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
-  50% { transform: translate3d(5%, -4%, 0) scale(1.14) rotate(14deg); }
-  100% { transform: translate3d(-4%, 5%, 0) scale(1.06) rotate(-10deg); }
-}
+   @keyframes aurora {
+     0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
+     50% { transform: translate3d(3%, -2%, 0) scale(1.08) rotate(8deg); }
+     100% { transform: translate3d(-2%, 3%, 0) scale(1.04) rotate(-6deg); }
+   }
 @keyframes morph {
   0%, 100% { border-radius: 42% 58% 63% 37% / 41% 44% 56% 59%; }
   33% { border-radius: 63% 37% 34% 66% / 57% 62% 38% 43%; }
@@ -382,12 +382,12 @@
 }
 
 @utility lift {
-  transition:
-    transform var(--duration-base) var(--ease-out-expo),
-    box-shadow var(--duration-base) var(--ease-out-expo),
-    background-color var(--duration-base) ease,
-    border-color var(--duration-base) ease;
-  &:hover { transform: translateY(-4px); }
+     transition:
+       transform 200ms var(--ease-out-expo),
+       box-shadow 200ms var(--ease-out-expo),
+       background-color 200ms ease,
+       border-color 200ms ease;
+   &:hover { transform: translateY(-2px); }
 }
 
 /* 3D pointer tilt — driven entirely by CSS vars set from JS (rAF-lerped) */
@@ -423,14 +423,14 @@
 /* --------------------------- scroll reveal system -------------------------- */
 
 @layer components {
-  html.js [data-reveal] {
-    opacity: 0;
-    transform: translate3d(0, 28px, 0) scale(0.986);
-    transition:
-      opacity 0.72s var(--ease-out-expo),
-      transform 0.82s var(--ease-out-expo);
-    transition-delay: var(--rd, 0ms);
-  }
+   html.js [data-reveal] {
+     opacity: 0;
+     transform: translate3d(0, 12px, 0) scale(0.995);
+     transition:
+       opacity 0.32s var(--ease-out-expo),
+       transform 0.36s var(--ease-out-expo);
+     transition-delay: var(--rd, 0ms);
+   }
   html.js [data-reveal="flip"] {
     transform: perspective(1400px) translate3d(0, 34px, -70px) rotateX(11deg) scale(0.97);
   }
@@ -483,15 +483,16 @@
      the viewport on each axis, so four times the pixels, rasterizing a
      3-octave feTurbulence over a surface twice as wide and twice as tall as the
      screen it sits on. The noise tiles, so the overscan bought nothing. */
-  .grain::after {
-    content: "";
-    position: fixed;
-    inset: 0;
-    z-index: 1;
-    pointer-events: none;
-    opacity: 0.042;
-    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
-  }
+   .grain::after {
+     content: "";
+     position: fixed;
+     inset: 0;
+     z-index: 1;
+     pointer-events: none;
+     opacity: 0.02;
+     will-change: opacity;
+     background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='1' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+   }
 }
 
 /* ------------------------------ ambient modes --------------------------------
@@ -549,13 +550,14 @@
   /* Phone — the light base plus one animated layer. `--a` is transform-only
      with no filter and no blend, so it promotes, rasters once, and costs
      nothing per frame. The other five decorations stay put as gradients. */
-  @media (pointer: coarse) and (max-width: 699.98px) {
-    .ambient-aurora--a {
-      animation: var(--animate-aurora);
-      animation-delay: var(--ambient-delay, 0s, 0s);
-      animation-duration: var(--ambient-duration, 26s, 17s);
-    }
-  }
+   @media (pointer: coarse) and (max-width: 699.98px) {
+     .ambient-aurora--a {
+       animation: none;
+     }
+     .ambient-drift {
+       animation: none;
+     }
+   }
 
   /* Medium — iPad and other large touch screens. `morph` goes, and with it the
      per-frame repaint; the blur stays, because a transform-only blob is
@@ -570,10 +572,14 @@
       animation-delay: var(--ambient-delay, 0s);
       animation-duration: var(--ambient-duration, 26s);
     }
-    .ambient-aurora--c,
-    .ambient-aurora--d {
-      animation: none;
-    }
+     .ambient-aurora--c,
+     .ambient-aurora--d {
+       animation: none;
+     }
+     .ambient-drift {
+       filter: blur(16px);
+       animation: none;
+     }
     .ambient-drift {
       filter: blur(24px);
       animation: var(--animate-drift);
@@ -587,16 +593,16 @@
     .ambient-aurora {
       filter: blur(64px);
       mix-blend-mode: screen;
-      animation: var(--animate-aurora), var(--animate-morph);
-      animation-delay: var(--ambient-delay, 0s, 0s);
-      animation-duration: var(--ambient-duration, 26s, 17s);
-    }
-    .ambient-drift {
-      filter: blur(24px);
-      animation: var(--animate-drift);
-      animation-delay: var(--ambient-delay, 0s);
-      animation-duration: var(--ambient-duration, 16s);
-    }
+       animation: var(--animate-aurora);
+       animation-delay: var(--ambient-delay, 0s, 0s);
+       animation-duration: var(--ambient-duration, 26s, 17s);
+     }
+     .ambient-drift {
+       filter: blur(20px);
+       animation: var(--animate-drift);
+       animation-delay: var(--ambient-delay, 0s);
+       animation-duration: var(--ambient-duration, 16s);
+     }
   }
 }
 

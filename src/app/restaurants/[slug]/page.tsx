@@ -2,16 +2,19 @@ import type { Metadata } from "next";
 import Image from "next/image";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronLeft, Clock3, MapPin, Percent, PlugZap, Star } from "lucide-react";
+import { cache } from "react";
+import { ArrowDown, ChevronLeft, Clock3, MapPin, Percent, PlugZap, Star } from "lucide-react";
 import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
-import { getRestaurant, hasActiveIntegration } from "@/db/queries";
+import { getRestaurant as queryRestaurant, hasActiveIntegration } from "@/db/queries";
 import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
 export const dynamic = "force-dynamic";
+
+const getRestaurant = cache(queryRestaurant);
 
 /**
  * Built from the listing itself: name, cuisines, rating and delivery window are
@@ -84,7 +87,7 @@ export default async function RestaurantPage(props: {
     <div className="pb-10">
       {/* ------------------------------ hero ------------------------------ */}
       <section className="relative">
-        <div className="relative h-60 overflow-hidden md:h-[380px]">
+        <div className="relative h-44 overflow-hidden md:h-[380px]">
           <Image
             src={r.heroUrl}
             alt={`${r.name} cover`}
@@ -113,7 +116,7 @@ export default async function RestaurantPage(props: {
 
         {/* info panel — floats over the cover */}
         <div className="mx-auto max-w-5xl px-4 md:px-6">
-          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-5 md:-mt-24 md:p-7">
+          <div className="glass-strong animate-rise-3d relative z-10 -mt-24 rounded-[26px] p-4 md:-mt-24 md:p-7">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -150,6 +153,13 @@ export default async function RestaurantPage(props: {
                 <Star className="size-4 text-gold-400" />
                 {priceSymbol(r.priceLevel)} for two
               </span>
+              <a
+                href="#restaurant-menu"
+                className="press flex items-center gap-1.5 font-semibold text-ember-300 transition-colors hover:text-ember-200"
+              >
+                <ArrowDown className="size-4" />
+                View menu
+              </a>
             </div>
 
             {r.offer && (
@@ -168,7 +178,10 @@ export default async function RestaurantPage(props: {
       </section>
 
       {/* ------------------------- menu + side cart ------------------------ */}
-      <div className="mx-auto mt-6 max-w-5xl px-4 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-8">
+      <div
+        id="restaurant-menu"
+        className="mx-auto mt-6 max-w-5xl scroll-mt-28 px-4 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-8"
+      >
         <div>
           {orderingClosed && (
             <div className="mb-5 flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-500/[0.07] px-4 py-3.5">

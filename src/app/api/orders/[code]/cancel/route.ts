@@ -1,5 +1,6 @@
 import { requestCustomerCancellation } from "@/integrations/pos/order-cancel";
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { apiError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -17,7 +18,7 @@ export const dynamic = "force-dynamic";
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {
   const { code } = await ctx.params;
   if (!verifyOrderToken(code, readOrderToken(req.headers))) {
-    return Response.json({ ok: false, error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
   const outcome = await requestCustomerCancellation(code);
 
@@ -44,8 +45,11 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
       : outcome.code === "POS_UNREACHABLE"
         ? 503
         : 409;
-  return Response.json(
-    { ok: false, cancelled: false, code: outcome.code, reason: outcome.reason, currentStatus: outcome.currentStatus },
-    { status },
-  );
+  return apiError(status, outcome.reason, outcome.code, {
+    details: {
+      cancelled: false,
+      reason: outcome.reason,
+      currentStatus: outcome.currentStatus,
+    },
+  });
 }

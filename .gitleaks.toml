@@ -1,0 +1,33 @@
+# Gitleaks configuration for the Marketplace XYZ repository.
+#
+# Extends the upstream default rule set (`useDefault = true`) and narrows it with
+# allowlists for material that looks secret-shaped but is not a credential: the
+# published `.env.example` placeholders, the security-test fixtures, and the
+# backup runbook's redacted example connection strings. Everything else — in the
+# working tree and in history — is scanned with the default rules.
+#
+# Reference: https://github.com/gitleaks/gitleaks (v8.25.0+ uses [[allowlists]]).
+
+title = "Marketplace XYZ gitleaks config"
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "Placeholders, docs and test fixtures that are intentionally not secrets"
+paths = [
+  # Published example env with obvious placeholders (host, password).
+  '''(^|/)\.env\.example$''',
+  # Runbooks document redacted connection strings like postgresql://postgres:<pw>@...
+  '''(^|/)docs/''',
+  # The security-test harness and its fixtures use deterministic dummy secrets.
+  '''(^|/)tests/''',
+  # The restore drill references a local postgres/postgres maintenance URL.
+  '''(^|/)scripts/db-restore-drill\.mjs$''',
+]
+
+[[allowlists]]
+description = "Dummy credentials that only ever appear in local/test connection strings"
+regexes = [
+  '''postgres(?:ql)?://[^:@/\s]+:(?:postgres|password|pw|dbpw)@''',
+]

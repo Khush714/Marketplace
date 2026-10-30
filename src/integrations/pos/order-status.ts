@@ -57,6 +57,24 @@ export function statusRank(status: string): number {
   return rank === undefined ? -1 : rank;
 }
 
+/** Has the kitchen picked up the order? PREPARING or anything later. */
+export function hasStartedPreparing(status: string): boolean {
+  return statusRank(status) >= statusRank("PREPARING");
+}
+
+/**
+ * The customer-cancellation window: an order is cancellable while the kitchen
+ * has NOT started preparing it (PLACED / ACCEPTED). From PREPARING on, food is
+ * being cooked and the order can no longer be cancelled customer-side. Single
+ * source of truth for both the tracking UI (`OrderStatusDto.cancellable`) and
+ * the cancellation route's fail-closed gate, so the button and the API can
+ * never disagree.
+ */
+export function isCancellable(status: string): boolean {
+  if (TERMINAL_STATUSES.has(status as MarketplaceOrderStatus)) return false;
+  return statusRank(status) >= 0 && !hasStartedPreparing(status);
+}
+
 /**
  * POS vocabulary → Marketplace canonical status (spec: "mapPosStatusTo
  * MarketplaceStatus"). Keys are exact POS spellings (POS status machine uses

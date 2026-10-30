@@ -34,6 +34,7 @@ import {
   sanitizeImageUrl,
   type BillBreakdown,
 } from "@/lib/domain";
+import { DEFAULT_LIST_LIMIT, MAX_PAGE_SIZE, type PageParams } from "@/lib/api-pagination-core";
 import { hashOwnerKey, hashToken, integrationPasskeyMatches, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
 import {
   INTEGRATION_SESSION_TTL_MS,
@@ -56,7 +57,7 @@ import {
   UNSPENT_CODE,
   unspentCodeByCode,
 } from "@/lib/connection-codes";
-import { statusRank, TERMINAL_STATUSES } from "@/integrations/pos/order-status";
+import { isCancellable, statusRank, TERMINAL_STATUSES } from "@/integrations/pos/order-status";
 import {
   OPEN_ORDER_PREDICATE,
   planTransferApproval,
@@ -66,6 +67,8 @@ import {
 } from "@/lib/integration-transfer";
 import { OUTLET_ERROR_MESSAGES, resolveOutletForRestaurant } from "@/integrations/pos/resolve-outlet";
 import { canDeliverToPos, integrationReadiness } from "@/integrations/pos/readiness";
+import type { IntegrationNotReadyReason } from "@/integrations/pos/readiness";
+import { petpoojaConfigured } from "@/integrations/pos/petpooja";
 import type {
   ConnectionCodeDto,
   ConnectionDto,
@@ -323,16 +326,18 @@ function integrationOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
   const s =
     INTEGRATION_TRACKING_STAGES[o.integrationStatus] ?? Object.values(INTEGRATION_TRACKING_STAGES)[0];
   const etaSeconds = INTEGRATION_ETA_SECONDS[o.integrationStatus] ?? 0;
-  const cancellable =
-    o.externalOrderId != null &&
-    (o.integrationStatus === "PLACED" || o.integrationStatus === "ACCEPTED" || o.integrationStatus === "PREPARING");
+  // The cancellation window ends the moment the kitchen starts preparing. The
+  // same helper drives the route's fail-closed gate, so the button and the API
+  // agree on what is cancellable. `externalOrderId` is not a factor: an order
+  // the POS has not yet received is cancelled locally by the route.
+  const cancellable = isCancellable(o.integrationStatus);
   return {
     ...s,
     etaIso: new Date(Date.now() + etaSeconds * 1000).toISOString(),
     etaSeconds,
     statusUpdatedAt: o.statusUpdatedAt ? new Date(o.statusUpdatedAt).toISOString() : null,
     cancellable,
-    cancelReason: cancellable ? null : "This order is past the cancellable stage",
+    cancelReason: cancellable ? null : "The kitchen has already started preparing this order",
     stages: integrationStagesFor(o.integrationStatus),
   };
 }
@@ -354,24 +359,52 @@ function integrationOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
  * same predicate but `attemptPosDelivery` additionally refuses to POST without
  * a secret. The result was an order the customer was charged for and the
  * journal retried forever with "webhook secret missing". So readiness is
- * asserted from all three facts delivery actually needs, matching
- * `notReadyReason` in the order bridge:
+ * asserted from the facts delivery actually needs, matching `notReadyReason` in
+ * the order bridge and the shared rule in `integrations/pos/readiness.ts`:
  *
  *   - an ACTIVE integration record
  *   - a POS restaurant id to route `order.restaurant_id` on
- *   - a sealed webhook secret to sign the payload with
+ *   - whatever credential the provider's outbound call authenticates with:
+ *     a sealed webhook secret for Restaurant AI, partner app credentials for
+ *     Petpooja
  */
 export async function hasActiveIntegration(restaurantId: number): Promise<boolean> {
   const [rec] = await db
     .select({
       status: integrationRecords.status,
+      provider: integrationRecords.provider,
       posRestaurantId: integrationRecords.posRestaurantId,
       webhookSecret: integrationRecords.webhookSecret,
+      webhookUrl: integrationRecords.webhookUrl,
     })
     .from(integrationRecords)
     .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
-  return canDeliverToPos(rec ?? {});
+  return canDeliverToPos({
+    ...(rec ?? {}),
+    // Petpooja needs partner credentials instead of a sealed webhook secret;
+    // the shared rule knows which fact its provider requires.
+    partnerCredentialsConfigured: petpoojaConfigured(),
+  });
+}
+
+/**
+ * Open orders for one listing.
+ *
+ * A listing may only be moved to a different POS provider while it has none:
+ * an in-flight order is already being cooked against the old provider, and
+ * re-routing it would send the same order id to a POS that has never seen it.
+ *
+ * `count(*) FILTER (WHERE …)` is the idiomatic Postgres spelling, but FILTER is
+ * a reserved word that drizzle emits unquoted (42601 at runtime), so this uses
+ * the `sum(case …)` form the transfer planner already relies on.
+ */
+export async function countOpenOrdersForRestaurant(restaurantId: number): Promise<number> {
+  const [row] = await db
+    .select({ open: sql<number>`sum(case when ${OPEN_ORDER_PREDICATE} then 1 else 0 end)::int` })
+    .from(orders)
+    .where(eq(orders.restaurantId, restaurantId));
+  return Number(row?.open ?? 0);
 }
 
 /**
@@ -394,7 +427,10 @@ export interface BrowseFilters {
   veg?: boolean;
 }
 
-export async function browseRestaurants(filters: BrowseFilters = {}): Promise<RestaurantDto[]> {
+export async function browseRestaurants(
+  filters: BrowseFilters = {},
+  page: PageParams = {},
+): Promise<RestaurantDto[]> {
   const conditions: (SQL | undefined)[] = [discoverableRestaurant];
   if (filters.q) {
     // Escaped the same way `searchAll` escapes: `%`/`_` in a typed term are
@@ -433,22 +469,33 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
               ? [sql`${restaurants.distanceKm} asc nulls last`]
               : [desc(restaurants.featured), desc(restaurants.rating)];
 
+  const limit = Math.min(page.limit ?? DEFAULT_LIST_LIMIT, MAX_PAGE_SIZE);
+  const offset = Math.max(0, page.offset ?? 0);
   const rows = await db
     .select()
     .from(restaurants)
     .where(conditions.length ? and(...conditions) : undefined)
-    .orderBy(...orderBy);
+    .orderBy(...orderBy)
+    .limit(limit)
+    .offset(offset);
   return rows.map(toRestaurantDto);
 }
 
-export async function featuredRestaurants(locality?: string): Promise<RestaurantDto[]> {
+export async function featuredRestaurants(
+  locality?: string,
+  page: PageParams = {},
+): Promise<RestaurantDto[]> {
   const conditions = [discoverableRestaurant, eq(restaurants.featured, true)];
   if (locality) conditions.push(eq(restaurants.locality, locality));
+  const limit = Math.min(page.limit ?? DEFAULT_LIST_LIMIT, MAX_PAGE_SIZE);
+  const offset = Math.max(0, page.offset ?? 0);
   const rows = await db
     .select()
     .from(restaurants)
     .where(and(...conditions))
-    .orderBy(desc(restaurants.rating));
+    .orderBy(desc(restaurants.rating))
+    .limit(limit)
+    .offset(offset);
   return rows.map(toRestaurantDto);
 }
 
@@ -1808,6 +1855,8 @@ export interface IntegrationRecordDto {
   posRestaurantId: string | null;
   posBranchId: string | null;
   posOutletId: string | null;
+  /** Outbound endpoint for the `custom_webhook` provider (not a credential). */
+  webhookUrl: string | null;
   status: string;
   connectedAt: string | null;
   lastHeartbeatAt: string | null;
@@ -1823,8 +1872,8 @@ export interface IntegrationRecordDto {
    * while the bridge would refuse to POST.
    */
   ready: boolean;
-  /** Which of the three facts is missing, so the partner can be told why. */
-  notReadyReason: "webhook_secret" | "pos_restaurant_id" | "inactive" | null;
+  /** Which of the required facts is missing, so the partner can be told why. */
+  notReadyReason: IntegrationNotReadyReason | null;
 }
 
 export async function getIntegrationRecord(restaurantId: number): Promise<IntegrationRecordDto | null> {
@@ -1838,7 +1887,10 @@ export async function getIntegrationRecord(restaurantId: number): Promise<Integr
     .where(eq(integrationRecords.restaurantId, restaurantId))
     .limit(1);
   if (!row) return null;
-  const { ready, notReadyReason } = integrationReadiness(row.rec);
+  const { ready, notReadyReason } = integrationReadiness({
+    ...row.rec,
+    partnerCredentialsConfigured: petpoojaConfigured(),
+  });
   return {
     restaurantId: row.rec.restaurantId,
     marketplaceId: row.marketplaceId ?? "",
@@ -1846,6 +1898,7 @@ export async function getIntegrationRecord(restaurantId: number): Promise<Integr
     posRestaurantId: row.rec.posRestaurantId,
     posBranchId: row.rec.posBranchId,
     posOutletId: row.rec.posOutletId,
+    webhookUrl: row.rec.webhookUrl,
     status: row.rec.status,
     connectedAt: row.rec.connectedAt ? new Date(row.rec.connectedAt).toISOString() : null,
     lastHeartbeatAt: row.rec.lastHeartbeatAt ? new Date(row.rec.lastHeartbeatAt).toISOString() : null,
@@ -1863,6 +1916,14 @@ export interface UpsertIntegrationIdentityInput {
   posBranchId?: string | null;
   posOutletId?: string | null;
   status?: "pending" | "active" | "disabled";
+  /**
+   * Only meaningful for Restaurant AI. Exposed so a provider switch can null it
+   * out: a secret sealed for the previous connection would otherwise make a
+   * freshly re-pointed record look ready when its POS was never given the key.
+   */
+  webhookSecret?: string | null;
+  /** `custom_webhook` only: the per-listing outbound endpoint. */
+  webhookUrl?: string | null;
   heartbeat?: boolean;
   sync?: boolean;
   error?: string | null;
@@ -1881,6 +1942,8 @@ export async function upsertIntegrationIdentity(
       posBranchId: input.posBranchId ?? null,
       posOutletId: input.posOutletId ?? null,
       status: input.status ?? "pending",
+      webhookSecret: input.webhookSecret ?? null,
+      webhookUrl: input.webhookUrl ?? null,
       connectedAt: new Date(),
       lastHeartbeatAt: input.heartbeat ? new Date() : undefined,
       lastSyncAt: input.sync ? new Date() : undefined,
@@ -1894,6 +1957,10 @@ export async function upsertIntegrationIdentity(
         posBranchId: input.posBranchId !== undefined ? input.posBranchId : integrationRecords.posBranchId,
         posOutletId: input.posOutletId !== undefined ? input.posOutletId : integrationRecords.posOutletId,
         status: input.status ?? integrationRecords.status,
+        webhookSecret:
+          input.webhookSecret !== undefined ? input.webhookSecret : integrationRecords.webhookSecret,
+        webhookUrl:
+          input.webhookUrl !== undefined ? input.webhookUrl : integrationRecords.webhookUrl,
         connectedAt: input.status === "active" ? new Date() : integrationRecords.connectedAt,
         lastHeartbeatAt: input.heartbeat ? new Date() : integrationRecords.lastHeartbeatAt,
         lastSyncAt: input.sync ? new Date() : integrationRecords.lastSyncAt,
@@ -1905,7 +1972,10 @@ export async function upsertIntegrationIdentity(
 
   const record = rec[0];
   const marketplaceId = await getOrCreateMarketplaceId(input.restaurantId);
-  const { ready, notReadyReason } = integrationReadiness(record);
+  const { ready, notReadyReason } = integrationReadiness({
+    ...record,
+    partnerCredentialsConfigured: petpoojaConfigured(),
+  });
   return {
     restaurantId: input.restaurantId,
     marketplaceId,
@@ -1913,6 +1983,7 @@ export async function upsertIntegrationIdentity(
     posRestaurantId: record.posRestaurantId,
     posBranchId: record.posBranchId,
     posOutletId: record.posOutletId,
+    webhookUrl: record.webhookUrl,
     status: record.status,
     connectedAt: record.connectedAt ? new Date(record.connectedAt).toISOString() : null,
     lastHeartbeatAt: record.lastHeartbeatAt ? new Date(record.lastHeartbeatAt).toISOString() : null,
@@ -2557,7 +2628,9 @@ export interface ListingSetupDto {
   isActive: boolean;
 }
 
-export async function listListingSetup(): Promise<ListingSetupDto[]> {
+export async function listListingSetup(page: PageParams = {}): Promise<ListingSetupDto[]> {
+  const limit = Math.min(page.limit ?? DEFAULT_LIST_LIMIT, MAX_PAGE_SIZE);
+  const offset = Math.max(0, page.offset ?? 0);
   const rows = await db
     .select({
       id: restaurants.id,
@@ -2572,7 +2645,9 @@ export async function listListingSetup(): Promise<ListingSetupDto[]> {
     })
     .from(restaurants)
     .leftJoin(integrationRecords, eq(integrationRecords.restaurantId, restaurants.id))
-    .orderBy(restaurants.id);
+    .orderBy(restaurants.id)
+    .limit(limit)
+    .offset(offset);
 
   return rows.map((r) => ({
     id: r.id,
@@ -3166,6 +3241,7 @@ export async function getOrderByTrackingToken(token: string): Promise<OrderDto |
 export interface OrderCancelContext {
   restaurantId: number;
   code: string;
+  orderId: number;
   externalOrderId: string | null;
   integrationStatus: string;
   posOrderId: number | null;
@@ -3183,6 +3259,7 @@ export async function loadOrderCancelContext(code: string): Promise<OrderCancelC
   const [o] = await db
     .select({
       restaurantId: orders.restaurantId,
+      orderId: orders.id,
       code: orders.code,
       externalOrderId: orders.externalOrderId,
       integrationStatus: orders.integrationStatus,
@@ -3200,6 +3277,7 @@ export async function loadOrderCancelContext(code: string): Promise<OrderCancelC
   return {
     restaurantId: o.restaurantId,
     code: o.code,
+    orderId: o.orderId,
     externalOrderId: o.externalOrderId,
     integrationStatus: o.integrationStatus,
     posOrderId: o.posOrderId,

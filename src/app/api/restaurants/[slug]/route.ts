@@ -1,5 +1,6 @@
 import { getRestaurant } from "@/db/queries";
 import { guardRead } from "@/lib/abuse";
+import { notFound } from "@/lib/security/errors";
 
 export const revalidate = 60;
 
@@ -11,6 +12,6 @@ export async function GET(req: Request, ctx: { params: Promise<{ slug: string }>
 
   const { slug } = await ctx.params;
   const data = await getRestaurant(slug);
-  if (!data) return Response.json({ error: "Not found" }, { status: 404 });
+  if (!data) return notFound("Not found");
   return Response.json(data, { headers: CACHE_HEADERS });
 }

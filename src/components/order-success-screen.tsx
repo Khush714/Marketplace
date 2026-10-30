@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
+import { apiErrorMessage } from "@/lib/api-errors-core";
 import { OrderSuccess } from "@/components/order-success";
 import { PaymentStage } from "@/components/payment-stage";
 import { useProfileOrders, useProfileReady } from "@/lib/profile";
@@ -71,7 +72,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
       });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
-        error?: string;
+        error?: unknown;
         reference?: string;
         providerOrderId?: string | null;
         keyId?: string | null;
@@ -80,7 +81,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
         mode?: ProviderMode;
       } | null;
       if (!res.ok || !data?.ok || !data.providerOrderId) {
-        setPayError(data?.error ?? "Could not start the payment. Please try again.");
+        setPayError(apiErrorMessage(data, "Could not start the payment. Please try again."));
         return;
       }
       setPayTarget({

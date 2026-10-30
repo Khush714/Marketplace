@@ -61,9 +61,9 @@ const BUDGETS = {
   // Phase 1-15 program. Without the blend the layer still clears and draws 26
   // soft sprites at opacity 0.8 over a near-black base, which is visually the
   // same field without the per-frame readback.
-  mobile: { fps: 30, maxDpr: 1.5, density: 46000, maxEmbers: 26, blend: false },
-  lowPower: { fps: 12, maxDpr: 1, density: 62000, maxEmbers: 16, blend: false },
-} as const satisfies Record<string, Budget>;
+   mobile: { fps: 30, maxDpr: 1.25, density: 52000, maxEmbers: 20, blend: false },
+   lowPower: { fps: 10, maxDpr: 1, density: 68000, maxEmbers: 12, blend: false },
+ } as const satisfies Record<string, Budget>;
 
 type Tier = keyof typeof BUDGETS;
 
@@ -260,9 +260,9 @@ export function EmberField({ density }: { density?: number }) {
       ref={ref}
       aria-hidden
       className={cn(
-        "pointer-events-none fixed inset-0 z-[2] opacity-80",
-        BUDGETS[tier].blend && "mix-blend-screen",
-      )}
+       "pointer-events-none fixed inset-0 z-[2] opacity-70",
+       BUDGETS[tier].blend && "mix-blend-screen",
+     )}
     />
   );
 }

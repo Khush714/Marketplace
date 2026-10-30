@@ -11,6 +11,8 @@ import {
   type OrderRow,
 } from "@/db/schema";
 
+import { DEFAULT_POS_PROVIDER } from "@/integrations/pos/readiness";
+
 /**
  * At-least-once delivery journal for Marketplace → POS payment webhook pushes
  * (Phase 6). Mirror of the order-delivery journal (pos-delivery.ts):
@@ -52,6 +54,28 @@ export async function enqueuePaymentDelivery(input: PaymentDeliveryInsert): Prom
     .onConflictDoNothing({ target: marketplacePosPaymentDeliveries.eventId })
     .returning({ id: marketplacePosPaymentDeliveries.id });
   return row?.id ?? null;
+}
+
+/**
+ * Does this restaurant's provider accept the Marketplace payment webhook?
+ *
+ * Only the Restaurant AI bridge defines one (`POST /integrations/marketplace/
+ * payments`). The Petpooja contract has no payment-push endpoint — its POS owns
+ * settlement — so a journal row for it is a message with nowhere to go: the
+ * drain would retry it against the wrong POS until it exhausts its attempts and
+ * then leave queue health permanently red. Asking here keeps that expected
+ * mismatch out of the queue entirely.
+ */
+export async function posPaymentPushSupported(
+  restaurantId: number,
+): Promise<{ supported: boolean; provider: string }> {
+  const [rec] = await db
+    .select({ provider: integrationRecords.provider })
+    .from(integrationRecords)
+    .where(eq(integrationRecords.restaurantId, restaurantId))
+    .limit(1);
+  const provider = rec?.provider ?? DEFAULT_POS_PROVIDER;
+  return { supported: provider === DEFAULT_POS_PROVIDER, provider };
 }
 
 export async function getDuePosPaymentDeliveryIds(limit = 20): Promise<number[]> {

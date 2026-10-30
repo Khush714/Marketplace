@@ -1,6 +1,7 @@
 import "server-only";
 
 import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
+import { badRequest, forbidden, payloadTooLarge } from "@/lib/security/errors";
 import {
   ABUSE_BUDGETS,
   decideOrigin,
@@ -41,10 +42,7 @@ export function originDecision(req: { headers: Headers }): OriginDecision {
 
 /** 403 for a request a browser was used to fire at this origin from elsewhere. */
 function crossSiteRejected(): Response {
-  return Response.json(
-    { ok: false, error: "Request rejected" },
-    { status: 403 },
-  );
+  return forbidden("Request rejected");
 }
 
 /**
@@ -62,7 +60,7 @@ export function guardBudget(req: { headers: Headers }, scope: AbuseScope): Respo
 
 /** 413 for a body over the cap, whether or not `Content-Length` declared it. */
 function tooLarge(): Response {
-  return Response.json({ ok: false, error: "Request too large" }, { status: 413 });
+  return payloadTooLarge("Request too large");
 }
 
 export type JsonBodyResult =
@@ -95,7 +93,7 @@ export async function readRawBodyCapped(req: Request, maxBytes: number): Promise
   try {
     const body = req.body;
     if (!body) {
-      return { ok: false, response: Response.json({ ok: false, error: "Invalid request" }, { status: 400 }) };
+      return { ok: false, response: badRequest("Invalid request.") };
     }
     const reader = body.getReader();
     const chunks: Uint8Array[] = [];
@@ -115,7 +113,7 @@ export async function readRawBodyCapped(req: Request, maxBytes: number): Promise
     }
     return { ok: true, text: new TextDecoder().decode(concat(chunks)) };
   } catch {
-    return { ok: false, response: Response.json({ ok: false, error: "Invalid request" }, { status: 400 }) };
+    return { ok: false, response: badRequest("Invalid request.") };
   }
 }
 
@@ -133,7 +131,7 @@ export async function readJsonBody(req: Request): Promise<JsonBodyResult> {
   try {
     return { ok: true, body: JSON.parse(raw.text) as unknown };
   } catch {
-    return { ok: false, response: Response.json({ ok: false, error: "Invalid request" }, { status: 400 }) };
+    return { ok: false, response: badRequest("Invalid request.") };
   }
 }
 

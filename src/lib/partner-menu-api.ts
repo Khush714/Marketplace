@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 
 import { readJsonBody } from "@/lib/abuse";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
+import { badRequest as badRequestResponse } from "@/lib/security/errors";
 
 /**
  * Shared plumbing for the partner menu API.
@@ -42,7 +43,7 @@ export async function authoriseMenu(
 }
 
 export function badRequest(error: string) {
-  return Response.json({ ok: false, error }, { status: 400 });
+  return badRequestResponse(error);
 }
 
 /**

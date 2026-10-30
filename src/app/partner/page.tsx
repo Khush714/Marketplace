@@ -18,6 +18,7 @@ import {
   TriangleAlert,
   Utensils,
 } from "lucide-react";
+import { apiErrorMessage } from "@/lib/api-errors-core";
 import { cn, CUISINES, DEFAULT_LOCALITY, LOCALITIES } from "@/lib/domain";
 import {
   partnerFetch,
@@ -120,7 +121,7 @@ function ConnectPanel() {
     setOwnerKey(null);
     try {
       const d = await json<
-        { ok: boolean; error?: string; restaurant?: RestaurantDto; ownerKey?: string }
+        { ok: boolean; error?: unknown; restaurant?: RestaurantDto; ownerKey?: string }
       >(mode === "code" ? "/api/partner/connect" : "/api/partner/signup", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -137,7 +138,7 @@ function ConnectPanel() {
         }),
       });
       if (!d.ok || !d.restaurant || !d.ownerKey) {
-        toast(d.error ?? "Could not connect restaurant", { kind: "error" });
+        toast(apiErrorMessage(d, "Could not connect restaurant"), { kind: "error" });
         return;
       }
       setConnected(d.restaurant);
@@ -478,7 +479,7 @@ function ManagePanel() {
       if (!d.ok || !d.restaurant) {
         setRestaurant(null);
         setProfile(null);
-        if (!quiet) toast(d.error ?? "Could not load your listing", { kind: "error" });
+        if (!quiet) toast(apiErrorMessage(d, "Could not load your listing"), { kind: "error" });
         return;
       }
       setRestaurant(d.restaurant);
@@ -535,7 +536,7 @@ function ManagePanel() {
         body: JSON.stringify({ active: next }),
       });
       if (!d.ok || !d.restaurant) {
-        toast(d.error ?? "Update failed", { kind: "error" });
+        toast(apiErrorMessage(d, "Update failed"), { kind: "error" });
         return;
       }
       setRestaurant(d.restaurant);
@@ -569,7 +570,7 @@ function ManagePanel() {
         }),
       });
       if (!d.ok || !d.restaurant) {
-        toast(d.error ?? "Could not save your listing", { kind: "error" });
+        toast(apiErrorMessage(d, "Could not save your listing"), { kind: "error" });
         return;
       }
       setRestaurant(d.restaurant);
@@ -586,7 +587,7 @@ function ManagePanel() {
     if (!restaurant) return;
     setDeleting(true);
     try {
-      const d = await partnerFetch<{ ok: boolean; error?: string; restaurantName?: string }>(
+      const d = await partnerFetch<{ ok: boolean; error?: unknown; restaurantName?: string }>(
         "/api/partner/restaurant",
         {
           method: "DELETE",
@@ -595,7 +596,7 @@ function ManagePanel() {
         },
       );
       if (!d.ok) {
-        toast(d.error ?? "Delete failed", { kind: "error" });
+        toast(apiErrorMessage(d, "Delete failed"), { kind: "error" });
         return;
       }
       toast(d.restaurantName ? `${d.restaurantName} deleted` : "Restaurant deleted", {

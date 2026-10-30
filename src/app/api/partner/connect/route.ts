@@ -5,6 +5,7 @@ import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limi
 import { emitSecurityEvent } from "@/lib/security/security-events";
 import { bodyTrippedHoneypot, honeypotRejected, originDecision, readJsonBody } from "@/lib/abuse";
 import { cookieShouldBeSecure, setSessionCookies } from "@/lib/security/restaurant-session";
+import { apiError, forbidden } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -70,7 +71,7 @@ export async function GET(req: NextRequest) {
  */
 export async function POST(req: NextRequest) {
   if (originDecision(req) === "cross-site") {
-    return Response.json({ ok: false, error: "Request rejected" }, { status: 403 });
+    return forbidden("Request rejected");
   }
 
   let body: RedeemConnectionInput;
@@ -94,7 +95,7 @@ export async function POST(req: NextRequest) {
       outcome: "failure",
       reason: result.error,
     });
-    return Response.json(result, { status: 400 });
+    return apiError(400, result.error);
   }
   emitSecurityEvent("connection_code_redeemed", {
     outcome: "success",

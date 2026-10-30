@@ -28,6 +28,7 @@
 
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { KeyRound, RefreshCw, Store } from "lucide-react";
+import { apiErrorMessage, readApiError } from "@/lib/api-errors-core";
 import { cn } from "@/lib/domain";
 import { RESTAURANT_CSRF_COOKIE, RESTAURANT_CSRF_HEADER } from "@/lib/restaurant-session-core";
 import { useToast } from "@/lib/toast";
@@ -40,7 +41,7 @@ export type PartnerSessionState =
 
 export type PartnerReply<T> =
   | ({ ok: true; error?: undefined } & T & { status?: number })
-  | { ok: false; error: string; status?: number };
+  | { ok: false; error: string; status?: number; code?: string; details?: unknown };
 
 const loading: PartnerSessionState = { status: "loading" };
 const signedOut: PartnerSessionState = { status: "signed-out" };
@@ -90,8 +91,14 @@ export async function partnerFetch<T>(
     if (data && typeof data === "object" && data.ok === true) {
       return { ...data, ok: true as const, status: res.status } as PartnerReply<T>;
     }
-    const error = data && typeof data.error === "string" ? data.error : "Something went wrong";
-    return { ok: false, error, status: res.status };
+    const parsed = readApiError(data);
+    return {
+      ok: false,
+      error: parsed?.message ?? apiErrorMessage(data, "Something went wrong"),
+      status: res.status,
+      code: parsed?.code,
+      details: parsed?.details,
+    };
   } catch {
     return { ok: false, error: "Network error", status: 0 };
   }

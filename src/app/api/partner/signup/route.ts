@@ -3,6 +3,7 @@ import { createRestaurantSession, selfRegisterRestaurant, type ListingProfileInp
 import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
 import { bodyTrippedHoneypot, honeypotRejected, originDecision, readJsonBody } from "@/lib/abuse";
 import { cookieShouldBeSecure, setSessionCookies } from "@/lib/security/restaurant-session";
+import { apiError, forbidden } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -49,7 +50,7 @@ const SIGNUP_WINDOW_MS = 60 * 60 * 1000;
 
 export async function POST(req: NextRequest) {
   if (originDecision(req) === "cross-site") {
-    return Response.json({ ok: false, error: "Request rejected" }, { status: 403 });
+    return forbidden("Request rejected");
   }
 
   let body: ListingProfileInput;
@@ -72,7 +73,7 @@ export async function POST(req: NextRequest) {
     // 409 rather than 400: the store id is a real conflict, and the partner UI
     // wants to branch on it to point an existing restaurant at "load your
     // listing" instead of showing a dead-end validation message.
-    return Response.json(result, { status: result.code === "STORE_ID_TAKEN" ? 409 : 400 });
+    return apiError(result.code === "STORE_ID_TAKEN" ? 409 : 400, result.error, result.code);
   }
 
   // A fresh listing is inert (is_active = false), so minting a session here

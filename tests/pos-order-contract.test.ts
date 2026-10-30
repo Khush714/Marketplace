@@ -17,9 +17,11 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
+import { join } from "node:path";
 
-import { mapPosEventToMarketplaceStatus } from "../src/integrations/pos/order-status";
-import { isOnlinePaymentMethod, posItemName } from "../src/integrations/pos/order-payload-shape";
+import { mapPosEventToMarketplaceStatus, hasStartedPreparing, isCancellable } from "../src/integrations/pos/order-status";
+import { isClearedForPos, isOnlinePaymentMethod, posItemName } from "../src/integrations/pos/order-payload-shape";
 
 test("order.cancelled resolves to CANCELLED without a status field", () => {
   // status.js:397 — deliverWebhook({ ..., event: 'order.cancelled' }) with no status.
@@ -100,4 +102,93 @@ test("cash and COD stay collect-in-person", () => {
   assert.equal(isOnlinePaymentMethod(null), false);
   assert.equal(isOnlinePaymentMethod(undefined), false);
   assert.equal(isOnlinePaymentMethod("cheque"), false, "unknown methods must not be assumed paid");
+});
+
+test("an online order is cleared for the POS only once its money is captured", () => {
+  // The payload labels every online order `payment_status: "PAID"`, so any
+  // online order that is not yet paid must never reach the kitchen. The only
+  // cleared status is a captured one.
+  assert.equal(isClearedForPos({ paymentMethod: "upi", paymentStatus: "PAID" }), true);
+  for (const status of ["UNPAID", "PAYMENT_PENDING", "PAYMENT_CANCELLED", "FAILED", "REFUND_PENDING", "REFUNDED"]) {
+    assert.equal(
+      isClearedForPos({ paymentMethod: "netbanking", paymentStatus: status }),
+      false,
+      `online ${status} must not be processed`,
+    );
+  }
+});
+
+test("cash and COD are always cleared (collection is in person)", () => {
+  for (const m of ["cash", "cod", "COD"]) {
+    for (const status of ["UNPAID", "PAYMENT_PENDING", "PAID"]) {
+      assert.equal(isClearedForPos({ paymentMethod: m, paymentStatus: status }), true, `${m}/${status}`);
+    }
+  }
+});
+
+test("both POS delivery gates fail closed on an unpaid online order", () => {
+  // Pinned to the two choke points that can put an order in the kitchen: the
+  // durability journal (enqueue) and the send path (attempt). Both must consult
+  // `isClearedForPos` before any kitchen-visible side effect.
+  const readSrc = (rel: string) => readFileSync(join(__dirname, "..", "src", rel), "utf8");
+
+  const enqueue = readSrc("db/pos-delivery.ts");
+  assert.match(enqueue, /isClearedForPos\(/, "enqueueOrderDelivery must consult the fail-closed gate");
+  const enqueueBodyStart = enqueue.indexOf("export async function enqueueOrderDelivery");
+  assert.ok(
+    enqueueBodyStart !== -1 && enqueue.indexOf("isClearedForPos(", enqueueBodyStart) !== -1,
+    "the gate must sit inside enqueueOrderDelivery",
+  );
+
+  const bridge = readSrc("integrations/pos/order-bridge.ts");
+  const attemptBody = bridge.slice(bridge.indexOf("export async function attemptPosDelivery"));
+  assert.ok(
+    attemptBody.indexOf("isClearedForPos(") !== -1,
+    "attemptPosDelivery must consult the fail-closed gate",
+  );
+  assert.ok(
+    attemptBody.indexOf("isClearedForPos(") < attemptBody.indexOf("postPosOrderIngest("),
+    "the gate must run before the POS HTTP call",
+  );
+});
+
+test("the kitchen counts as preparing from PREPARING onwards", () => {
+  for (const s of ["PREPARING", "READY", "OUT_FOR_DELIVERY", "DELIVERED", "COMPLETED"]) {
+    assert.equal(hasStartedPreparing(s), true, `${s} must count as preparing`);
+  }
+  for (const s of ["PLACED", "ACCEPTED"]) {
+    assert.equal(hasStartedPreparing(s), false, `${s} must count as not preparing`);
+  }
+});
+
+test("an order is cancellable exactly until the kitchen starts preparing", () => {
+  // The guarantee: cancellation works while the food has NOT started preparing
+  // (PLACED / ACCEPTED). Once PREPARING hits, it is cook-locked.
+  for (const s of ["PLACED", "ACCEPTED"]) {
+    assert.equal(isCancellable(s), true, `${s} must stay cancellable`);
+  }
+  for (const s of ["PREPARING", "READY", "OUT_FOR_DELIVERY", "DELIVERED", "COMPLETED", "CANCELLED", "REJECTED"]) {
+    assert.equal(isCancellable(s), false, `${s} must not be cancellable`);
+  }
+  assert.equal(isCancellable("PREPARING"), false);
+});
+
+test("the cancellation window is enforced identically by UI and route", () => {
+  // Both the tracking screen (`queries.ts` cancellable flag) and the cancel
+  // endpoint (`order-cancel.ts`) must derive from the same pure helper, so a
+  // button can never be shown that the API refuses, or vice versa.
+  const readSrc = (rel: string) => readFileSync(join(__dirname, "..", "src", rel), "utf8");
+
+  const queries = readSrc("db/queries.ts");
+  const integrationBlock = queries.slice(queries.indexOf("function integrationOrderStatus"));
+  assert.match(integrationBlock, /isCancellable\(/, "the UI cancellable flag must use isCancellable");
+
+  const cancel = readSrc("integrations/pos/order-cancel.ts");
+  assert.match(cancel, /hasStartedPreparing\(/, "the route must fail closed once cooking starts");
+  assert.match(cancel, /isCancellable\(/, "the route must use the shared cancellable rule");
+  assert.match(cancel, /cancelOrderBeforeHandoff\(/, "the route must cancel pre-handoff orders locally");
+  assert.ok(
+    cancel.indexOf("hasStartedPreparing(") < cancel.indexOf("fetch("),
+    "the fail-closed gate must run before any POS HTTP call",
+  );
 });

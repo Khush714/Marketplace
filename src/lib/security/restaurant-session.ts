@@ -29,6 +29,7 @@ import type { NextRequest } from "next/server";
 import { getRestaurantSession, touchRestaurantSession, type RestaurantSession } from "@/db/queries";
 import { originDecision } from "@/lib/abuse";
 import { checkRateLimit, rateLimited } from "@/lib/security/rate-limit";
+import { apiError, forbidden } from "@/lib/security/errors";
 import {
   buildClearedSessionCookies,
   buildCsrfCookie,
@@ -155,7 +156,7 @@ export async function requirePartnerSession(
   opts: { mutating: boolean },
 ): Promise<PartnerSessionResult> {
   if (opts.mutating && originDecision(req) === "cross-site") {
-    return { ok: false, response: Response.json({ ok: false, error: "Request rejected" }, { status: 403 }) };
+    return { ok: false, response: forbidden("Request rejected") };
   }
 
   const token = readSessionToken(req);
@@ -166,10 +167,7 @@ export async function requirePartnerSession(
     // gets the same answer either way.
     return {
       ok: false,
-      response: Response.json(
-        { ok: false, error: "Sign in with your owner key", code: "SESSION_REQUIRED" },
-        { status: 401 },
-      ),
+      response: apiError(401, "Sign in with your owner key", "SESSION_REQUIRED"),
     };
   }
 
@@ -181,10 +179,7 @@ export async function requirePartnerSession(
     if (!csrfMatches(live.csrfHash, req.headers.get(RESTAURANT_CSRF_HEADER))) {
       return {
         ok: false,
-        response: Response.json(
-          { ok: false, error: "Request rejected", code: "CSRF_INVALID" },
-          { status: 403 },
-        ),
+        response: apiError(403, "Request rejected", "CSRF_INVALID"),
       };
     }
 

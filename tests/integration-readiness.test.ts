@@ -102,6 +102,60 @@ test("an empty-string id or secret does not count as present", () => {
   );
 });
 
+/*
+ * Provider-aware cases.
+ *
+ * A record with no provider predates the column, so it must keep behaving as
+ * Restaurant AI. That default is load-bearing: every integration row written
+ * before Petpooja existed relies on it.
+ */
+
+test("a record with no provider is treated as Restaurant AI", () => {
+  assert.equal(integrationReadiness(CONNECTED).ready, true);
+  assert.equal(
+    integrationReadiness({ status: "active", posRestaurantId: "rest_7" }).notReadyReason,
+    "webhook_secret",
+  );
+});
+
+test("Petpooja is ready on partner credentials, not a sealed webhook secret", () => {
+  // Its outbound call authenticates with app-level credentials. Reusing the
+  // Restaurant AI rule would demand a secret Petpooja never issues and leave
+  // every Petpooja listing permanently unorderable.
+  const base = {
+    status: "active",
+    provider: "petpooja",
+    posRestaurantId: "1234",
+    webhookSecret: null,
+    partnerCredentialsConfigured: true,
+  };
+  assert.deepEqual(integrationReadiness(base), { ready: true, notReadyReason: null });
+  assert.equal(
+    integrationReadiness({ ...base, partnerCredentialsConfigured: false }).notReadyReason,
+    "provider_credentials",
+  );
+  // The shared prerequisite still applies: no restID means nowhere to route.
+  assert.equal(
+    integrationReadiness({ ...base, posRestaurantId: null }).notReadyReason,
+    "pos_restaurant_id",
+  );
+});
+
+test("an unknown provider is never ready", () => {
+  // There is no adapter to deliver with, so admitting the order would charge a
+  // customer for food nothing can cook.
+  const rec = {
+    ...CONNECTED,
+    provider: "mystery-pos",
+    partnerCredentialsConfigured: true,
+  };
+  assert.deepEqual(integrationReadiness(rec), {
+    ready: false,
+    notReadyReason: "unsupported_provider",
+  });
+  assert.equal(canDeliverToPos(rec), false);
+});
+
 test("reason and ready can never disagree", () => {
   const shapes = [
     {},
@@ -110,6 +164,15 @@ test("reason and ready can never disagree", () => {
     { status: "active", webhookSecret: "sealed:v1:abc" },
     { status: "pending", posRestaurantId: "rest_7", webhookSecret: "sealed:v1:abc" },
     CONNECTED,
+    // Provider shapes must satisfy the same invariant as the legacy ones.
+    { status: "active", provider: "petpooja", posRestaurantId: "1234" },
+    {
+      status: "active",
+      provider: "petpooja",
+      posRestaurantId: "1234",
+      partnerCredentialsConfigured: true,
+    },
+    { status: "active", provider: "mystery-pos", posRestaurantId: "x" },
   ];
   for (const rec of shapes) {
     const { ready, notReadyReason } = integrationReadiness(rec);

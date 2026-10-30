@@ -56,6 +56,8 @@ const IPS = {
   delete: "10.0.7.10",
   integration: "10.0.5.10",
   payment: "10.0.6.10",
+  matrix: "10.0.10.10",
+  json: "10.0.11.10",
 } as const;
 
 let harnessReady = false;
@@ -1197,5 +1199,388 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
       [fx.orderId],
     );
     assert.equal(order?.paymentStatus, "PAID");
+  });
+});
+
+/* ============ 9. layer 4 — menu cross-tenant isolation (IDOR) ============ */
+
+describe("menu cross-tenant isolation (IDOR gate)", () => {
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+  });
+
+  it("a partner session cannot read or mutate another tenant's dish by id", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const f = getFixture();
+    const a = await loginPartner(f.alpha.ownerKey, IPS.matrix);
+    const b = await loginPartner(f.beta.ownerKey, IPS.matrix);
+    assert.equal(a.result.status, 200);
+    assert.equal(b.result.status, 200);
+
+    const created = await api({
+      path: "/api/partner/menu/items",
+      method: "POST",
+      ip: IPS.matrix,
+      jar: a.jar,
+      headers: csrfHeaders(a.jar),
+      body: { category: "Mains", name: "Alpha IDOR Dish", priceCents: 12345 },
+    });
+    assert.equal(created.status, 200, created.text);
+    const item = created.json?.item as Record<string, unknown> | undefined;
+    assert.ok(item && typeof item.id === "number", "expected the created dish id");
+    const itemId = item.id as number;
+
+    // Beta holds a valid session and a valid CSRF token; the only thing that is
+    // wrong is the tenant. Every one of these must be a not-found, never a 200.
+    const betaPatch = await api({
+      path: `/api/partner/menu/items/${itemId}`,
+      method: "PATCH",
+      ip: IPS.matrix,
+      jar: b.jar,
+      headers: csrfHeaders(b.jar),
+      body: { name: "Stolen" },
+    });
+    assert.equal(betaPatch.status, 400, "cross-tenant PATCH must be refused");
+
+    const betaDelete = await api({
+      path: `/api/partner/menu/items/${itemId}`,
+      method: "DELETE",
+      ip: IPS.matrix,
+      jar: b.jar,
+      headers: csrfHeaders(b.jar),
+    });
+    assert.equal(betaDelete.status, 400, "cross-tenant DELETE must be refused");
+
+    // The dish is untouched: neither renamed by beta nor deleted by beta.
+    const row = await queryRow<{ name: string }>("select name from menu_items where id = $1", [itemId]);
+    assert.equal(row?.name, "Alpha IDOR Dish", "the other tenant's dish must be untouched");
+
+    // The owner still can.
+    const ownerPatch = await api({
+      path: `/api/partner/menu/items/${itemId}`,
+      method: "PATCH",
+      ip: IPS.matrix,
+      jar: a.jar,
+      headers: csrfHeaders(a.jar),
+      body: { name: "Alpha Renamed Dish" },
+    });
+    assert.equal(ownerPatch.status, 200, ownerPatch.text);
+  });
+});
+
+/* ====== 10. layer 4 — privileged surfaces are credential-separated ======= */
+
+describe("privileged-surface credential separation", () => {
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+  });
+
+  async function alphaIntegrationToken(): Promise<string> {
+    const f = getFixture();
+    const login = await api({
+      path: "/api/integration/login",
+      method: "POST",
+      ip: IPS.matrix,
+      body: { code: f.codes.login, passkey: f.alpha.ownerKey },
+    });
+    assert.equal(login.status, 200, "alpha's POS should be able to log in");
+    return (login.json?.["token"] as string) ?? "";
+  }
+
+  const OPS_SURFACE = [
+    { path: "/api/ops/integration-transfers", method: "GET" },
+    { path: "/api/ops/integrations", method: "GET" },
+    { path: "/api/ops/owner-key", method: "GET" },
+    { path: "/api/ops/pos-bridge", method: "GET" },
+    { path: "/api/ops/featured", method: "PATCH", body: { slug: "alpha-kitchen", featured: true } },
+    { path: "/api/integrations/pos/drain", method: "POST" },
+    { path: "/api/integrations/payments/ops", method: "POST" },
+  ] as const;
+
+  it("refuses a partner session on every ops surface (401)", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const f = getFixture();
+    const a = await loginPartner(f.alpha.ownerKey, IPS.matrix);
+    for (const route of OPS_SURFACE) {
+      const res = await api({
+        path: route.path,
+        method: route.method,
+        ip: IPS.matrix,
+        jar: a.jar,
+        headers: csrfHeaders(a.jar),
+        body: "body" in route ? route.body : undefined,
+      });
+      assert.equal(res.status, 401, `${route.method} ${route.path} must refuse a partner session`);
+    }
+  });
+
+  it("refuses a POS bearer token on every ops surface (401)", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const token = await alphaIntegrationToken();
+    assert.ok(token, "expected a POS bearer token");
+    for (const route of OPS_SURFACE) {
+      const res = await api({
+        path: route.path,
+        method: route.method,
+        ip: IPS.matrix,
+        headers: bearer(token),
+        body: "body" in route ? route.body : undefined,
+      });
+      assert.equal(res.status, 401, `${route.method} ${route.path} must refuse a POS bearer token`);
+    }
+  });
+
+  it("accepts the ops token on the read-only ops surface", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    // Only the read/gated GETs, so this proves the credential without triggering
+    // a real POS/payment drain as a side effect of the security suite.
+    const reads = OPS_SURFACE.filter((r) => r.method === "GET");
+    for (const route of reads) {
+      const res = await api({
+        path: route.path,
+        method: "GET",
+        ip: IPS.matrix,
+        headers: { "x-ops-token": OPS_TOKEN },
+      });
+      assert.notEqual(res.status, 401, `${route.method} ${route.path} must accept the ops token`);
+    }
+  });
+
+  it("scheduled drains fail closed with no credential", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const drains = ["/api/cron/pos-drain", "/api/cron/payments-drain", "/api/internal/pos-delivery-drain"];
+    for (const path of drains) {
+      const res = await api({ path, method: "GET", ip: IPS.matrix });
+      assert.ok(
+        res.status === 401 || res.status === 503,
+        `${path} must deny an uncredentialed call, got ${res.status}`,
+      );
+    }
+  });
+});
+
+/* ============ 11. layer 4 — owner-key rotation is a session kill ========= */
+
+describe("owner-key rotation revokes minted sessions", () => {
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+  });
+
+  it("404s an unknown key (no existence oracle)", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: "/api/partner/owner-key/rotate",
+      method: "POST",
+      ip: IPS.matrix,
+      body: { currentOwnerKey: "definitely-not-a-real-key" },
+    });
+    assert.equal(res.status, 404);
+  });
+
+  it("rotating with the current key kills sessions minted by the old key", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const f = getFixture();
+    const a = await loginPartner(f.alpha.ownerKey, IPS.matrix);
+    assert.equal(a.result.status, 200);
+
+    const rotated = await api({
+      path: "/api/partner/owner-key/rotate",
+      method: "POST",
+      ip: IPS.matrix,
+      body: { currentOwnerKey: f.alpha.ownerKey },
+    });
+    assert.equal(rotated.status, 200, rotated.text);
+    const newKey = rotated.json?.["ownerKey"] as string | undefined;
+    assert.ok(newKey && newKey !== f.alpha.ownerKey, "rotation must return a fresh key");
+
+    const dead = await api({ path: "/api/partner/restaurant", method: "GET", ip: IPS.matrix, jar: a.jar });
+    assert.equal(dead.status, 401, "a session minted by the old key must die with it");
+
+    const fresh = await loginPartner(newKey, IPS.matrix);
+    assert.equal(fresh.result.status, 200, "the new key must open a fresh session");
+  });
+});
+
+/* ================ 11b. cancellation before the kitchen starts ============ */
+
+describe("customer cancellation before the kitchen starts preparing", () => {
+  const preHandoff = { code: "", orderToken: "" };
+
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+    const f = getFixture();
+    // An online order the POS has NOT received yet (no pos_order_id, journal
+    // still PENDING): online payment never captured. The kitchen cannot have
+    // started, so cancellation must work — locally, since there is no
+    // kitchen-side state to reconcile.
+    const pre = await seedOrder({
+      code: "CRV-CANCEL1",
+      externalOrderId: "mkt_ord_cancel_pre_1",
+      restaurant: { id: f.alpha.id, slug: f.alpha.slug, name: f.alpha.name },
+      status: "PLACED",
+      paymentStatus: "PAYMENT_PENDING",
+      totalCents: 9000,
+      phone: "9000000099",
+      posConnected: true,
+      posOrderId: null,
+      posDeliveryStatus: "PENDING",
+    });
+    await seedPayment({
+      paymentReference: "pay_cancel_pre_1",
+      marketplaceOrderId: pre.id,
+      externalOrderId: pre.externalOrderId,
+      restaurantId: f.alpha.id,
+      providerOrderId: "ord_cancel_pre_1",
+    });
+    preHandoff.code = pre.code;
+    preHandoff.orderToken = pre.orderToken;
+  });
+
+  it("cancels a not-yet-received order immediately and closes its payment", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: `/api/orders/${preHandoff.code}/cancel`,
+      method: "POST",
+      ip: IPS.order,
+      headers: { "x-order-token": preHandoff.orderToken },
+    });
+    assert.equal(res.status, 200, res.text);
+    assert.equal(res.json?.["ok"], true);
+    assert.equal(res.json?.["cancelled"], true);
+
+    const orders = await queryRows<{ integration_status: string; pos_delivery_status: string }>(
+      "select integration_status, pos_delivery_status from orders where code = $1",
+      [preHandoff.code],
+    );
+    assert.equal(orders[0].integration_status, "CANCELLED", "the order must be closed locally");
+    assert.equal(orders[0].pos_delivery_status, "CANCELLED", "the kitchen can never receive it after a cancel");
+    const pays = await queryRows<{ status: string }>(
+      "select status from marketplace_payments where payment_reference = $1",
+      ["pay_cancel_pre_1"],
+    );
+    assert.equal(pays[0].status, "PAYMENT_CANCELLED", "a never-captured payment must be closed, not left pending");
+  });
+
+  it("a second cancel is an idempotent success", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: `/api/orders/${preHandoff.code}/cancel`,
+      method: "POST",
+      ip: IPS.order,
+      headers: { "x-order-token": preHandoff.orderToken },
+    });
+    assert.equal(res.status, 200, res.text);
+    assert.equal(res.json?.["cancelled"], true);
+    assert.equal(res.json?.["idempotent"], true);
+  });
+
+  it("cancelling without the order token is a 404, never a 200", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: `/api/orders/${preHandoff.code}/cancel`,
+      method: "POST",
+      ip: IPS.order,
+    });
+    assert.equal(res.status, 404, res.text);
+  });
+
+  it("refuses once the kitchen has started preparing", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const f = getFixture();
+    const cooking = await seedOrder({
+      code: "CRV-CANCEL2",
+      externalOrderId: "mkt_ord_cancel_cook",
+      restaurant: { id: f.alpha.id, slug: f.alpha.slug, name: f.alpha.name },
+      status: "PREPARING",
+      paymentStatus: "PAYMENT_PENDING",
+      totalCents: 11000,
+      phone: "9000000110",
+      posConnected: true,
+      posOrderId: 1002,
+      posDeliveryStatus: "PLACED",
+    });
+    const res = await api({
+      path: `/api/orders/${cooking.code}/cancel`,
+      method: "POST",
+      ip: IPS.order,
+      headers: { "x-order-token": cooking.orderToken },
+    });
+    assert.equal(res.status, 409, res.text);
+    const err = res.json?.["error"] as Record<string, unknown> | undefined;
+    assert.equal(err?.["code"], "PREPARATION_STARTED");
+    assert.equal((err?.["details"] as Record<string, unknown> | undefined)?.["cancelled"], false);
+    const orders = await queryRows<{ integration_status: string }>(
+      "select integration_status from orders where code = $1",
+      [cooking.code],
+    );
+    assert.equal(orders[0].integration_status, "PREPARING", "a cooking order must be left untouched");
+  });
+});
+
+/* =========== 12. layer 5 — API error envelope and body handling ========== */
+
+describe("API error envelope and malformed-body handling", () => {
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+  });
+
+  /** The standard envelope: `{ error: { code, message } }`, no internals. */
+  function assertEnvelope(res: { json: Record<string, unknown> | null; text: string }, status: number, code?: string) {
+    assert.equal(res.json === null, false, `expected a JSON body: ${res.text}`);
+    const error = (res.json as Record<string, unknown>).error as Record<string, unknown> | undefined;
+    assert.ok(error && typeof error === "object", `expected an object error envelope: ${res.text}`);
+    assert.equal(typeof error.code, "string", "the envelope must carry a string code");
+    assert.ok((error.code as string).length > 0, "the code must not be empty");
+    assert.equal(typeof error.message, "string", "the envelope must carry a string message");
+    assert.ok((error.message as string).length > 0, "the message must not be empty");
+    if (code) assert.equal(error.code, code, `expected code ${code}, got ${String(error.code)}`);
+    // A shipped body must never carry a stack trace or driver text.
+    assert.doesNotMatch(res.text, /\n\s+at\s/, "no stack trace may reach the client");
+    assert.doesNotMatch(res.text, /node_modules|server-only|pg\.Protocol|Error:/i, "no internals may reach the client");
+  }
+
+  it("a garbage JSON body is a 400 envelope, never a 500 or a stack trace", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: "/api/orders",
+      method: "POST",
+      ip: IPS.json,
+      body: "{ this is not json",
+    });
+    assert.equal(res.status, 400, res.text);
+    assertEnvelope(res, 400);
+  });
+
+  it("a garbage body on a gated write still fails as a 400 after the credential", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({
+      path: "/api/ops/owner-key",
+      method: "POST",
+      ip: IPS.json,
+      headers: { "x-ops-token": OPS_TOKEN },
+      body: "}{",
+    });
+    assert.equal(res.status, 400, res.text);
+    assertEnvelope(res, 400, "BAD_JSON");
+  });
+
+  it("a missing credential is a 401 envelope, not a bare string", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({ path: "/api/partner/integrations", method: "GET", ip: IPS.json });
+    assert.equal(res.status, 401, res.text);
+    assertEnvelope(res, 401);
+  });
+
+  it("a malformed pagination cursor is tolerated, not a 500", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const res = await api({ path: "/api/restaurants?cursor=%2F%2Fnot-a-cursor&limit=9999", method: "GET", ip: IPS.json });
+    assert.equal(res.status, 200, res.text);
+    assert.ok(Array.isArray((res.json as Record<string, unknown>).restaurants), "the listing is returned");
+    assert.ok("nextCursor" in (res.json as Record<string, unknown>), "the page advertises a next cursor");
   });
 });

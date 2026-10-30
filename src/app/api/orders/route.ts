@@ -11,6 +11,7 @@ import {
 } from "@/integrations/payments/provider-session";
 import { orderTokensAvailable, signOrderToken } from "@/lib/order-token";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { apiError, internalError } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -47,10 +48,7 @@ export async function POST(req: NextRequest) {
     // DOMException ("The string did not match the expected pattern"). Always
     // answer with JSON so the browser shows the real failure.
     console.error("[orders] checkout failed:", e);
-    return Response.json(
-      { ok: false, error: "Something went wrong placing your order. Please try again.", code: "INTERNAL_ERROR" },
-      { status: 500 },
-    );
+    return internalError("Something went wrong placing your order. Please try again.");
   }
 }
 
@@ -59,10 +57,7 @@ async function checkout(req: NextRequest) {
   // just placed it, so this is refused up front rather than minting an order
   // whose only credential is an empty string.
   if (!orderTokensAvailable()) {
-    return Response.json(
-      { ok: false, error: "Checkout is temporarily unavailable", code: "ORDER_TOKENS_UNAVAILABLE" },
-      { status: 503 },
-    );
+    return apiError(503, "Checkout is temporarily unavailable", "ORDER_TOKENS_UNAVAILABLE");
   }
 
   let validated: CheckoutResult;
@@ -75,10 +70,7 @@ async function checkout(req: NextRequest) {
     validated = validateCheckout(parsed.body);
   }
   if (!validated.ok) {
-    return Response.json(
-      { ok: false, error: validated.error, code: validated.code },
-      { status: 400 },
-    );
+    return apiError(400, validated.error, validated.code);
   }
 
   const wantsOnline = isOnlinePayment(validated.request.paymentMethod);
@@ -86,13 +78,10 @@ async function checkout(req: NextRequest) {
     // Refuse BEFORE creating anything: an order that can never be paid for is an
     // order that can never reach the kitchen, and the customer should be told to
     // use cash on delivery rather than discovering it on a payment screen.
-    return Response.json(
-      {
-        ok: false,
-        error: "Online payment is unavailable right now. Please choose cash on delivery.",
-        code: "PROVIDER_NOT_CONFIGURED",
-      },
-      { status: 503 },
+    return apiError(
+      503,
+      "Online payment is unavailable right now. Please choose cash on delivery.",
+      "PROVIDER_NOT_CONFIGURED",
     );
   }
 
@@ -102,7 +91,7 @@ async function checkout(req: NextRequest) {
     // branch/outlet claim), everything else stays a client 400.
     const status =
       result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
-    return Response.json(result, { status });
+    return apiError(status, result.error, result.code);
   }
 
   // Phase 6 — payment lifecycle. Online methods open a PAYMENT_PENDING record

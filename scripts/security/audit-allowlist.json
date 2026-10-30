@@ -1,0 +1,19 @@
+{
+  "$comment": "Reviewed exceptions for scripts/security/audit-gate.mjs. Each entry must name the exact package + GHSA advisory, carry a reason, and carry an expiry date (YYYY-MM-DD). Expired entries fail the gate. Keep this list short and burn it down.",
+  "advisories": [
+    {
+      "package": "next",
+      "advisory": "GHSA-cjq9-62q9-8jv4",
+      "severity": "high",
+      "reason": "SSRF in the built-in Image Optimization endpoint. The app only allows the configured remote image hosts, and the offered fix is next@16.4.0 (npm reports isSemVerMajor:false). Sweep in the next dependency refresh; remove this entry then.",
+      "expires": "2026-11-30"
+    },
+    {
+      "package": "braces",
+      "advisory": "GHSA-vfj7-8cjw-p6xm",
+      "severity": "high",
+      "reason": "ReDoS in brace pattern expansion. Dev-only, reached through eslint-config-next -> fast-glob -> micromatch; never shipped to the server runtime. npm's only fix is a semver-major downgrade of eslint-config-next.",
+      "expires": "2027-03-31"
+    }
+  ]
+}

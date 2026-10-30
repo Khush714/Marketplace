@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { decideIntegrationTransfer, listIntegrationTransfers } from "@/db/queries";
 import { requireOpsToken } from "@/lib/ops-auth";
+import { apiError, badRequest } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -44,19 +45,16 @@ export async function POST(req: NextRequest) {
   try {
     body = (await req.json()) as typeof body;
   } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
+    return badRequest("Invalid request.");
   }
 
   const requestId = Number(body.request_id);
   const decision = String(body.decision ?? "");
   if (!Number.isInteger(requestId) || requestId <= 0) {
-    return Response.json({ ok: false, error: "request_id is required" }, { status: 400 });
+    return badRequest("request_id is required");
   }
   if (decision !== "approved" && decision !== "denied") {
-    return Response.json(
-      { ok: false, error: 'decision must be "approved" or "denied"' },
-      { status: 400 },
-    );
+    return badRequest('decision must be "approved" or "denied"');
   }
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;
@@ -73,7 +71,7 @@ export async function POST(req: NextRequest) {
   if (!result.ok) {
     // Stale conditions, not permission problems: the operator's read was out of
     // date. 409 so the console refreshes instead of showing a hard failure.
-    return Response.json(result, { status: 409 });
+    return apiError(409, result.error, result.code);
   }
   return Response.json(result);
 }

@@ -392,6 +392,14 @@ export const integrationRecords = pgTable(
      */
     webhookSecret: text("webhook_secret"),
     /**
+     * Outbound endpoint for the `custom_webhook` provider. Selected by ops in
+     * `PUT /api/ops/integrations`, screened for SSRF at write time, and used as
+     * the POST target for `order.created` frames. Null for every other provider,
+     * because their endpoint is process-wide configuration (`POS_BASE_URL`,
+     * `PETPOOJA_API_URL`).
+     */
+    webhookUrl: text("webhook_url"),
+    /**
      * Latest menu version we've served to the POS. Echoed back in every webhook
      * response so the POS can ack `marketplace_menu_ack_version`.
      */

@@ -14,6 +14,7 @@ import {
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
 import { isAuthorizedAwaitingCapture } from "@/lib/payment-security-core";
+import { apiError, badRequest, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -44,14 +45,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
 
   const { code } = await ctx.params;
   if (!verifyOrderToken(code, readOrderToken(req.headers))) {
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
 
   const order = await getOrderByCode(code);
-  if (!order) return Response.json({ error: "Not found" }, { status: 404 });
+  if (!order) return notFound("Not found");
 
   const payment = await getActivePaymentByOrder(order.id);
-  if (!payment) return Response.json({ error: "No payment for this order" }, { status: 404 });
+  if (!payment) return notFound("No payment for this order");
 
   if (payment.status === "PAID") {
     return Response.json({ ok: true, status: "PAID", reference: payment.reference });
@@ -62,12 +63,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   // order". The money facts are re-read from the provider below regardless,
   // so admitting the row costs no trust.
   if (payment.status !== "PAYMENT_PENDING" && payment.status !== "FAILED") {
-    return Response.json({ ok: false, status: payment.status, error: "Payment is no longer payable" }, { status: 409 });
+    return apiError(409, "Payment is no longer payable", undefined, {
+      details: { status: payment.status },
+    });
   }
 
   const mode = providerMode();
   if (mode === "unavailable") {
-    return Response.json({ ok: false, error: "Payments are not configured" }, { status: 503 });
+    return apiError(503, "Payments are not configured");
   }
 
   // The body is read under the standard 16 KB cap rather than with a bare
@@ -88,7 +91,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   // production, and the order token still gates the call.
   if (mode === "dev") {
     if (body.dev !== true) {
-      return Response.json({ ok: false, error: "Missing dev confirmation" }, { status: 400 });
+      return badRequest("Missing dev confirmation");
     }
     const applied = await applyProviderPaymentEvent({
       eventId: `dev:${payment.reference}:payment.captured`,
@@ -118,7 +121,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   const providerPaymentId = String(body.razorpay_payment_id ?? "").trim();
   const signature = String(body.razorpay_signature ?? "").trim();
   if (!providerOrderId || !providerPaymentId || !signature) {
-    return Response.json({ ok: false, error: "Incomplete checkout response" }, { status: 400 });
+    return badRequest("Incomplete checkout response");
   }
 
   if (!verifyCheckoutSignature({ razorpayOrderId: providerOrderId, razorpayPaymentId: providerPaymentId, razorpaySignature: signature })) {
@@ -128,13 +131,13 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
       payment_reference: payment.reference,
       failure_code: "CHECKOUT_SIGNATURE_INVALID",
     });
-    return Response.json({ ok: false, error: "Signature verification failed" }, { status: 400 });
+    return badRequest("Signature verification failed");
   }
 
   // The signature proves "this payment belongs to that provider order" — it must
   // also be OUR order, or a valid payment from another checkout could be reused.
   if (!payment.providerOrderId || payment.providerOrderId !== providerOrderId) {
-    return Response.json({ ok: false, error: "Payment does not belong to this order" }, { status: 409 });
+    return apiError(409, "Payment does not belong to this order");
   }
 
   // Money facts come from the provider, never from the request body.
@@ -143,7 +146,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     return Response.json({ ok: true, status: payment.status, pending: true }, { status: 202 });
   }
   if (remote.orderId && remote.orderId !== payment.providerOrderId) {
-    return Response.json({ ok: false, error: "Payment does not belong to this order" }, { status: 409 });
+    return apiError(409, "Payment does not belong to this order");
   }
 
   // Auto-capture may be OFF on the provider account: a completed payment then
@@ -186,10 +189,9 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   await afterApply(applied, payment);
 
   if (applied.outcome === "applied" && applied.payment.status === "FAILED") {
-    return Response.json(
-      { ok: false, status: "FAILED", error: remote.errorDescription ?? "Payment failed", reference: payment.reference },
-      { status: 402 },
-    );
+    return apiError(402, remote.errorDescription ?? "Payment failed", undefined, {
+      details: { status: "FAILED", reference: payment.reference },
+    });
   }
   return Response.json({
     ok: true,

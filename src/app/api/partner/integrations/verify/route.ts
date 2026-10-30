@@ -6,6 +6,7 @@ import {
   type PosConnectionIdentity,
 } from "@/lib/pos-bridge";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
+import { apiError, badRequest } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -28,7 +29,7 @@ export async function POST(req: NextRequest) {
   const body = (parsed.body ?? {}) as Record<string, unknown>;
   const connectionCode = String(body?.connection_code ?? "").trim();
   if (!connectionCode) {
-    return Response.json({ ok: false, error: "connection_code is required" }, { status: 400 });
+    return badRequest("connection_code is required");
   }
 
   try {
@@ -51,9 +52,6 @@ export async function POST(req: NextRequest) {
         { status: 200 },
       );
     }
-    return Response.json(
-      { ok: false, error: outcome.message, code: outcome.code },
-      { status: outcome.status },
-    );
+    return apiError(outcome.status, outcome.message, outcome.code);
   }
 }

@@ -1,6 +1,11 @@
 import "server-only";
 import { and, eq, sql } from "drizzle-orm";
 import { db, pool } from "@/db";
+import {
+  cancelPendingPayment,
+  getActivePaymentByOrder,
+  markRefundRequested,
+} from "@/db/payments";
 import { recordIntegrationAudit } from "@/db/queries";
 import {
   integrationRecords,
@@ -11,6 +16,7 @@ import {
   type OrderRow,
   type PosOrderDeliveryRow,
 } from "@/db/schema";
+import { isClearedForPos } from "@/integrations/pos/order-payload-shape";
 import {
   canTransition,
   isAbsorbedAccepted,
@@ -51,11 +57,21 @@ export function externalOrderIdFor(orderId: number): string {
  */
 export async function enqueueOrderDelivery(orderId: number): Promise<number | null> {
   const [orderRow] = await db
-    .select({ restaurantId: orders.restaurantId })
+    .select({
+      restaurantId: orders.restaurantId,
+      paymentMethod: orders.paymentMethod,
+      paymentStatus: orders.paymentStatus,
+    })
     .from(orders)
     .where(eq(orders.id, orderId))
     .limit(1);
   if (!orderRow) return null;
+
+  // Fail closed: an online order is not journaled for the kitchen until its
+  // money is captured. Without this, any caller that enqueues an order after a
+  // PENDING/FAILED/CANCELLED online payment would ship it with the payload's
+  // `payment_status: "PAID"` and the restaurant would cook an unpaid order.
+  if (!isClearedForPos(orderRow)) return null;
 
   const [rec] = await db
     .select({ status: integrationRecords.status })
@@ -100,6 +116,12 @@ export interface PosDeliveryContext {
   marketplaceId: string | null;
   integrationActive: boolean;
   sealedSecret: string | null;
+  /** Provider selected on the integration record; decides which adapter runs. */
+  provider: string | null;
+  /** Provider-side restaurant id (Petpooja `restID`; branch routing for others). */
+  posRestaurantId: string | null;
+  /** `custom_webhook` only: per-listing outbound endpoint. */
+  webhookUrl: string | null;
   /** Authoritative branch/outlet from the integration record (may be null). */
   posBranchId: string | null;
   posOutletId: string | null;
@@ -114,8 +136,11 @@ export async function loadPosDeliveryContext(deliveryId: number): Promise<PosDel
       marketplaceId: restaurants.marketplaceId,
       integrationStatus: integrationRecords.status,
       webhookSecret: integrationRecords.webhookSecret,
+      provider: integrationRecords.provider,
+      integrationRestaurantId: integrationRecords.posRestaurantId,
       integrationBranchId: integrationRecords.posBranchId,
       integrationOutletId: integrationRecords.posOutletId,
+      webhookUrl: integrationRecords.webhookUrl,
     })
     .from(posOrderDeliveries)
     .innerJoin(orders, eq(orders.id, posOrderDeliveries.marketplaceOrderId))
@@ -130,9 +155,46 @@ export async function loadPosDeliveryContext(deliveryId: number): Promise<PosDel
     marketplaceId: row.marketplaceId,
     integrationActive: row.integrationStatus === "active",
     sealedSecret: row.webhookSecret,
+    provider: row.provider,
+    posRestaurantId: row.integrationRestaurantId,
+    webhookUrl: row.webhookUrl,
     posBranchId: row.integrationBranchId,
     posOutletId: row.integrationOutletId,
   };
+}
+
+/**
+ * Resolve an inbound callback's order id to its tenant and provider.
+ *
+ * The callback carries no tenant identifier, so the order id is the lookup key.
+ * Scoping the result through `integration_records` is what lets the handler
+ * refuse a verified Petpooja frame that names an order belonging to a
+ * different provider. `orders.external_order_id` is globally UNIQUE, so this
+ * cannot return two tenants for one id.
+ */
+export async function resolveOrderTenantForPosCallback(
+  externalOrderId: string,
+): Promise<{
+  restaurantId: number;
+  provider: string;
+  posOrderId: number | null;
+  /** Sealed per-listing secret, for providers whose callbacks are tenant-signed. */
+  sealedSecret: string | null;
+} | null> {
+  const id = String(externalOrderId ?? "").trim();
+  if (!id) return null;
+  const [row] = await db
+    .select({
+      restaurantId: orders.restaurantId,
+      provider: integrationRecords.provider,
+      posOrderId: orders.posOrderId,
+      sealedSecret: integrationRecords.webhookSecret,
+    })
+    .from(orders)
+    .innerJoin(integrationRecords, eq(integrationRecords.restaurantId, orders.restaurantId))
+    .where(eq(orders.externalOrderId, id))
+    .limit(1);
+  return row ?? null;
 }
 
 /**
@@ -255,6 +317,76 @@ export async function recordPosDeliveryFailure(
     }
   }
   return terminal;
+}
+
+/* ---------------------- cancellation before handoff ---------------------- */
+
+/**
+ * Customer cancellation for an order the POS has never received (no
+ * pos_order_id). The POS is the authority for orders IT holds; for an order it
+ * has never seen there is nothing to reconcile, so the Marketplace closes it
+ * locally and no kitchen-side cancel can ever exist. Sequence, each step
+ * durably idempotent:
+ *   1. order → CANCELLED (the forward-only guard permits PLACED/ACCEPTED →
+ *      CANCELLED; the customer-facing tracking page reads integration_status).
+ *   2. journal row → FAILED so the drain can never ship a cancelled order to
+ *      the kitchen later (a POS delivery that appears AFTER a local cancel
+ *      would be the "customer cancelled but the kitchen got it anyway" bug).
+ *   3. money settled: a never-captured payment is closed PAYMENT_CANCELLED, a
+ *      captured one is marked REFUND_PENDING (provider refund fires detached;
+ *      reconciliation surfaces whatever the provider never confirms).
+ */
+export async function cancelOrderBeforeHandoff(opts: {
+  restaurantId: number;
+  orderId: number;
+  code: string;
+  reason: string;
+  at?: Date;
+}): Promise<void> {
+  const at = opts.at ?? new Date();
+  await db.transaction(async (tx) => {
+    await tx
+      .update(orders)
+      .set({
+        integrationStatus: "CANCELLED",
+        statusUpdatedAt: at,
+        posDeliveryStatus: "CANCELLED",
+      })
+      .where(and(eq(orders.id, opts.orderId), eq(orders.restaurantId, opts.restaurantId)));
+    await tx
+      .update(posOrderDeliveries)
+      .set({
+        status: "FAILED",
+        lastError: "cancelled before the POS received the order",
+        nextAttemptAt: null,
+        updatedAt: at,
+      })
+      .where(eq(posOrderDeliveries.marketplaceOrderId, opts.orderId));
+  });
+
+  await recordIntegrationAudit(opts.restaurantId, "ORDER_CANCEL_LOCAL_BEFORE_HANDOFF", { actor: "system" }, {
+    order_id: opts.orderId,
+    code: opts.code,
+    reason: opts.reason,
+    current_status: "PLACED",
+  });
+
+  const [order] = await db.select().from(orders).where(eq(orders.id, opts.orderId)).limit(1);
+  if (!order) return;
+
+  const live = await getActivePaymentByOrder(opts.orderId);
+  if (live && (live.status === "PAYMENT_PENDING" || live.status === "UNPAID")) {
+    // Nothing was captured — closing the payment row is the whole settlement.
+    await cancelPendingPayment(order);
+    return;
+  }
+  // Captured money (or partially refunded): the market owes a refund.
+  const refundable = await markRefundRequested(opts.orderId, opts.reason);
+  if (refundable && refundable.status === "REFUND_PENDING") {
+    void initiateProviderRefund(refundable, opts.reason).catch((e) =>
+      console.error("[pos-delivery] provider refund initiation errored", e),
+    );
+  }
 }
 
 /* --------------------------- status webhooks ---------------------------- */

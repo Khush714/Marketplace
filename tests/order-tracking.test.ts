@@ -126,7 +126,7 @@ test("the checkout route passes the tracking token through its response", () => 
 test("the track route is shape-gated, read-throttled and projected to the public order", () => {
   const source = readSource("src/app/api/orders/track/[trackingToken]/route.ts");
   assert.match(source, /isTrackingToken\(trackingToken\)/, "format is checked before any query");
-  assert.match(source, /\{ error: "Not found" \}, \{ status: 404 \}/, "malformed URLs die as 404");
+  assert.match(source, /notFound\("Not found"\)/, "malformed URLs die as 404");
   assert.match(source, /guardRead\(req, "orderLookup"\)/, "the endpoint sits behind the read guard");
   assert.match(source, /getOrderByTrackingToken\(trackingToken\)/, "lookup goes through the tracking-token accessor");
   assert.match(source, /toPublicOrder\(order\)/, "only the customer-safe projection is returned");

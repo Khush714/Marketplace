@@ -2,6 +2,7 @@ import "server-only";
 import { timingSafeEqual } from "node:crypto";
 import type { NextRequest } from "next/server";
 import { emitSecurityEvent } from "@/lib/security/security-events";
+import { notConfigured, unauthorized } from "@/lib/security/errors";
 
 /**
  * Shared guard for the privileged operations surface: partner onboarding codes,
@@ -53,14 +54,7 @@ export function requireOpsToken(req: NextRequest): Response | null {
       return null;
     }
     emitSecurityEvent("admin_login", { outcome: "failure", reason: "not_configured" });
-    return Response.json(
-      {
-        ok: false,
-        error: "Ops access is not configured on this deployment",
-        code: "OPS_TOKEN_UNAVAILABLE",
-      },
-      { status: 503 },
-    );
+    return notConfigured("Ops access is not configured on this deployment");
   }
   const provided = (req.headers.get(OPS_TOKEN_HEADER) ?? "").trim();
   if (!provided || !constantTimeEquals(provided, expected)) {
@@ -71,7 +65,7 @@ export function requireOpsToken(req: NextRequest): Response | null {
       outcome: "failure",
       reason: provided ? "token_mismatch" : "token_missing",
     });
-    return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+    return unauthorized();
   }
   emitSecurityEvent("admin_login", { outcome: "success" });
   return null;

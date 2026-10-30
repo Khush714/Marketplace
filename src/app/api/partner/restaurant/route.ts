@@ -14,6 +14,7 @@ import {
   setRestaurantActiveById,
   updateRestaurantProfileById,
 } from "@/db/queries";
+import { apiError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -53,7 +54,7 @@ export async function GET(req: NextRequest) {
   // the same answer an unauthenticated caller gets, so this cannot be used to probe
   // which listings exist.
   if (!restaurant) {
-    return Response.json({ ok: false, error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
   return Response.json({ ok: true, restaurant });
 }
@@ -107,14 +108,14 @@ export async function PATCH(req: NextRequest) {
     // for the same reason an unauthenticated caller must not be able to probe.
     if (!result.ok) {
       const status = result.error === "Restaurant not found" ? 404 : 400;
-      return Response.json(result, { status });
+      return apiError(status, result.error);
     }
     return Response.json(result);
   }
 
   const result = await setRestaurantActiveById(auth.session.restaurantId, Boolean(body?.active));
   if (!result.ok) {
-    return Response.json(result, { status: result.error === "Restaurant not found" ? 404 : 400 });
+    return apiError(result.error === "Restaurant not found" ? 404 : 400, result.error);
   }
   return Response.json(result);
 }
@@ -195,13 +196,10 @@ export async function DELETE(req: NextRequest) {
       outcome: "failure",
       reason: "confirmation_required",
     });
-    return Response.json(
-      {
-        ok: false,
-        error: "This deletion confirmation has expired. Review the details and try again.",
-        code: "DELETE_CONFIRMATION_REQUIRED",
-      },
-      { status: 403 },
+    return apiError(
+      403,
+      "This deletion confirmation has expired. Review the details and try again.",
+      "DELETE_CONFIRMATION_REQUIRED",
     );
   }
 
@@ -215,7 +213,7 @@ export async function DELETE(req: NextRequest) {
       outcome: "failure",
       reason: result.error === "Restaurant not found" ? "not_found" : "confirm_mismatch",
     });
-    return Response.json(result, { status });
+    return apiError(status, result.error);
   }
 
   // Phase 12: the irreversible one. Emitted only once the rows are actually

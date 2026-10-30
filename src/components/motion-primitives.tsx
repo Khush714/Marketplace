@@ -70,13 +70,13 @@ export function TiltCard({
     };
 
     const tick = () => {
-      const k = hovering ? 0.16 : 0.09;
-      cur.rx += (tgt.rx - cur.rx) * k;
-      cur.ry += (tgt.ry - cur.ry) * k;
-      cur.ty += (tgt.ty - cur.ty) * k;
-      cur.sc += (tgt.sc - cur.sc) * 0.2;
-      cur.gx += (tgt.gx - cur.gx) * 0.22;
-      cur.gy += (tgt.gy - cur.gy) * 0.22;
+    const k = hovering ? 0.22 : 0.14;
+    cur.rx += (tgt.rx - cur.rx) * k;
+    cur.ry += (tgt.ry - cur.ry) * k;
+    cur.ty += (tgt.ty - cur.ty) * k;
+    cur.sc += (tgt.sc - cur.sc) * 0.28;
+    cur.gx += (tgt.gx - cur.gx) * 0.3;
+    cur.gy += (tgt.gy - cur.gy) * 0.3;
       apply();
 
       const settled =
@@ -187,25 +187,16 @@ export function RevealObserver() {
           }
         }
       },
-      { rootMargin: "0px 0px -7% 0px", threshold: 0.06 },
+      { rootMargin: "0px 0px -8% 0px", threshold: 0.04 },
     );
 
-    let timer = 0;
-    const scan = () => {
-      window.clearTimeout(timer);
-      timer = window.setTimeout(() => {
-        document.querySelectorAll("[data-reveal]:not(.is-in)").forEach((el) => io.observe(el));
-      }, 90);
-    };
-
-    scan();
-    const mo = new MutationObserver(scan);
-    mo.observe(document.body, { childList: true, subtree: true });
+    const els = document.querySelectorAll("[data-reveal]");
+    for (let i = 0; i < els.length; i++) {
+      io.observe(els[i]);
+    }
 
     return () => {
-      window.clearTimeout(timer);
       io.disconnect();
-      mo.disconnect();
     };
   }, []);
 

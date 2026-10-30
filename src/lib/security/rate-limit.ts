@@ -2,6 +2,7 @@ import "server-only";
 
 import { fallbackBucketKey } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "./security-events";
+import { tooMany } from "./errors";
 
 /**
  * Fixed-window rate limiter for the few endpoints that are deliberately
@@ -110,8 +111,5 @@ export function clientKey(req: { headers: Headers }, scope: string): string {
 
 /** Standard 429 response for a throttled unauthenticated route. */
 export function rateLimited(retryAfterSeconds: number): Response {
-  return Response.json(
-    { ok: false, error: "Too many attempts. Please wait a moment and try again." },
-    { status: 429, headers: { "Retry-After": String(retryAfterSeconds) } },
-  );
+  return tooMany(retryAfterSeconds);
 }

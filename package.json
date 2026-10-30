@@ -16,7 +16,11 @@
     "db:seed": "tsx src/db/seed.ts --confirm",
     "test": "tsx --test tests/*.test.ts tests/security/*.test.ts",
     "test:unit": "tsx --test tests/*.test.ts",
-    "test:security": "tsx --test tests/security/*.test.ts"
+    "test:integration": "tsx --test tests/integration/*.test.ts",
+    "test:security": "tsx --test tests/security/*.test.ts",
+    "test:e2e": "node e2e/smoke.mjs",
+    "audit:ci": "node scripts/security/audit-gate.mjs",
+    "db:bootstrap": "node scripts/db-bootstrap.mjs"
   },
   "dependencies": {
     "clsx": "^2.1.1",

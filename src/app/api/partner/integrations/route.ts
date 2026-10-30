@@ -14,6 +14,7 @@ import { readJsonBody } from "@/lib/abuse";
 import { claimPosConnection, PosBridgeError, type PosConnectionIdentity } from "@/lib/pos-bridge";
 import { requirePartnerSession } from "@/lib/security/restaurant-session";
 import { sealWebhookSecret } from "@/lib/webhook-crypto";
+import { apiError, badRequest, internalError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -120,21 +121,22 @@ async function openTransferRequest(input: {
   );
 
   const holderName = holder ? `“${holder.name}”` : "another listing";
-  return Response.json(
+  return apiError(
+    409,
+    contestedId
+      ? `This POS is still linked to ${holderName}. Request the transfer and our team will move it across.`
+      : "That POS restaurant is already connected to another listing",
+    "MARKETPLACE_ID_TAKEN",
     {
-      ok: false,
-      error: contestedId
-        ? `This POS is still linked to ${holderName}. Request the transfer and our team will move it across.`
-        : "That POS restaurant is already connected to another listing",
-      code: "MARKETPLACE_ID_TAKEN",
-      transfer: {
-        requested: !!request,
-        requestId: request?.id ?? null,
-        heldBy: holder,
-        marketplaceId: contestedId,
+      details: {
+        transfer: {
+          requested: !!request,
+          requestId: request?.id ?? null,
+          heldBy: holder,
+          marketplaceId: contestedId,
+        },
       },
     },
-    { status: 409 },
   );
 }
 
@@ -145,7 +147,7 @@ export async function GET(req: NextRequest) {
   const restaurantId = auth.session.restaurantId;
 
   const restaurant = await getRestaurantManageById(restaurantId);
-  if (!restaurant) return Response.json({ ok: false, error: "Not found" }, { status: 404 });
+  if (!restaurant) return notFound("Not found");
 
   const record = await getIntegrationRecord(restaurantId);
   // Carried on GET as well so the UI can still show "transfer requested" after a
@@ -174,10 +176,25 @@ export async function POST(req: NextRequest) {
   const connectionCode = String(body?.connection_code ?? "").trim();
 
   if (!connectionCode) {
-    return Response.json({ ok: false, error: "connection_code is required" }, { status: 400 });
+    return badRequest("connection_code is required");
   }
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;
+
+  // A listing's provider is chosen by ops, not by whichever POS redeems a code.
+  // Without this, a Petpooja listing whose owner pastes a Restaurant AI
+  // connection code would be silently re-pointed: the upsert below hardcodes
+  // `restaurant-ai`, so its in-flight orders would start going to a POS that has
+  // never seen them. Checked BEFORE the claim, because redeeming the code is
+  // irreversible.
+  const current = await getIntegrationRecord(restaurantId);
+  if (current && current.provider !== "restaurant-ai") {
+    return apiError(
+      409,
+      "This listing is connected through a different POS provider. Contact support to change it.",
+      "PROVIDER_MANAGED_BY_OPS",
+    );
+  }
 
   // Hoisted out of the try: the MARKETPLACE_ID_TAKEN handler below still needs
   // the identity the POS just handed over, and by then the connection code has
@@ -284,14 +301,10 @@ export async function POST(req: NextRequest) {
           await syncMarketplaceId(restaurantId, codeIdentity);
           return Response.json({ ok: true, record: existing, already: true });
         }
-        return Response.json(
-          {
-            ok: false,
-            error:
-              "That code was already redeemed for a different POS restaurant. Create a new code in the POS for this location — do not reuse one you received elsewhere.",
-            code: "ALREADY_REDEEMED",
-          },
-          { status: 409 },
+        return apiError(
+          409,
+          "That code was already redeemed for a different POS restaurant. Create a new code in the POS for this location — do not reuse one you received elsewhere.",
+          "ALREADY_REDEEMED",
         );
       }
       const message =
@@ -304,9 +317,9 @@ export async function POST(req: NextRequest) {
               : // Never the remote's own wording: this body reaches a client, and
                 // the status plus `err.code` already carry the diagnosis.
                 "The POS rejected the connection code";
-      return Response.json({ ok: false, error: message, code: err.code }, { status: err.status });
+      return apiError(err.status, message, err.code);
     }
-    return Response.json({ ok: false, error: "Could not connect the POS" }, { status: 500 });
+    return internalError("Could not connect the POS");
   }
 }
 

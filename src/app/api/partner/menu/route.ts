@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { getPartnerMenu } from "@/db/partner-menu";
 import { authoriseMenu } from "@/lib/partner-menu-api";
+import { apiError } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -14,6 +15,6 @@ export async function GET(req: NextRequest) {
   if (!auth.ok) return auth.response;
 
   const menu = await getPartnerMenu(auth.restaurantId);
-  if (!menu) return Response.json({ ok: false, error: "Sign in again" }, { status: 401 });
+  if (!menu) return apiError(401, "Sign in again");
   return Response.json({ ok: true, menu }, { status: 200 });
 }

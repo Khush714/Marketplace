@@ -10,10 +10,13 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   verify:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
 
     services:
       postgres:
@@ -31,13 +34,18 @@ jobs:
           --health-retries 12
 
     env:
-      # Fail-closed: if the security harness cannot reach PostgreSQL the
-      # security suite FAILS instead of skipping (see tests/security/harness.ts).
+      # Fail-closed: if the security/integration harness cannot reach PostgreSQL
+      # the suites FAIL instead of skipping (see tests/security/harness.ts).
       # CI is set by GitHub Actions too, so this holds even if this line is lost.
       REQUIRE_SECURITY_TESTS: "1"
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      MIGRATIONS_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
 
     steps:
+      # Full history so the secret scan can walk past commits (and diffs a PR).
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-node@v4
         with:
@@ -47,21 +55,35 @@ jobs:
       - name: Install
         run: npm ci --no-audit --no-fund
 
-      - name: Typecheck
-        run: npm run typecheck
-
       - name: Lint
         run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
 
       - name: Unit tests
         run: npm run test:unit
 
-      - name: Security E2E tests (fail-closed)
+      - name: Integration tests (fail-closed)
+        run: npm run test:integration
+
+      - name: Security tests (fail-closed)
         run: npm run test:security
 
-      - name: Audit (high severity only, advisory)
-        run: npm audit --audit-level=high
-        continue-on-error: true
+      - name: Dependency audit (fails on unallowlisted high/critical)
+        run: npm run audit:ci
+
+      # Docker image (pinned) instead of gitleaks-action: no license/token
+      # needed and the scanner version is deterministic. Scans full history
+      # because checkout uses fetch-depth: 0.
+      - name: Secret scan (gitleaks)
+        run: |
+          docker run --rm \
+            -v "${{ github.workspace }}:/repo" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1 detect \
+            --source=/repo \
+            --config=/repo/.gitleaks.toml \
+            --redact --verbose
 
       - name: Build
         run: npm run build

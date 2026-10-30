@@ -7,6 +7,7 @@ import {
 } from "@/db/queries";
 import { readJsonBody } from "@/lib/abuse";
 import { checkRateLimit, clientKey, rateLimited } from "@/lib/security/rate-limit";
+import { apiError, badRequest, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -44,17 +45,17 @@ export async function POST(req: NextRequest) {
   const body = (parsed.body ?? {}) as { currentOwnerKey?: unknown };
   const key = String(body.currentOwnerKey ?? "").trim();
   if (!key) {
-    return Response.json({ ok: false, error: "Enter your current owner key" }, { status: 400 });
+    return badRequest("Enter your current owner key");
   }
 
   const restaurant = await getRestaurantByOwnerKey(key);
   // 404 for both "no such key" and "key did not rotate" so this cannot be used
   // to confirm that a guessed key belongs to a real listing.
-  if (!restaurant) return Response.json({ ok: false, error: "Not found" }, { status: 404 });
+  if (!restaurant) return notFound("Not found");
 
   const result = await rotateOwnerKeyAsRestaurant(restaurant.id, key);
   if (!result.ok) {
-    return Response.json({ ok: false, error: result.error }, { status: 400 });
+    return apiError(400, result.error);
   }
 
   // The old key is dead; every session ever minted by it must be too. Without

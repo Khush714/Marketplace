@@ -8,6 +8,7 @@ import {
   enqueuePaymentDelivery as journalPaymentDelivery,
   getDuePosPaymentDeliveryIds,
   loadPosPaymentDeliveryContext,
+  posPaymentPushSupported,
   recordPaymentDeliveryFailure,
   recordPaymentDeliverySuccess,
   type PosPaymentDeliveryContext,
@@ -213,6 +214,17 @@ export async function enqueuePaymentDelivery(input: {
   eventId: string;
   payload: Record<string, unknown>;
 }): Promise<void> {
+  const { supported, provider } = await posPaymentPushSupported(input.restaurantId);
+  if (!supported) {
+    // Expected, not a failure: this provider has no payment-push contract, so
+    // there is nothing to deliver and nothing to retry. Logged once because the
+    // absence of a money event on the POS side is worth being able to explain.
+    console.log(
+      `[pos-payment] skipped ${input.eventType} for ${input.externalOrderId}: provider ${provider} has no payment push`,
+    );
+    return;
+  }
+
   let deliveryId: number | null = null;
   try {
     deliveryId = await journalPaymentDelivery(input);

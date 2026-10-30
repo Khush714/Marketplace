@@ -22,6 +22,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
+import { readApiError } from "@/lib/api-errors-core";
 import { cn } from "@/lib/domain";
 import { useToast } from "@/lib/toast";
 import type { ConnectionCodeDto, ConnectionDto } from "@/lib/types";
@@ -75,7 +76,7 @@ export default function OpsConsole({ open }: { open: boolean }) {
         cache: "no-store",
         headers: { "x-ops-token": token, ...(init?.headers ?? {}) },
       });
-      const data = (await res.json().catch(() => ({}))) as T & { error?: string };
+      const data = (await res.json().catch(() => ({}))) as T;
       if (!res.ok) {
         throw new OpsError(
           res.status,
@@ -83,7 +84,7 @@ export default function OpsConsole({ open }: { open: boolean }) {
             ? "Ops token rejected"
             : res.status === 503
               ? "This deployment has no ops token configured"
-              : (data?.error ?? `Request failed (${res.status})`),
+              : (readApiError(data)?.message ?? `Request failed (${res.status})`),
         );
       }
       return data;

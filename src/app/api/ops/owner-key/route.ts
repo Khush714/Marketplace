@@ -2,6 +2,8 @@ import { NextRequest } from "next/server";
 import { listListingSetup, provisionListingAsOps } from "@/db/queries";
 import { recordIntegrationAudit } from "@/db/queries";
 import { requireOpsToken } from "@/lib/ops-auth";
+import { decodeCursor, nextCursor, parsePageSize } from "@/lib/api-pagination-core";
+import { apiError } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 export const runtime = "nodejs";
@@ -29,7 +31,10 @@ export const runtime = "nodejs";
 export async function GET(req: NextRequest) {
   const rejected = requireOpsToken(req);
   if (rejected) return rejected;
-  return Response.json({ ok: true, listings: await listListingSetup() });
+  const limit = parsePageSize(req.nextUrl.searchParams.get("limit"), 50);
+  const offset = decodeCursor(req.nextUrl.searchParams.get("cursor"));
+  const listings = await listListingSetup({ limit, offset });
+  return Response.json({ ok: true, listings, nextCursor: nextCursor(offset, limit, listings.length) });
 }
 
 export async function POST(req: NextRequest) {
@@ -40,7 +45,7 @@ export async function POST(req: NextRequest) {
   try {
     body = (await req.json()) as Record<string, unknown>;
   } catch {
-    return Response.json({ ok: false, error: "Invalid request", code: "BAD_JSON" }, { status: 400 });
+    return apiError(400, "Invalid request", "BAD_JSON");
   }
 
   const result = await provisionListingAsOps({
@@ -53,7 +58,7 @@ export async function POST(req: NextRequest) {
     // 404 for a missing listing mirrors the rest of the partner surface: an
     // unauthenticated caller must not be able to probe which ids exist.
     const status = result.code === "NOT_FOUND" ? 404 : 400;
-    return Response.json(result, { status });
+    return apiError(status, result.error, result.code);
   }
 
   const ipAddress = req.headers.get("x-forwarded-for") ?? null;

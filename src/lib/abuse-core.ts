@@ -51,6 +51,26 @@ export const ABUSE_BUDGETS = {
   checkout: { limit: 20, windowMs: 10 * MINUTE_MS },
 
   /**
+   * Inbound Petpooja status callbacks. Server-to-server and HMAC-gated, but the
+   * limiter is charged before the signature check so a flood of bad frames is
+   * bounded too. A busy restaurant emits a handful of frames per order; 600 per
+   * minute from one source address is far above that and still caps scripted
+   * volume. Deliberately generous because the sender's egress address is shared
+   * by every tenant Petpooja serves.
+   */
+  petpoojaWebhook: { limit: 600, windowMs: MINUTE_MS },
+
+  /**
+   * Inbound custom-POS status callbacks. Same shape and reasoning as the
+   * Petpooja budget: server-to-server and HMAC-gated, charged before the
+   * signature check, and generous enough for every tenant sharing one POS
+   * vendor's egress address. A custom POS is typically a single kitchen's
+   * cloud instance, so the ceiling is set to match the sibling endpoint rather
+   * than invent a second policy.
+   */
+  customPosWebhook: { limit: 600, windowMs: MINUTE_MS },
+
+  /**
    * Bill preview. Recomputes totals from the DB on every cart change, so a loop
    * over it is cheap to send and expensive to serve. It writes nothing, so the
    * budget is generous and its window short.

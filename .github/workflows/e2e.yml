@@ -1,0 +1,70 @@
+name: E2E
+
+# Browser smoke against a production build and a real, migrated database.
+# Separate from ci.yml because it needs Chromium and a built server, which would
+# slow the fast gate's feedback loop.
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: e2e-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      BOOTSTRAP_DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:5432/postgres
+      # Deterministic dummies: the smoke test never exercises a real provider.
+      ORDER_TOKEN_SECRET: e2e-order-token-secret
+      POS_DELIVERY_OPS_TOKEN: e2e-ops-token
+      RAZORPAY_WEBHOOK_SECRET: e2e-webhook-secret
+      RAZORPAY_KEY_ID: rzp_test_e2e
+      RAZORPAY_KEY_SECRET: rzp_test_e2e_secret
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install
+        run: npm ci --no-audit --no-fund
+
+      - name: Build the schema + migrations into the scratch database
+        run: npm run db:bootstrap
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Smoke test
+        run: npm run test:e2e

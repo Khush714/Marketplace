@@ -1,24 +1,33 @@
 import "server-only";
 import { createHmac, randomUUID } from "node:crypto";
 import { loadOrderCancelContext, recordIntegrationAudit } from "@/db/queries";
+import { cancelOrderBeforeHandoff } from "@/db/pos-delivery";
+import { hasStartedPreparing, isCancellable } from "@/integrations/pos/order-status";
 import { describePosTransportError, logPosTransportFailure, posBaseUrl, posBaseUrlProblem, posHost } from "@/lib/pos-bridge";
 import { openWebhookSecret } from "@/lib/webhook-crypto";
 
 /**
  * Customer-initiated cancellation
  * ---------------------------------
- * The POS is the authority (§20–23). This module only:
- *   1. checks the order is actually cancellable (not a terminal, has a POS);
- *   2. signs & forwards an `order.cancelled` request to the POS
- *      `/integrations/marketplace/order-cancel` (same three-token contract as
- *      order ingest);
+ * The POS is the authority for orders IT holds (§20–23). This module:
+ *   1. checks the order is actually cancellable: not terminal, and the kitchen
+ *      has NOT started preparing (PREPARING and later fail closed — food being
+ *      cooked is never cancelled, on either side);
+ *   2. if the POS never received the order (no pos_order_id), cancels it
+ *      locally — there is no kitchen-side state to reconcile, the journal row
+ *      is neutralised so the drain can never ship it later, and money is
+ *      settled — otherwise signs & forwards an `order.cancelled` request to
+ *      the POS `/integrations/marketplace/order-cancel` (same three-token
+ *      contract as order ingest);
  *   3. interprets the POS's EXPLICIT response — never a bare HTTP 200.
  *
- * The Marketplace NEVER flips orders.integration_status here: the POS re-pushes
- * an authoritative `order.cancelled` status webhook (delivered through the
- * Phase 3 outbox with {@code event_id} dedupe), and that webhook is what moves
- * the order to CANCELLED. Replays of this request hit the POS's own
- * idempotent already-cancelled path.
+ * The Marketplace NEVER flips orders.integration_status for an order that
+ * reached the POS: the POS re-pushes an authoritative `order.cancelled` status
+ * webhook (delivered through the Phase 3 outbox with {@code event_id} dedupe),
+ * and that webhook is what moves the order to CANCELLED. Replays of this
+ * request hit the POS's own idempotent already-cancelled path. The only
+ * CANCELLED the Marketplace writes itself is the pre-handoff one above, where
+ * no POS record can ever exist to contradict it.
  */
 
 export const POS_ORDER_CANCEL_PATH = "/integrations/marketplace/order-cancel";
@@ -49,6 +58,46 @@ export async function requestCustomerCancellation(code: string): Promise<Custome
       currentStatus: ctx.integrationStatus,
       reason: "This order is already settled and can no longer be cancelled",
     };
+  }
+
+  // Fail closed at the "food has not started preparing" boundary: once the
+  // kitchen is cooking (PREPARING and later), a customer cancellation is no
+  // longer possible — the request never even reaches the POS, so a permissive
+  // POS cannot cancel a dish that is half made. The tracking UI reads the same
+  // `isCancellable` helper, so the button and this gate agree.
+  if (hasStartedPreparing(ctx.integrationStatus)) {
+    return {
+      kind: "error",
+      ok: false,
+      code: "PREPARATION_STARTED",
+      currentStatus: ctx.integrationStatus,
+      reason: "The kitchen has already started preparing this order and it can no longer be cancelled",
+    };
+  }
+  if (!isCancellable(ctx.integrationStatus)) {
+    return {
+      kind: "error",
+      ok: false,
+      code: "CANCEL_UNAVAILABLE",
+      currentStatus: ctx.integrationStatus,
+      reason: "This order can no longer be cancelled",
+    };
+  }
+
+  // The POS has never received the order (no pos_order_id yet): there is no
+  // kitchen-side state to reconcile, so the Marketplace closes it locally —
+  // status CANCELLED, the journal row neutralised (the drain can never ship a
+  // cancelled order later), and any money settled (refund if captured, close if
+  // not). This is what makes "cancellation works before the kitchen starts"
+  // true even in the window before the first POS handoff succeeds.
+  if (ctx.posOrderId == null) {
+    await cancelOrderBeforeHandoff({
+      restaurantId: ctx.restaurantId,
+      orderId: ctx.orderId,
+      code: ctx.code,
+      reason: CANCEL_REASON,
+    });
+    return { kind: "cancelled", ok: true, idempotent: false, status: "CANCELLED" };
   }
 
   if (!ctx.externalOrderId || !ctx.integrationActive || !ctx.marketplaceId || !ctx.sealedSecret) {

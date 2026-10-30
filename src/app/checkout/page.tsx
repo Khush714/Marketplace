@@ -23,6 +23,7 @@ import {
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { PaymentStage } from "@/components/payment-stage";
+import { apiErrorMessage } from "@/lib/api-errors-core";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
 import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
@@ -262,7 +263,7 @@ export default function CheckoutPage() {
         order?: OrderDto;
         orderToken?: string;
         trackingToken?: string;
-        error?: string;
+        error?: unknown;
         payment?: {
           reference?: string;
           providerOrderId?: string | null;
@@ -281,7 +282,7 @@ export default function CheckoutPage() {
         );
       }
       if (!res.ok || !data.ok || !data.order || !data.orderToken) {
-        throw new Error(data.error ?? "Could not place order");
+        throw new Error(apiErrorMessage(data, "Could not place order"));
       }
 
       const code = data.order.code;

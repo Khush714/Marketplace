@@ -2,6 +2,7 @@ import { NextRequest } from "next/server";
 import { getConnectionCode, revokeConnectionCode } from "@/db/queries";
 import { guardBudget, guardRead } from "@/lib/abuse";
 import { requireOpsToken } from "@/lib/ops-auth";
+import { apiError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -25,7 +26,7 @@ export async function GET(req: NextRequest, ctx: Ctx) {
 
   const { code } = await ctx.params;
   const hit = await getConnectionCode(code);
-  if (!hit) return Response.json({ error: "Not found" }, { status: 404 });
+  if (!hit) return notFound("Not found");
   return Response.json({ code: hit });
 }
 
@@ -55,10 +56,7 @@ export async function DELETE(req: NextRequest, ctx: Ctx) {
   const { code } = await ctx.params;
   const result = await revokeConnectionCode(code);
   if (!result.ok) {
-    return Response.json(
-      { ok: false, error: result.error },
-      { status: result.reason === "not_found" ? 404 : 409 },
-    );
+    return apiError(result.reason === "not_found" ? 404 : 409, result.error);
   }
   return Response.json({ ok: true, code: result.code });
 }

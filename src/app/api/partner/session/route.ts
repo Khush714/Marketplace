@@ -12,6 +12,7 @@ import {
   requirePartnerSession,
   setSessionCookies,
 } from "@/lib/security/restaurant-session";
+import { apiError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -56,7 +57,7 @@ export async function POST(req: NextRequest) {
   // 404, not 401: a caller must not learn whether a guessed key belongs to a real
   // listing, and a 401 is the more informative answer to script against.
   if (!restaurant) {
-    return Response.json({ ok: false, error: "Invalid owner key" }, { status: 404 });
+    return notFound("Invalid owner key");
   }
 
   const session = await createRestaurantSession(restaurant.id);
@@ -94,10 +95,7 @@ export async function GET(req: NextRequest) {
     // out from under a live session, so it is treated as a dead session and the
     // cookie is cleared rather than left attached to a session that can never
     // authenticate anything.
-    const res = Response.json(
-      { ok: false, error: "That listing no longer exists", code: "SESSION_REQUIRED" },
-      { status: 401 },
-    );
+    const res = apiError(401, "That listing no longer exists", "SESSION_REQUIRED");
     clearSessionCookies(res, cookieShouldBeSecure(req));
     return res;
   }

@@ -3,6 +3,7 @@ import { toPublicOrder } from "@/lib/order-public";
 import { isTrackingToken } from "@/lib/order-tracking";
 import { guardRead } from "@/lib/abuse";
 import { emitSecurityEvent } from "@/lib/security/security-events";
+import { notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -37,7 +38,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ trackingToken: 
       outcome: "failure",
       reason: "malformed_token",
     });
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
   const throttled = guardRead(req, "orderLookup");
   if (throttled) return throttled;
@@ -49,7 +50,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ trackingToken: 
       outcome: "failure",
       reason: "unknown_token",
     });
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
   return Response.json({ order: toPublicOrder(order) });
 }

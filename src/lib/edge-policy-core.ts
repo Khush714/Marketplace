@@ -102,7 +102,7 @@ export function contentSecurityPolicy(nodeEnv?: string): string {
     `script-src ${scriptSrc}`,
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
-    "font-src 'self' data:",
+    "font-src 'self' data: https://frontend-cdn.perplexity.ai",
     "connect-src 'self' https://razorpay.com https://*.razorpay.com",
     "frame-src 'self' https://checkout.razorpay.com https://api.razorpay.com https://*.razorpay.com",
     "object-src 'none'",

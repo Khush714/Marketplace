@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { recordIntegrationAudit, setFeaturedAsOps } from "@/db/queries";
 import { requireOpsToken } from "@/lib/ops-auth";
+import { apiError, badRequest } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -28,20 +29,21 @@ export async function PATCH(req: NextRequest) {
   try {
     body = await req.json();
   } catch {
-    return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
+    return badRequest("Invalid request.");
   }
 
   const restaurantId = Number(body?.restaurant_id);
   if (!Number.isInteger(restaurantId) || restaurantId <= 0) {
-    return Response.json({ ok: false, error: "restaurant_id is required" }, { status: 400 });
+    return badRequest("restaurant_id is required");
   }
   if (typeof body?.featured !== "boolean") {
-    return Response.json({ ok: false, error: "featured must be a boolean" }, { status: 400 });
+    return badRequest("featured must be a boolean");
   }
 
   const result = await setFeaturedAsOps(restaurantId, body.featured);
   if (!result.ok) {
-    return Response.json(result, { status: result.code === "NOT_FOUND" ? 404 : 400 });
+    const status = result.code === "NOT_FOUND" ? 404 : 400;
+    return apiError(status, result.error, result.code);
   }
 
   await recordIntegrationAudit(result.restaurant.id, "listing.featured_changed", {

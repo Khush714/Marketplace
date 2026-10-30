@@ -52,6 +52,10 @@ const NOT_READY_COPY: Record<string, string> = {
   pos_restaurant_id:
     "We haven't received your POS restaurant id yet. Reconnect the POS to finish setup.",
   inactive: "This listing is hidden from customers. Publish it from Manage to start selling.",
+  provider_credentials:
+    "Our Petpooja credentials are not configured on this deployment, so orders cannot be sent yet. This is an operator fix, not something to reconnect.",
+  unsupported_provider:
+    "This listing is linked to a POS provider this deployment does not support. Ask support to move it to a supported provider.",
 };
 
 const STATUS_LABEL: Record<string, string> = {
@@ -74,13 +78,19 @@ interface IntegrationRecord {
   lastSyncAt: string | null;
   lastError: string | null;
   /**
-   * Server-computed readiness — the three facts the POS bridge needs before it
-   * will POST an order. `status === "active"` alone is NOT the same thing, and
-   * this page used to assert "ACTIVE" unconditionally, which told a restaurant
-   * it was live while checkout would refuse the order.
+   * Server-computed readiness — the facts the selected provider's POS bridge
+   * needs before it will POST an order. `status === "active"` alone is NOT the
+   * same thing, and this page used to assert "ACTIVE" unconditionally, which
+   * told a restaurant it was live while checkout would refuse the order.
    */
   ready?: boolean;
-  notReadyReason?: "webhook_secret" | "pos_restaurant_id" | "inactive" | null;
+  notReadyReason?:
+    | "webhook_secret"
+    | "pos_restaurant_id"
+    | "provider_credentials"
+    | "unsupported_provider"
+    | "inactive"
+    | null;
 }
 
 interface ManageRestaurant {
@@ -116,7 +126,7 @@ interface PendingTransfer {
 async function call<T>(url: string, init: RequestInit = {}): Promise<T> {
   const res = await partnerFetch<T>(url, init);
   if (res.ok) return { ...res, ok: true as const };
-  return { ok: false, error: res.error } as unknown as T;
+  return { ok: false, error: res.error, code: res.code, details: res.details } as unknown as T;
 }
 
 function formatWhen(iso: string): string {
@@ -277,10 +287,10 @@ export default function PartnerIntegrationsPage() {
         ok: boolean;
         error?: string;
         code?: string;
+        details?: { transfer?: TransferState };
         record?: IntegrationRecord;
         already?: boolean;
         connected?: boolean;
-        transfer?: TransferState | null;
       }>("/api/partner/integrations", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -290,14 +300,15 @@ export default function PartnerIntegrationsPage() {
         // The identity belongs to another listing. The server has already filed
         // the transfer request and kept our claim, so this is not a failure to
         // retry — pressing Connect again would burn a second connection code.
-        if (d.code === "MARKETPLACE_ID_TAKEN" && d.transfer) {
-          setTransfer(d.transfer);
+        if (d.code === "MARKETPLACE_ID_TAKEN" && d.details?.transfer) {
+          const transfer = d.details.transfer;
+          setTransfer(transfer);
           setCode("");
           setVerdict(null);
           toast("Transfer requested — we'll move the POS across", {
             kind: "info",
-            sub: d.transfer.heldBy
-              ? `Currently linked to ${d.transfer.heldBy.name}`
+            sub: transfer.heldBy
+              ? `Currently linked to ${transfer.heldBy.name}`
               : "Linked to another listing",
           });
           return;

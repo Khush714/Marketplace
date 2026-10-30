@@ -3,6 +3,7 @@ import { bindProviderOrderId, getActivePaymentByOrder, isOnlinePayment } from "@
 import { createProviderOrder, providerMode, razorpayKeyId } from "@/integrations/payments/provider-session";
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
 import { guardWrite } from "@/lib/abuse";
+import { apiError, notFound } from "@/lib/security/errors";
 
 export const dynamic = "force-dynamic";
 
@@ -23,18 +24,18 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
 
   const { code } = await ctx.params;
   if (!verifyOrderToken(code, readOrderToken(req.headers))) {
-    return Response.json({ error: "Not found" }, { status: 404 });
+    return notFound("Not found");
   }
 
   const order = await getOrderByCode(code);
-  if (!order) return Response.json({ error: "Not found" }, { status: 404 });
+  if (!order) return notFound("Not found");
 
   if (!isOnlinePayment(order.paymentMethod)) {
-    return Response.json({ ok: false, error: "This order is not payable online" }, { status: 409 });
+    return apiError(409, "This order is not payable online");
   }
 
   const payment = await getActivePaymentByOrder(order.id);
-  if (!payment) return Response.json({ ok: false, error: "No payable payment for this order" }, { status: 409 });
+  if (!payment) return apiError(409, "No payable payment for this order");
 
   if (payment.status === "PAID") {
     return Response.json({ ok: true, status: "PAID", alreadyPaid: true });
@@ -43,12 +44,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   // against the same provider order. Everything else (refunds, cancelled,
   // already captured) is genuinely no longer payable.
   if (payment.status !== "PAYMENT_PENDING" && payment.status !== "FAILED") {
-    return Response.json({ ok: false, error: "Payment is no longer payable", status: payment.status }, { status: 409 });
+    return apiError(409, "Payment is no longer payable", undefined, {
+      details: { status: payment.status },
+    });
   }
 
   const mode = providerMode();
   if (mode === "unavailable") {
-    return Response.json({ ok: false, error: "Payments are not configured", code: "PROVIDER_NOT_CONFIGURED" }, { status: 503 });
+    return apiError(503, "Payments are not configured", "PROVIDER_NOT_CONFIGURED");
   }
 
   if (payment.providerOrderId) {
@@ -77,7 +80,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
       failure_code: session.code,
       failure_message: "provider order allocation failed on retry",
     });
-    return Response.json({ ok: false, error: "Could not start the payment", code: session.code }, { status: 502 });
+    return apiError(502, "Could not start the payment", session.code ?? undefined);
   }
 
   await bindProviderOrderId(payment.reference, session.providerOrderId);

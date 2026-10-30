@@ -3,6 +3,7 @@ import "server-only";
 import type { NextRequest } from "next/server";
 
 import { decideCronAuth, type CronAuthOutcome } from "@/lib/cron-auth-core";
+import { notConfigured, unauthorized } from "@/lib/security/errors";
 
 export { CRON_HEADER } from "@/lib/cron-auth-core";
 
@@ -33,14 +34,7 @@ export function requireCronAuth(req: NextRequest): Response | null {
   const outcome = authorizeCronRequest(req);
   if (outcome === "authorized") return null;
   if (outcome === "unconfigured") {
-    return Response.json(
-      {
-        ok: false,
-        error: "Scheduled drains are not configured on this deployment",
-        code: "CRON_AUTH_UNAVAILABLE",
-      },
-      { status: 503 },
-    );
+    return notConfigured("Scheduled drains are not configured on this deployment");
   }
-  return Response.json({ ok: false, error: "unauthorized" }, { status: 401 });
+  return unauthorized();
 }

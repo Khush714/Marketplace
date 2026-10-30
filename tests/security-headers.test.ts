@@ -93,7 +93,9 @@ test("the policy still allows what the app renders", () => {
   assert.match(img, /'self'/);
   assert.match(img, /\bhttps:/, "external artwork must keep loading");
   assert.match(img, /data:/);
-  assert.match(directive(PRODUCTION, "font-src") ?? "", /'self'/);
+  const font = directive(PRODUCTION, "font-src") ?? "";
+  assert.match(font, /'self'/);
+  assert.match(font, /https:\/\/frontend-cdn\.perplexity\.ai/);
 });
 
 test("the payment provider keeps every origin it needs", () => {
