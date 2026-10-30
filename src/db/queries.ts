@@ -12,6 +12,7 @@ import {
   integrationTransferRequests,
   menuItemModifierGroups,
   menuItems,
+  merchantAppLinks,
   modifierGroups,
   modifierOptions,
   orders,
@@ -237,6 +238,25 @@ function integrationStagesFor(current: string): OrderLifecycleStage[] {
   });
 }
 
+/** Customer tracking projection for orders managed by the Savour Merchant App. */
+function merchantOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
+  const current = o.merchantStatus || "PLACED";
+  const stage = INTEGRATION_TRACKING_STAGES[current] ?? INTEGRATION_TRACKING_STAGES.PLACED;
+  const etaSeconds = current === "READY" ? 900 : current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0;
+  const cancellable = current === "PLACED" || current === "ACCEPTED";
+  const stages = integrationStagesFor(current);
+  return {
+    ...stage,
+    stageSub: current === "READY" ? "Your order is ready for pickup or dispatch" : stage.stageSub,
+    etaIso: new Date(Date.now() + etaSeconds * 1000).toISOString(),
+    etaSeconds,
+    statusUpdatedAt: o.merchantStatusUpdatedAt ? new Date(o.merchantStatusUpdatedAt).toISOString() : null,
+    cancellable,
+    cancelReason: cancellable ? null : "This order can no longer be cancelled at this stage",
+    stages,
+  };
+}
+
 // Elapsed-time estimate for POS-tracked orders that are still travelling.
 const INTEGRATION_ETA_SECONDS: Record<string, number> = {
   PLACED: 1800,
@@ -257,7 +277,11 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
   // have, instead of sitting at "waiting for the restaurant to accept" forever
   // behind an ETA that resets on every poll.
   const integrated = o.posConnected;
-  const status = integrated ? integrationOrderStatus(o) : demoOrderStatus(o);
+  const status = o.merchantManaged
+    ? merchantOrderStatus(o)
+    : integrated
+      ? integrationOrderStatus(o)
+      : demoOrderStatus(o);
   return {
     id: o.id,
     code: o.code,
@@ -1071,7 +1095,15 @@ async function restaurantIdForOwnerKey(ownerKey: string): Promise<number | null>
 }
 
 function toRestaurantManageDto(r: typeof restaurants.$inferSelect): RestaurantManageDto {
-  return { ...toRestaurantDto(r), isActive: r.isActive };
+  return {
+    ...toRestaurantDto(r),
+    isActive: r.isActive,
+    merchantHoursEnabled: r.merchantHoursEnabled,
+    merchantOpensAt: r.merchantOpensAt,
+    merchantClosesAt: r.merchantClosesAt,
+    merchantPickupEnabled: r.merchantPickupEnabled,
+    merchantDeliveryEnabled: r.merchantDeliveryEnabled,
+  };
 }
 
 /**
@@ -2796,6 +2828,24 @@ interface ItemModifierScope {
  * validated against their linked groups (min/max + DB prices), and a supplied
  * client price snapshot that differs from the DB price is flagged stale.
  */
+/** Whether the listing has a paired Savour Merchant App; this is independent of POS readiness. */
+export async function hasActiveMerchantAppLink(restaurantId: number): Promise<boolean> {
+  const [link] = await db.select({ id: merchantAppLinks.id }).from(merchantAppLinks)
+    .where(eq(merchantAppLinks.restaurantId, restaurantId)).limit(1);
+  return Boolean(link);
+}
+
+function withinMerchantHours(restaurant: typeof restaurants.$inferSelect, now = new Date()): boolean {
+  if (!restaurant.merchantHoursEnabled) return true;
+  const current = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(now);
+  const open = restaurant.merchantOpensAt;
+  const close = restaurant.merchantClosesAt;
+  if (open === close) return false;
+  return open < close ? current >= open && current < close : current >= open || current < close;
+}
+
 export async function computeBill(
   restaurantSlug: string,
   items: CartLineSubmit[],
@@ -2820,13 +2870,13 @@ export async function computeBill(
     .where(eq(restaurants.slug, restaurantSlug))
     .limit(1);
   if (!r) return { ok: false, error: "Restaurant not found" };
-  if (!r.isActive) return { ok: false, error: `${r.name} is temporarily closed` };
+  if (!r.isActive || !withinMerchantHours(r)) return { ok: false, error: `${r.name} is temporarily closed` };
   if (!items.length) return { ok: false, error: "Cart is empty" };
 
   // Ordering gate. Enforced before any line is priced so the bill preview and
   // the order itself agree — the customer is told at the estimate, not after
   // entering payment details.
-  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id))) {
+  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id)) && !(await hasActiveMerchantAppLink(r.id))) {
     return {
       ok: false,
       error: ORDERING_CLOSED_MESSAGE,
@@ -3047,6 +3097,14 @@ export async function createOrder(
   // tracking shows the POS lifecycle this order was actually admitted into even
   // if the restaurant's integration is disabled while the order is in flight.
   const posConnected = await hasActiveIntegration(r.id);
+  // Merchant-managed orders are routed directly through the Marketplace's
+  // canonical order record. This is independent of the POS delivery journal.
+  const [merchantLink] = await db
+    .select({ id: merchantAppLinks.id })
+    .from(merchantAppLinks)
+    .where(eq(merchantAppLinks.restaurantId, r.id))
+    .limit(1);
+  const merchantManaged = Boolean(merchantLink);
 
   // Phase 7 — validate the optional outlet claim against the integration
   // record BEFORE the order is created (fail-closed; no silent fallback).
@@ -3100,6 +3158,7 @@ export async function createOrder(
         totalCents: bill.totalCents,
         clientRequestId,
         posConnected,
+        merchantManaged,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
       })
       .returning();

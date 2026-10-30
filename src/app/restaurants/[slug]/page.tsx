@@ -7,7 +7,7 @@ import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
-import { getRestaurant, hasActiveIntegration } from "@/db/queries";
+import { getRestaurant, hasActiveIntegration, hasActiveMerchantAppLink } from "@/db/queries";
 import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
@@ -77,8 +77,9 @@ export default async function RestaurantPage(props: {
   // button that the checkout is about to reject. `orderingGateEnforced()` is
   // consulted first so the banner cannot disagree with the gate by appearing
   // locally on seeded demo listings that are meant to stay orderable.
-  const orderingClosed =
-    orderingGateEnforced() && !(await hasActiveIntegration(r.id));
+  const orderingClosed = orderingGateEnforced()
+    && !(await hasActiveIntegration(r.id))
+    && !(await hasActiveMerchantAppLink(r.id));
 
   return (
     <div className="pb-10">

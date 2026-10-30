@@ -26,6 +26,11 @@ export interface RestaurantDto {
 
 export interface RestaurantManageDto extends RestaurantDto {
   isActive: boolean;
+  merchantHoursEnabled: boolean;
+  merchantOpensAt: string;
+  merchantClosesAt: string;
+  merchantPickupEnabled: boolean;
+  merchantDeliveryEnabled: boolean;
 }
 
 export interface ModifierOptionDto {
