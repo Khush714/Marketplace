@@ -989,3 +989,18 @@ export const adminSessions = pgTable(
 );
 
 export type AdminSessionRow = typeof adminSessions.$inferSelect;
+
+// --- Webhook Audit Logs ---
+export const webhookLogs = pgTable("webhook_logs", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  restaurantId: text("restaurant_id"),
+  orderId: text("order_id"),
+  status: text("status").notNull(),
+  httpStatusCode: integer("http_status_code").notNull(),
+  rawHeaders: jsonb("raw_headers"),
+  payload: jsonb("payload"),
+  errorMessage: text("error_message"),
+  ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});
