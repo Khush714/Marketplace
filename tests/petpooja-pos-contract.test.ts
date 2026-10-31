@@ -346,7 +346,7 @@ test("the ops route can wire a provider but refuses to re-route open orders", ()
   assert.match(src, /countOpenOrdersForRestaurant\(/);
   assert.match(src, /pos_integration\.provider_set/);
   // Only providers with an adapter may be selected.
-  assert.match(src, /\[DEFAULT_POS_PROVIDER, "petpooja"\]/);
+  assert.match(src, /\[DEFAULT_POS_PROVIDER, "petpooja", "custom_webhook"\]/);
 });
 
 test("every readiness caller supplies Petpooja's credential fact", () => {

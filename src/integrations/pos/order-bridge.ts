@@ -1,5 +1,4 @@
-﻿import { dispatchCustomPosOrder } from './custom-pos';
-import "server-only";
+﻿import "server-only";
 import {
   claimPosDeliveryAttempt,
   enqueueOrderDelivery,
