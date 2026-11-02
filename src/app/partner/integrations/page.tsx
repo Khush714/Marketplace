@@ -471,6 +471,8 @@ export default function PartnerIntegrationsPage() {
           )}
         </section>
 
+        {listing && <OneTimePasskeyPanel />}
+
       {/* Connect / CONNECTED */}
       {listing && (
         <>
@@ -932,5 +934,98 @@ function OwnerKeyPanel() {
         read the stored copy.
       </p>
     </div>
+  );
+}
+
+function OneTimePasskeyPanel() {
+  const { toast } = useToast();
+  const [issued, setIssued] = useState<{ passkey: string; expiresAt: string } | null>(null);
+  const [remainingSeconds, setRemainingSeconds] = useState(0);
+  const [generating, setGenerating] = useState(false);
+
+  useEffect(() => {
+    if (!issued) return;
+    const tick = () => {
+      setRemainingSeconds(Math.max(0, Math.ceil((Date.parse(issued.expiresAt) - Date.now()) / 1000)));
+    };
+    tick();
+    const timer = window.setInterval(tick, 1000);
+    return () => window.clearInterval(timer);
+  }, [issued]);
+
+  const generate = async () => {
+    setGenerating(true);
+    try {
+      const d = await call<{ ok: boolean; error?: string; passkey?: string; expiresAt?: string }>(
+        "/api/partner/integration-passkey",
+        { method: "POST" },
+      );
+      if (!d.ok || !d.passkey || !d.expiresAt) {
+        toast(d.error ?? "Could not generate a passkey", { kind: "error" });
+        return;
+      }
+      setIssued({ passkey: d.passkey, expiresAt: d.expiresAt });
+      setRemainingSeconds(Math.max(0, Math.ceil((Date.parse(d.expiresAt) - Date.now()) / 1000)));
+      toast("One-time passkey generated", { sub: "Enter it in the Merchant app within 10 minutes." });
+    } catch {
+      toast("Could not generate a passkey", { kind: "error" });
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const copy = async () => {
+    if (!issued || remainingSeconds <= 0) return;
+    try {
+      await navigator.clipboard.writeText(issued.passkey);
+      toast("Passkey copied");
+    } catch {
+      toast("Could not copy the passkey", { kind: "error" });
+    }
+  };
+
+  const minutes = Math.floor(remainingSeconds / 60);
+  const seconds = remainingSeconds % 60;
+
+  return (
+    <section className="glass mt-6 rounded-3xl p-5 md:p-6">
+      <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
+        <KeyRound className="size-4.5 text-ember-400" /> Merchant app passkey
+      </h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+        Generate a one-time passkey and enter it in the Merchant app to connect this listing.
+        It expires after 10 minutes, works once, and does not replace your owner key.
+      </p>
+      {issued && remainingSeconds > 0 ? (
+        <div className="mt-4 flex flex-wrap items-center gap-3 rounded-xl border border-ember-400/25 bg-black/30 p-3">
+          <span className="break-all font-mono text-sm font-bold tracking-wider text-cream-50">
+            {issued.passkey}
+          </span>
+          <span className="text-xs font-semibold tabular-nums text-ember-300">
+            Expires in {String(minutes).padStart(2, "0")}:{String(seconds).padStart(2, "0")}
+          </span>
+          <button
+            type="button"
+            onClick={() => void copy()}
+            className="press rounded-lg bg-white/8 px-3 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+          >
+            Copy passkey
+          </button>
+        </div>
+      ) : issued ? (
+        <p className="mt-3 text-xs font-semibold text-chili-300">
+          This passkey expired. Generate a new one to connect.
+        </p>
+      ) : null}
+      <button
+        type="button"
+        onClick={() => void generate()}
+        disabled={generating}
+        className="press mt-4 flex items-center justify-center gap-2 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-sm font-bold text-white shadow-glow transition-opacity disabled:opacity-60"
+      >
+        {generating ? <RefreshCw className="size-4 animate-spin" /> : <KeyRound className="size-4" />}
+        {generating ? "Generating…" : issued ? "Generate a new passkey" : "Generate one-time passkey"}
+      </button>
+    </section>
   );
 }

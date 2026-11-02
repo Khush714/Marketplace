@@ -211,6 +211,7 @@ test("the owner-key check is the tightest budget in the table", () => {
   const credentialScopes = new Set([
     "ownerVerify",
     "integrationLogin",
+    "oneTimePasskeyMint",
     "passkeyRotate",
     "opsCodeMint",
     "opsCodeRead",
@@ -237,6 +238,12 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
   { path: "src/app/api/orders/lookup/route.ts", guard: "guardWrite", scope: "orderLookup" },
   { path: "src/app/api/partner/session/route.ts", guard: "guardWrite", scope: "ownerVerify" },
   { path: "src/app/api/integration/login/route.ts", guard: "guardWrite", scope: "integrationLogin" },
+  {
+    path: "src/app/api/partner/integration-passkey/route.ts",
+    guard: "guardBudget",
+    scope: "oneTimePasskeyMint",
+    db: "issueIntegrationOneTimePasskey",
+  },
   { path: "src/app/api/search/route.ts", guard: "guardRead", scope: "search" },
   { path: "src/app/api/restaurants/route.ts", guard: "guardRead", scope: "restaurants" },
   { path: "src/app/api/restaurants/[slug]/route.ts", guard: "guardRead", scope: "restaurants" },

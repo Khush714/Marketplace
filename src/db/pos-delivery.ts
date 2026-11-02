@@ -61,11 +61,13 @@ export async function enqueueOrderDelivery(orderId: number): Promise<number | nu
       restaurantId: orders.restaurantId,
       paymentMethod: orders.paymentMethod,
       paymentStatus: orders.paymentStatus,
+      merchantFulfillment: orders.merchantFulfillment,
     })
     .from(orders)
     .where(eq(orders.id, orderId))
     .limit(1);
   if (!orderRow) return null;
+  if (orderRow.merchantFulfillment) return null;
 
   // Fail closed: an online order is not journaled for the kitchen until its
   // money is captured. Without this, any caller that enqueues an order after a
@@ -192,7 +194,7 @@ export async function resolveOrderTenantForPosCallback(
     })
     .from(orders)
     .innerJoin(integrationRecords, eq(integrationRecords.restaurantId, orders.restaurantId))
-    .where(eq(orders.externalOrderId, id))
+    .where(and(eq(orders.externalOrderId, id), eq(orders.merchantFulfillment, false)))
     .limit(1);
   return row ?? null;
 }

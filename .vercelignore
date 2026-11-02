@@ -2,6 +2,8 @@
 .env
 .env*
 !*.example
+set-ember-key.ts
+['MARKETPLACE_API_URL'
 
 # Local dev artifacts
 _tmp_*

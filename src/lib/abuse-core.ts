@@ -118,6 +118,21 @@ export const ABUSE_BUDGETS = {
    */
   integrationLogin: { limit: 10, windowMs: 10 * MINUTE_MS },
 
+  /** Merchant pairing spends a one-time owner-authorized passkey. */
+  merchantPairing: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /** Merchant API reads are polled by the signed-in Merchant workspace. */
+  merchantIntegrationRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /** Merchant API writes update only the linked listing's data. */
+  merchantIntegrationWrite: { limit: 60, windowMs: MINUTE_MS },
+
+  /**
+   * Minting a POS login credential is owner-session gated, but a fresh key
+   * replaces the prior one and should not be an unlimited capability.
+   */
+  oneTimePasskeyMint: { limit: 10, windowMs: 10 * MINUTE_MS },
+
   /**
    * Provider checkout start. Token-gated, but each accepted call can allocate
    * a REAL provider order — spending the tenant's API quota and writing an

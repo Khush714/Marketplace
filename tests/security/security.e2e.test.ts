@@ -58,6 +58,7 @@ const IPS = {
   payment: "10.0.6.10",
   matrix: "10.0.10.10",
   json: "10.0.11.10",
+  oneTimePasskey: "10.0.5.12",
 } as const;
 
 let harnessReady = false;
@@ -572,6 +573,60 @@ describe("integration bearer authentication and scoping", () => {
     });
     assert.equal(res.status, 200);
     assert.equal(typeof res.json?.["token"], "string");
+  });
+
+  it("uses a partner-minted passkey once and refuses it after expiry", async (t) => {
+    if (skipIfUnavailable(t)) return;
+    const f = getFixture();
+    const partner = await loginPartner(f.alpha.ownerKey, IPS.oneTimePasskey);
+    assert.equal(partner.result.status, 200);
+
+    const minted = await api({
+      path: "/api/partner/integration-passkey",
+      method: "POST",
+      ip: IPS.oneTimePasskey,
+      jar: partner.jar,
+      headers: csrfHeaders(partner.jar),
+    });
+    assert.equal(minted.status, 200);
+    const passkey = minted.json?.["passkey"] as string;
+    assert.match(passkey, /^[A-Za-z0-9_-]{24}$/);
+    const expiresAt = Date.parse(minted.json?.["expiresAt"] as string);
+    assert.ok(expiresAt - Date.now() <= 10 * 60 * 1000);
+    assert.ok(expiresAt - Date.now() > 9 * 60 * 1000);
+
+    const stored = await queryRow<{ integration_one_time_passkey_hash: string }>(
+      "select integration_one_time_passkey_hash from restaurants where id = $1",
+      [f.alpha.id],
+    );
+    assert.ok(stored?.integration_one_time_passkey_hash);
+    assert.notEqual(stored?.integration_one_time_passkey_hash, passkey);
+
+    const login = async (credential: string) =>
+      api({
+        path: "/api/integration/login",
+        method: "POST",
+        ip: IPS.oneTimePasskey,
+        body: { code: f.codes.login, passkey: credential },
+      });
+
+    assert.equal((await login(passkey)).status, 200);
+    assert.equal((await login(passkey)).status, 401, "a spent passkey cannot mint another session");
+
+    const second = await api({
+      path: "/api/partner/integration-passkey",
+      method: "POST",
+      ip: IPS.oneTimePasskey,
+      jar: partner.jar,
+      headers: csrfHeaders(partner.jar),
+    });
+    assert.equal(second.status, 200);
+    const expiredPasskey = second.json?.["passkey"] as string;
+    await queryRows(
+      "update restaurants set integration_one_time_passkey_expires_at = now() - interval '1 second' where id = $1",
+      [f.alpha.id],
+    );
+    assert.equal((await login(expiredPasskey)).status, 401, "an expired passkey is refused");
   });
 
   it("a valid bearer sees only its own restaurant's orders", async (t) => {

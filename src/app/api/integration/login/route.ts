@@ -1,7 +1,6 @@
 import { NextRequest } from "next/server";
 import {
-  authenticateIntegration,
-  createIntegrationSession,
+  createIntegrationSessionFromLogin,
   getOrCreateMarketplaceId,
   recordIntegrationAudit,
 } from "@/db/queries";
@@ -21,8 +20,11 @@ export async function POST(req: NextRequest) {
   const code = String(body?.code ?? "").trim();
   const passkey = String(body?.passkey ?? "");
 
-  const identity = await authenticateIntegration(code, passkey);
-  if (!identity) {
+  const session = await createIntegrationSessionFromLogin(code, passkey, {
+    ipAddress: req.headers.get("x-forwarded-for"),
+    userAgent: req.headers.get("user-agent"),
+  });
+  if (!session) {
     // Phase 12: the failure is the security signal — this is the credential
     // check an attacker grinds. Neither the presented code nor the passkey
     // crosses into the event; the rate-limit stream (integrationLogin budget)
@@ -34,11 +36,8 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: false, error: "Invalid credentials" }, { status: 401 });
   }
 
+  const { identity, token, expiresAtIso, idleExpiresAtIso } = session;
   const marketplaceId = await getOrCreateMarketplaceId(identity.restaurant.id);
-  const { token, expiresAtIso, idleExpiresAtIso } = await createIntegrationSession(identity, {
-    ipAddress: req.headers.get("x-forwarded-for"),
-    userAgent: req.headers.get("user-agent"),
-  });
 
   await recordIntegrationAudit(
     identity.restaurant.id,
@@ -48,7 +47,11 @@ export async function POST(req: NextRequest) {
       ipAddress: req.headers.get("x-forwarded-for"),
       userAgent: req.headers.get("user-agent"),
     },
-    { tokenExpiresAt: expiresAtIso, tokenIdleExpiresAt: idleExpiresAtIso },
+    {
+      tokenExpiresAt: expiresAtIso,
+      tokenIdleExpiresAt: idleExpiresAtIso,
+      oneTimePasskeyUsed: session.oneTimePasskeyUsed,
+    },
   );
 
   // Phase 12: emitted after the session exists so a success line means a live

@@ -68,7 +68,15 @@ export async function enqueuePaymentDelivery(input: PaymentDeliveryInsert): Prom
  */
 export async function posPaymentPushSupported(
   restaurantId: number,
+  externalOrderId: string,
 ): Promise<{ supported: boolean; provider: string }> {
+  const [order] = await db
+    .select({ merchantFulfillment: orders.merchantFulfillment })
+    .from(orders)
+    .where(and(eq(orders.externalOrderId, externalOrderId), eq(orders.restaurantId, restaurantId)))
+    .limit(1);
+  if (order?.merchantFulfillment) return { supported: false, provider: "merchant" };
+
   const [rec] = await db
     .select({ provider: integrationRecords.provider })
     .from(integrationRecords)

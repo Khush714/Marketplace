@@ -6,6 +6,11 @@ export function makeOwnerKey(): string {
   return randomBytes(18).toString("base64url");
 }
 
+/** Server-generated 24-character credential for one POS login. */
+export function makeOneTimePasskey(): string {
+  return randomBytes(18).toString("base64url");
+}
+
 export function hashOwnerKey(ownerKey: string): string {
   return sha256hex(ownerKey);
 }

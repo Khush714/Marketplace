@@ -214,7 +214,7 @@ export async function enqueuePaymentDelivery(input: {
   eventId: string;
   payload: Record<string, unknown>;
 }): Promise<void> {
-  const { supported, provider } = await posPaymentPushSupported(input.restaurantId);
+  const { supported, provider } = await posPaymentPushSupported(input.restaurantId, input.externalOrderId);
   if (!supported) {
     // Expected, not a failure: this provider has no payment-push contract, so
     // there is nothing to deliver and nothing to retry. Logged once because the

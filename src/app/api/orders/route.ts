@@ -17,8 +17,8 @@ export const dynamic = "force-dynamic";
 
 /**
  * Checkout. The order is created FIRST and the payment second — an online
- * order is held out of the POS (`PAYMENT_PENDING`) until the provider confirms
- * the capture, so nothing reaches the kitchen for an order nobody paid for.
+ * order is held out of fulfillment (`PAYMENT_PENDING`) until the provider
+ * confirms the capture, so nothing reaches the restaurant for an unpaid order.
  *
  * The response carries everything the browser needs to drive provider checkout:
  * the provider order id, the publishable key, and the order's access token.
@@ -126,9 +126,8 @@ async function checkout(req: NextRequest) {
   }
 
   if (!online) {
-    // Phase 4 — durable at-least-once POS delivery. Journaled synchronously so
-    // the checkout response is never blocked on the POS; the retry worker owns
-    // the actual POST (immediate attempt + backoff drain until DELIVERED/FAILED).
+    // POS orders are journaled for at-least-once delivery. Merchant orders are
+    // retrieved from the durable Marketplace order store through its API.
     await enqueuePosDelivery(result.order.id);
   }
 

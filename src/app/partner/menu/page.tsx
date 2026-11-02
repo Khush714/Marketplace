@@ -44,6 +44,7 @@ export default function PartnerMenuPage() {
   const { toast } = useToast();
   const session = usePartnerSession();
   const [menu, setMenu] = useState<PartnerMenuDto | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [adding, setAdding] = useState(false);
   const [groupEditor, setGroupEditor] = useState<number | "new" | null>(null);
@@ -56,10 +57,12 @@ export default function PartnerMenuPage() {
       setLoading(false);
       if (!d.ok) {
         setMenu(null);
+        setLoadError(d.error);
         if (!quiet) toast(d.error, { kind: "error" });
         return;
       }
       setMenu(d.menu);
+      setLoadError(null);
       if (!quiet) toast("Menu loaded", { sub: d.menu.restaurant.name });
     },
     [toast],
@@ -107,51 +110,84 @@ export default function PartnerMenuPage() {
       </p>
 
       <RequirePartnerSession>
-        {menu && (
-        <div className="mt-7 space-y-6">
-          <div className="flex flex-wrap items-center gap-2.5">
-            <span className="font-display text-xl font-bold text-cream-50">
-              {menu.restaurant.name}
-            </span>
-            <Link
-              href={`/restaurants/${menu.restaurant.slug}`}
-              className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
-            >
-              <Store className="size-3.5" /> View listing
-            </Link>
-            {menu.restaurant.posConnected && (
-              <span className="rounded-full bg-sky-500/12 px-2.5 py-0.5 text-[11px] font-bold text-sky-300">
-                POS connected — its dishes sync alongside yours
+        {menu ? (
+          <div className="mt-7 space-y-6">
+            <div className="flex flex-wrap items-center gap-2.5">
+              <span className="font-display text-xl font-bold text-cream-50">
+                {menu.restaurant.name}
               </span>
-            )}
+              {menu.restaurant.isActive ? (
+                <Link
+                  href={`/restaurants/${menu.restaurant.slug}`}
+                  className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+                >
+                  <Store className="size-3.5" /> View listing
+                </Link>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 rounded-xl bg-gold-500/12 px-3.5 py-2 text-xs font-semibold text-gold-300">
+                  <TriangleAlert className="size-3.5" /> Paused — activate on Partner home to publish
+                </span>
+              )}
+              {menu.restaurant.posConnected && (
+                <span className="rounded-full bg-sky-500/12 px-2.5 py-0.5 text-[11px] font-bold text-sky-300">
+                  POS connected — its dishes sync alongside yours
+                </span>
+              )}
+              <button
+                type="button"
+                onClick={() => void load()}
+                disabled={loading}
+                className="press ml-auto inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
+              >
+                <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+                Refresh
+              </button>
+            </div>
+
+            <DishSection
+              menu={menu}
+              adding={adding}
+              setAdding={setAdding}
+              busyId={busyId}
+              setBusyId={setBusyId}
+              run={run}
+            />
+            <GroupSection
+              menu={menu}
+              editor={groupEditor}
+              setEditor={setGroupEditor}
+              busyId={busyId}
+              setBusyId={setBusyId}
+              run={run}
+            />
+          </div>
+        ) : loadError ? (
+          <section className="glass mt-7 rounded-3xl px-6 py-12 text-center">
+            <TriangleAlert className="mx-auto size-6 text-chili-400" />
+            <h2 className="mt-3 font-display text-lg font-bold text-cream-50">
+              Could not load your menu
+            </h2>
+            <p className="mx-auto mt-1.5 max-w-sm text-sm leading-relaxed text-cream-500">
+              {loadError}
+            </p>
             <button
               type="button"
               onClick={() => void load()}
               disabled={loading}
-              className="press ml-auto inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
+              className={cn(ghostBtn, "mt-4 inline-flex")}
             >
-              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
-              Refresh
+              <RefreshCw className={cn("size-3.5", loading && "animate-spin")} /> Try again
             </button>
-          </div>
-
-          <DishSection
-            menu={menu}
-            adding={adding}
-            setAdding={setAdding}
-            busyId={busyId}
-            setBusyId={setBusyId}
-            run={run}
-          />
-          <GroupSection
-            menu={menu}
-            editor={groupEditor}
-            setEditor={setGroupEditor}
-            busyId={busyId}
-            setBusyId={setBusyId}
-            run={run}
-          />
-        </div>
+          </section>
+        ) : (
+          <section
+            aria-busy="true"
+            className="glass mt-7 flex flex-col items-center rounded-3xl px-6 py-14 text-center"
+          >
+            <RefreshCw className="size-6 animate-spin text-ember-400" />
+            <p className="mt-3 text-sm font-semibold text-cream-200">Loading your menu…</p>
+            <p className="mt-1 text-xs text-cream-500">Dishes, prices and modifier groups.</p>
+          </section>
         )}
       </RequirePartnerSession>
     </div>

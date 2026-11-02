@@ -7,7 +7,8 @@ non-trivial changes.
 ## What this is
 
 A **Next.js 16 App Router** marketplace that sits between diners and restaurant
-POS systems. Orders and payments flow through it; fulfilment lives in the POS.
+fulfillment systems. Orders and payments flow through it; fulfillment lives in
+the POS or the restaurant's paired Merchant app.
 No customer accounts. **PostgreSQL** (Drizzle ORM, plain-SQL migrations) is the
 only state store. **Razorpay** is the payment provider.
 

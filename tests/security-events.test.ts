@@ -68,7 +68,7 @@ const ALL_SRC = globSync("src/**/*.ts").map((file) => ({ file, src: readSource(f
 
 /* ------------------------------ vocabulary ------------------------------ */
 
-test("the vocabulary is exactly the eleven Phase 12 events", () => {
+test("the vocabulary contains the registered Phase 12 security events", () => {
   assert.deepEqual([...SECURITY_EVENTS], [
     "admin_login",
     "connection_code_created",
@@ -76,6 +76,7 @@ test("the vocabulary is exactly the eleven Phase 12 events", () => {
     "restaurant_session_created",
     "restaurant_session_revoked",
     "integration_login",
+    "merchant_pairing",
     "passkey_rotated",
     "restaurant_deleted",
     "payment_webhook_failure",
@@ -217,6 +218,7 @@ const SITES: Array<{ event: string; files: string[] }> = [
   { event: "restaurant_session_created", files: ["src/db/queries.ts"] },
   { event: "restaurant_session_revoked", files: ["src/db/queries.ts"] },
   { event: "integration_login", files: ["src/app/api/integration/login/route.ts"] },
+  { event: "merchant_pairing", files: ["src/app/api/integration/merchant/link/route.ts"] },
   { event: "passkey_rotated", files: ["src/app/api/integration/passkey/rotate/route.ts"] },
   { event: "restaurant_deleted", files: ["src/app/api/partner/restaurant/route.ts"] },
   {

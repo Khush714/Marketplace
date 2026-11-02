@@ -23,6 +23,11 @@ export type PublicOrder = Pick<
   | "paymentMethod"
   | "paymentStatus"
   | "posDeliveryStatus"
+  | "merchantFulfillment"
+  | "merchantDeliveryMode"
+  | "merchantDeliveryStatus"
+  | "merchantCourierName"
+  | "merchantDeliveryUpdatedAt"
   | "subtotalCents"
   | "deliveryFeeCents"
   | "platformFeeCents"
@@ -54,6 +59,11 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
     paymentMethod: o.paymentMethod,
     paymentStatus: o.paymentStatus,
     posDeliveryStatus: o.posDeliveryStatus,
+    merchantFulfillment: o.merchantFulfillment,
+    merchantDeliveryMode: o.merchantDeliveryMode,
+    merchantDeliveryStatus: o.merchantDeliveryStatus,
+    merchantCourierName: o.merchantCourierName,
+    merchantDeliveryUpdatedAt: o.merchantDeliveryUpdatedAt,
     subtotalCents: o.subtotalCents,
     deliveryFeeCents: o.deliveryFeeCents,
     platformFeeCents: o.platformFeeCents,

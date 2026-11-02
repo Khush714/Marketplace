@@ -142,6 +142,7 @@ export default function CheckoutPage() {
   useEffect(() => {
     if (!cart.hydrated || cart.items.length === 0) return;
     let cancelled = false;
+    setBill(null);
     setBillLoading(true);
     postBill(cart.restaurantSlug, cartLines(cart.items)).then((b) => {
       if (cancelled) return;
@@ -640,6 +641,7 @@ export default function CheckoutPage() {
             open={openSummary}
             onToggle={() => setOpenSummary((o) => !o)}
             totalCents={totalCents}
+            bill={bill}
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
@@ -750,11 +752,13 @@ function CheckoutSummary({
   open,
   onToggle,
   totalCents,
+  bill,
   itemsNode,
 }: {
   open: boolean;
   onToggle: () => void;
   totalCents: number;
+  bill: BillBreakdown | null;
   itemsNode: ReactNode;
 }) {
   const cart = useCart();
@@ -779,6 +783,30 @@ function CheckoutSummary({
             })
             .join(", ")}
         </p>
+      )}
+      {bill && (
+        <div className="mt-4 space-y-2 border-t border-white/10 pt-3 text-xs">
+          <div className="flex items-center justify-between text-cream-400">
+            <span>Subtotal</span>
+            <span className="tabular-nums">{formatINR(bill.subtotalCents)}</span>
+          </div>
+          {bill.discountCents > 0 && (
+            <div className="flex items-center justify-between text-emerald-300">
+              <span>Offer discount</span>
+              <span className="tabular-nums">−{formatINR(bill.discountCents)}</span>
+            </div>
+          )}
+          <div className="flex items-center justify-between text-cream-400">
+            <span>Delivery fee</span>
+            <span className="tabular-nums">
+              {bill.deliveryFeeCents === 0 ? "Free" : formatINR(bill.deliveryFeeCents)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between text-cream-400">
+            <span>Platform fee</span>
+            <span className="tabular-nums">{formatINR(bill.platformFeeCents)}</span>
+          </div>
+        </div>
       )}
       <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">
         <span className="text-xs font-bold uppercase tracking-[0.14em] text-cream-500">Total</span>

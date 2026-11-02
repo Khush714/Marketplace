@@ -34,6 +34,25 @@ export async function handleCancelledOrderPayment(
   if (payment) await initiateProviderRefund(payment, reason);
 }
 
+export async function handleCancelledOrderPaymentByOrderId(
+  orderId: number,
+  reason: string,
+): Promise<void> {
+  const [order] = await db.select().from(orders).where(eq(orders.id, orderId)).limit(1);
+  if (!order) return;
+
+  const live = await getActivePaymentByOrder(order.id);
+  if (live && (live.status === "PAYMENT_PENDING" || live.status === "UNPAID")) {
+    await cancelPendingPayment(order);
+    return;
+  }
+
+  const refundable = await markRefundRequested(order.id, reason);
+  if (refundable?.status === "REFUND_PENDING") {
+    await initiateProviderRefund(refundable, reason);
+  }
+}
+
 /**
  * Durable part of a cancelled-order settlement: all DB writes, no network.
  * Closes a never-captured payment (PAYMENT_PENDING / UNPAID) or marks captured

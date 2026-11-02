@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
 import { orderItemLineTotalCents } from "@/db/schema";
-import { cn, formatINR } from "@/lib/domain";
+import { cn, formatDateTime, formatINR } from "@/lib/domain";
 import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 
@@ -140,7 +140,13 @@ export function TrackingView({
                 <span className="relative inline-flex size-2 rounded-full bg-ember-400" />
               </span>
             )}
-            {s.delivered ? "Completed" : settled || neverDelivered ? "Closed" : "Live tracking"}
+            {s.delivered
+              ? "Completed"
+              : settled || neverDelivered
+                ? "Closed"
+                : order.merchantFulfillment
+                  ? "Order updates"
+                  : "Live tracking"}
           </p>
           <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-4xl">
             {s.delivered ? (
@@ -159,6 +165,13 @@ export function TrackingView({
             ) : s.stageKey === "rejected" ? (
               <>
                 Order rejected<span className="text-gradient">.</span>
+              </>
+            ) : order.merchantFulfillment ? (
+              <>
+                {order.merchantDeliveryStatus === "picked_up"
+                  ? "Your order is on the way"
+                  : s.stageLabel}
+                <span className="text-gradient">.</span>
               </>
             ) : (
               <>
@@ -218,10 +231,14 @@ export function TrackingView({
         </div>
       )}
 
-      <div className="mt-7 grid gap-6 lg:grid-cols-[1.15fr_1fr]">
-        {/* courier map — hidden when the order never reached the restaurant, since
-            an animated rider would be a fiction */}
-        {!neverDelivered && <CourierMap order={order} />}
+      <div
+        className={cn(
+          "mt-7 grid gap-6",
+          order.merchantFulfillment ? "lg:grid-cols-1" : "lg:grid-cols-[1.15fr_1fr]",
+        )}
+      >
+        {/* The map is a demo animation, not a courier location feed. */}
+        {!neverDelivered && !order.merchantFulfillment && <CourierMap order={order} />}
 
         {/* timeline + summary */}
         <div className="space-y-6">
@@ -305,8 +322,17 @@ export function TrackingView({
             </div>
           )}
 
+          {order.merchantFulfillment && !neverDelivered && !settled && (
+            <ManualDeliveryCard
+              status={order.merchantDeliveryStatus}
+              mode={order.merchantDeliveryMode}
+              courierName={order.merchantCourierName}
+              updatedAt={order.merchantDeliveryUpdatedAt}
+            />
+          )}
+
           {/* rider card */}
-          {s.stageKey === "out_for_delivery" && (
+          {!order.merchantFulfillment && s.stageKey === "out_for_delivery" && (
             <div className="animate-pop-in glass rounded-3xl p-5">
               <div className="flex items-center gap-3.5">
                 <span className="relative grid size-12 place-items-center rounded-2xl bg-gradient-to-b from-ember-400/30 to-chili-600/20 text-ember-300 ring-1 ring-ember-400/30">
@@ -414,6 +440,57 @@ export function TrackingView({
               </span>
             </div>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ManualDeliveryCard({
+  status,
+  mode,
+  courierName,
+  updatedAt,
+}: {
+  status: string;
+  mode: string | null;
+  courierName: string | null;
+  updatedAt: string | null;
+}) {
+  let title = "Courier not assigned";
+  let detail = "The restaurant will update delivery when a courier is assigned.";
+  if (status === "assigned") {
+    title = "Courier assigned";
+    detail = courierName ? `${courierName} is assigned to your order.` : "A courier has been assigned.";
+  } else if (status === "picked_up") {
+    title = "Your order is on the way";
+    detail = courierName ? `${courierName} has picked up your order.` : "Your order has been picked up.";
+  } else if (status === "delivered") {
+    title = "Delivery completed";
+    detail = "The restaurant marked your order as delivered.";
+  }
+  const modeLabel =
+    mode === "in_house"
+      ? "Restaurant's own delivery"
+      : mode === "rapido"
+        ? "Rapido, arranged by the restaurant"
+        : mode === "third_party"
+          ? "Third-party courier, arranged by the restaurant"
+          : "Delivery arranged by the restaurant";
+
+  return (
+    <div className="glass rounded-3xl p-5 md:p-6">
+      <div className="flex items-start gap-3">
+        <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-gradient-to-b from-ember-400/30 to-chili-600/20 text-ember-300 ring-1 ring-ember-400/30">
+          <Bike className="size-5" />
+        </span>
+        <div className="min-w-0">
+          <p className="font-display text-base font-bold text-cream-50">{title}</p>
+          <p className="mt-1 text-sm leading-relaxed text-cream-400">{detail}</p>
+          <p className="mt-2 text-xs text-cream-600">{modeLabel}</p>
+          {updatedAt && (
+            <p className="mt-1 text-xs text-cream-600">Updated {formatDateTime(updatedAt)}</p>
+          )}
         </div>
       </div>
     </div>

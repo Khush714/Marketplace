@@ -101,12 +101,22 @@ export const restaurants = pgTable("restaurants", {
    * entire point of rotating.
    */
   integrationPasskeyHash: text("integration_passkey_hash"),
+  integrationOneTimePasskeyHash: text("integration_one_time_passkey_hash"),
+  integrationOneTimePasskeyExpiresAt: timestamp("integration_one_time_passkey_expires_at", {
+    withTimezone: true,
+  }),
+  merchantPickupEnabled: boolean("merchant_pickup_enabled").notNull().default(true),
+  merchantDeliveryEnabled: boolean("merchant_delivery_enabled").notNull().default(false),
+  merchantHoursEnabled: boolean("merchant_hours_enabled").notNull().default(false),
+  merchantOpensAt: text("merchant_opens_at").notNull().default("09:00"),
+  merchantClosesAt: text("merchant_closes_at").notNull().default("22:00"),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   // Phase 10 (10.3): `restaurantIdForOwnerKey` resolves identity with
   // `WHERE owner_key_hash = ?` on an authentication path — without this the
   // owner-key exchange is a sequential scan of restaurants on every login.
   index("restaurants_owner_key_hash_idx").on(t.ownerKeyHash),
+  index("restaurants_integration_one_time_passkey_hash_idx").on(t.integrationOneTimePasskeyHash),
 ]);
 
 /**
@@ -363,6 +373,20 @@ export const integrationSessions = pgTable(
   ],
 );
 
+/** Long-lived, restaurant-scoped credentials issued only to the Merchant App. */
+export const merchantIntegrationLinks = pgTable(
+  "merchant_integration_links",
+  {
+    restaurantId: integer("restaurant_id")
+      .primaryKey()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    merchantBusinessId: text("merchant_business_id").notNull().unique(),
+    tokenHash: text("token_hash").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_integration_links_business_idx").on(t.merchantBusinessId)],
+);
+
 /**
  * One-to-one POS identity record for a marketplace restaurant. Traces the
  * identity chain Marketplace → POS Restaurant → Branch → Outlet. `status`:
@@ -525,20 +549,12 @@ export const orders = pgTable(
      * equality checks in pos-delivery.ts stay exact.
      */
     posOrderId: bigint("pos_order_id", { mode: "number" }),
-    /**
-     * Was this order admitted while the restaurant had an ACTIVE POS
-     * integration? Stamped at creation rather than re-derived, because the
-     * tracking view must keep showing the lifecycle the order was actually
-     * admitted into even if the integration is disabled mid-flight.
-     *
-     * FALSE is the honest answer for a seeded/demo restaurant, which restores
-     * the elapsed-time demo timeline the tracking view was written for.
-     * Deriving this from `external_order_id` does NOT work: that column is
-     * stamped on every order unconditionally, so it is true for all of them.
-     */
+    /** Whether the order was routed to an active POS, not to the paired Merchant app. */
     posConnected: boolean("pos_connected").notNull().default(false),
     /** Snapshot of the delivery journal row: PENDING → DELIVERED | FAILED. */
     posDeliveryStatus: text("pos_delivery_status").notNull().default("PENDING"),
+    /** Merchant fulfillment is selected at checkout and is exclusive with POS delivery. */
+    merchantFulfillment: boolean("merchant_fulfillment").notNull().default(false),
     /**
      * POS branch/outlet claim for this order (Phase 7). The client's optional
      * `outletId` at checkout is validated against the integration record; the
@@ -555,6 +571,12 @@ export const orders = pgTable(
     integrationStatus: text("integration_status").notNull().default("PLACED"),
     /** When `integrationStatus` last transitioned (status webhooks). */
     statusUpdatedAt: timestamp("status_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    merchantPrepMinutes: integer("merchant_prep_minutes"),
+    merchantRejectionReason: text("merchant_rejection_reason").notNull().default(""),
+    merchantDeliveryMode: text("merchant_delivery_mode"),
+    merchantDeliveryStatus: text("merchant_delivery_status").notNull().default("pending"),
+    merchantCourierName: text("merchant_courier_name"),
+    merchantDeliveryUpdatedAt: timestamp("merchant_delivery_updated_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     /**
      * sha256 hex of the 128-bit random tracking token (Phase 6). The token is

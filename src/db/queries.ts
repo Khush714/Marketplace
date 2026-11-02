@@ -9,6 +9,7 @@ import {
   integrationAudit,
   integrationRecords,
   integrationSessions,
+  merchantIntegrationLinks,
   integrationTransferRequests,
   menuItemModifierGroups,
   menuItems,
@@ -35,16 +36,30 @@ import {
   type BillBreakdown,
 } from "@/lib/domain";
 import { DEFAULT_LIST_LIMIT, MAX_PAGE_SIZE, type PageParams } from "@/lib/api-pagination-core";
-import { hashOwnerKey, hashToken, integrationPasskeyMatches, makeAccessToken, makeMarketplaceId, makeOwnerKey, ownerKeyMatches } from "@/lib/owner-key";
+import {
+  hashOwnerKey,
+  hashToken,
+  integrationPasskeyMatches,
+  makeAccessToken,
+  makeMarketplaceId,
+  makeOneTimePasskey,
+  makeOwnerKey,
+  ownerKeyMatches,
+} from "@/lib/owner-key";
 import {
   INTEGRATION_SESSION_TTL_MS,
   integrationSessionIsLive,
   nextIdleExpiry,
 } from "@/lib/integration-session-core";
+import {
+  INTEGRATION_ONE_TIME_PASSKEY_TTL_MS,
+  integrationOneTimePasskeyIsLive,
+} from "@/lib/integration-one-time-passkey-core";
 import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONFIRM_TTL_MS } from "@/lib/restaurant-session-core";
 import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes } from "@/lib/customer-session-core";
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
+import { selectMarketplaceFulfillment } from "@/lib/fulfillment-core";
 import { discoverableRestaurant } from "@/lib/discoverability";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "@/lib/security/security-events";
@@ -254,12 +269,10 @@ const INTEGRATION_ETA_SECONDS: Record<string, number> = {
 };
 
 function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
-  // `posConnected`, not `externalOrderId` — see the column comment. Only an
-  // order admitted through a live POS integration is driven by POS events; a
-  // seeded/demo order keeps the elapsed-time timeline it was always meant to
-  // have, instead of sitting at "waiting for the restaurant to accept" forever
-  // behind an ETA that resets on every poll.
-  const integrated = o.posConnected;
+  // `posConnected`, not `externalOrderId` — see the legacy column comment.
+  // POS and Merchant updates drive connected orders; a seeded/demo order keeps
+  // the elapsed-time timeline instead.
+  const integrated = o.posConnected || o.merchantFulfillment;
   const status = integrated ? integrationOrderStatus(o) : demoOrderStatus(o);
   return {
     id: o.id,
@@ -283,6 +296,11 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
     paymentStatus: o.paymentStatus,
     posDeliveryStatus: o.posDeliveryStatus,
     posConnected: integrated,
+    merchantFulfillment: o.merchantFulfillment,
+    merchantDeliveryMode: o.merchantDeliveryMode,
+    merchantDeliveryStatus: o.merchantDeliveryStatus,
+    merchantCourierName: o.merchantCourierName,
+    merchantDeliveryUpdatedAt: o.merchantDeliveryUpdatedAt?.toISOString() ?? null,
     instructions: o.instructions,
     riderName: o.riderName,
     subtotalCents: o.subtotalCents,
@@ -386,6 +404,31 @@ export async function hasActiveIntegration(restaurantId: number): Promise<boolea
     // the shared rule knows which fact its provider requires.
     partnerCredentialsConfigured: petpoojaConfigured(),
   });
+}
+
+/** A paired Merchant business receives orders directly from the Marketplace order API. */
+export async function hasActiveOrderFulfillment(restaurantId: number): Promise<boolean> {
+  const [[merchantLink], posReady] = await Promise.all([
+    db
+      .select({ restaurantId: merchantIntegrationLinks.restaurantId })
+      .from(merchantIntegrationLinks)
+      .where(eq(merchantIntegrationLinks.restaurantId, restaurantId))
+      .limit(1),
+    hasActiveIntegration(restaurantId),
+  ]);
+  return selectMarketplaceFulfillment({
+    posReady,
+    merchantReady: merchantLink !== undefined,
+  }) !== "none";
+}
+
+export async function hasMerchantFulfillmentLink(restaurantId: number): Promise<boolean> {
+  const [merchantLink] = await db
+    .select({ restaurantId: merchantIntegrationLinks.restaurantId })
+    .from(merchantIntegrationLinks)
+    .where(eq(merchantIntegrationLinks.restaurantId, restaurantId))
+    .limit(1);
+  return merchantLink !== undefined;
 }
 
 /**
@@ -1655,65 +1698,231 @@ export async function bindOrderCodesToSession(sessionId: number, codes: string[]
 
 /* ------------------------------ integration ------------------------------- */
 
+export type MerchantPairingResult =
+  | { kind: "paired"; accessToken: string; restaurant: RestaurantDto }
+  | { kind: "invalid_passkey" }
+  | { kind: "already_linked" };
+
+function isUniqueConstraintViolation(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    error.code === "23505"
+  );
+}
+
+/** Atomically spend a partner-issued passkey and create one Merchant link. */
+export async function pairMerchantWithOneTimePasskey(
+  merchantBusinessId: string,
+  passkey: string,
+): Promise<MerchantPairingResult> {
+  const passkeyHash = hashOwnerKey(passkey);
+  const now = new Date();
+
+  try {
+    return await db.transaction(async (tx) => {
+      const [restaurant] = await tx
+        .select()
+        .from(restaurants)
+        .where(
+          and(
+            eq(restaurants.integrationOneTimePasskeyHash, passkeyHash),
+            gt(restaurants.integrationOneTimePasskeyExpiresAt, now),
+          ),
+        )
+        .for("update")
+        .limit(1);
+      if (!restaurant) return { kind: "invalid_passkey" };
+
+      const [existingLink] = await tx
+        .select({ restaurantId: merchantIntegrationLinks.restaurantId })
+        .from(merchantIntegrationLinks)
+        .where(
+          or(
+            eq(merchantIntegrationLinks.restaurantId, restaurant.id),
+            eq(merchantIntegrationLinks.merchantBusinessId, merchantBusinessId),
+          ),
+        )
+        .limit(1);
+      if (existingLink) return { kind: "already_linked" };
+
+      const [consumed] = await tx
+        .update(restaurants)
+        .set({
+          integrationOneTimePasskeyHash: null,
+          integrationOneTimePasskeyExpiresAt: null,
+        })
+        .where(
+          and(
+            eq(restaurants.id, restaurant.id),
+            eq(restaurants.integrationOneTimePasskeyHash, passkeyHash),
+            gt(restaurants.integrationOneTimePasskeyExpiresAt, now),
+          ),
+        )
+        .returning({ id: restaurants.id });
+      if (!consumed) return { kind: "invalid_passkey" };
+
+      const accessToken = makeAccessToken();
+      await tx.insert(merchantIntegrationLinks).values({
+        restaurantId: restaurant.id,
+        merchantBusinessId,
+        tokenHash: hashToken(accessToken),
+      });
+
+      return {
+        kind: "paired",
+        accessToken,
+        restaurant: toRestaurantDto(restaurant),
+      };
+    });
+  } catch (error) {
+    if (isUniqueConstraintViolation(error)) return { kind: "already_linked" };
+    throw error;
+  }
+}
+
+export async function getMerchantIntegrationSession(
+  token: string,
+): Promise<{ restaurant: RestaurantDto; merchantBusinessId: string } | null> {
+  const clean = String(token ?? "").trim();
+  if (!clean) return null;
+  const [row] = await db
+    .select({ link: merchantIntegrationLinks, restaurant: restaurants })
+    .from(merchantIntegrationLinks)
+    .innerJoin(restaurants, eq(restaurants.id, merchantIntegrationLinks.restaurantId))
+    .where(eq(merchantIntegrationLinks.tokenHash, hashToken(clean)))
+    .limit(1);
+  if (!row) return null;
+  return {
+    restaurant: toRestaurantDto(row.restaurant),
+    merchantBusinessId: row.link.merchantBusinessId,
+  };
+}
+
+export async function revokeMerchantIntegrationLink(token: string): Promise<number | null> {
+  const clean = String(token ?? "").trim();
+  if (!clean) return null;
+  const [row] = await db
+    .delete(merchantIntegrationLinks)
+    .where(eq(merchantIntegrationLinks.tokenHash, hashToken(clean)))
+    .returning({ restaurantId: merchantIntegrationLinks.restaurantId });
+  return row?.restaurantId ?? null;
+}
+
 export interface IntegrationIdentity {
   restaurant: RestaurantDto;
   codeId: number;
 }
 
 /**
- * The restaurant's "API key + secret" handshake: the minted connection code
- * acts as the login ID and the passkey (owner key) as the password. Both must
- * match the code -> connection -> restaurant chain.
- *
- * The password half is checked against `integration_passkey_hash`, falling back
- * to `owner_key_hash` for listings that predate the split — see
- * `integrationPasskeyMatches`.
+ * Issue a one-time credential to a partner session. Only its hash is stored;
+ * generating another credential replaces the previous one for this restaurant.
  */
-export async function authenticateIntegration(
+export async function issueIntegrationOneTimePasskey(
+  restaurantId: number,
+): Promise<{ passkey: string; expiresAtIso: string } | null> {
+  const passkey = makeOneTimePasskey();
+  const expiresAt = new Date(Date.now() + INTEGRATION_ONE_TIME_PASSKEY_TTL_MS);
+  const [row] = await db
+    .update(restaurants)
+    .set({
+      integrationOneTimePasskeyHash: hashOwnerKey(passkey),
+      integrationOneTimePasskeyExpiresAt: expiresAt,
+    })
+    .where(eq(restaurants.id, restaurantId))
+    .returning({ id: restaurants.id });
+  if (!row) return null;
+  return { passkey, expiresAtIso: expiresAt.toISOString() };
+}
+
+/**
+ * Authenticate the code+passkey pair and mint its session in one transaction.
+ * The permanent POS passkey remains reusable; the temporary credential is
+ * cleared conditionally so concurrent logins cannot both spend it.
+ */
+export async function createIntegrationSessionFromLogin(
   code: string,
   passkey: string,
-): Promise<IntegrationIdentity | null> {
+  meta?: { ipAddress?: string | null; userAgent?: string | null },
+): Promise<{
+  identity: IntegrationIdentity;
+  token: string;
+  expiresAtIso: string;
+  idleExpiresAtIso: string;
+  oneTimePasskeyUsed: boolean;
+} | null> {
   const c = String(code ?? "").trim().toUpperCase();
   const p = String(passkey ?? "");
   if (!c || !p) return null;
 
-  const [row] = await db
-    .select({
-      r: restaurants,
-      c: connectionCodes,
-    })
-    .from(connectionCodes)
-    .innerJoin(connections, eq(connections.codeId, connectionCodes.id))
-    .innerJoin(restaurants, eq(restaurants.id, connections.restaurantId))
-    .where(eq(connectionCodes.code, c))
-    .limit(1);
-  if (!row) return null;
-  if (!integrationPasskeyMatches(row.r, p)) return null;
-  return { restaurant: toRestaurantDto(row.r), codeId: row.c.id };
-}
+  return db.transaction(async (tx) => {
+    const [row] = await tx
+      .select({
+        r: restaurants,
+        c: connectionCodes,
+      })
+      .from(connectionCodes)
+      .innerJoin(connections, eq(connections.codeId, connectionCodes.id))
+      .innerJoin(restaurants, eq(restaurants.id, connections.restaurantId))
+      .where(eq(connectionCodes.code, c))
+      .limit(1);
+    if (!row) return null;
 
-export async function createIntegrationSession(
-  identity: IntegrationIdentity,
-  meta?: { ipAddress?: string | null; userAgent?: string | null },
-): Promise<{ token: string; expiresAtIso: string; idleExpiresAtIso: string }> {
-  const token = makeAccessToken();
-  const now = new Date();
-  const expires = new Date(now.getTime() + INTEGRATION_SESSION_TTL_MS);
-  // A session's two clocks start here and their policy lives in
-  // `integration-session-core.ts`: the absolute ceiling above, and a sliding
-  // idle window below that every authenticated request pushes back out.
-  const idleAt = nextIdleExpiry(now.getTime());
-  await db.insert(integrationSessions).values({
-    tokenHash: hashToken(token),
-    restaurantId: identity.restaurant.id,
-    codeId: identity.codeId,
-    expiresAt: expires,
-    idleExpiresAt: idleAt,
-    lastUsedAt: now,
-    ipAddress: meta?.ipAddress ?? null,
-    userAgent: meta?.userAgent ?? null,
+    const now = new Date();
+    const expires = new Date(now.getTime() + INTEGRATION_SESSION_TTL_MS);
+    const idleAt = nextIdleExpiry(now.getTime());
+
+    let oneTimePasskeyUsed = false;
+    if (!integrationPasskeyMatches(row.r, p)) {
+      const oneTimeHash = row.r.integrationOneTimePasskeyHash;
+      if (
+        !oneTimeHash ||
+        !ownerKeyMatches(oneTimeHash, p) ||
+        !integrationOneTimePasskeyIsLive(row.r.integrationOneTimePasskeyExpiresAt, now.getTime())
+      ) {
+        return null;
+      }
+
+      const [consumed] = await tx
+        .update(restaurants)
+        .set({
+          integrationOneTimePasskeyHash: null,
+          integrationOneTimePasskeyExpiresAt: null,
+        })
+        .where(
+          and(
+            eq(restaurants.id, row.r.id),
+            eq(restaurants.integrationOneTimePasskeyHash, oneTimeHash),
+            gt(restaurants.integrationOneTimePasskeyExpiresAt, new Date()),
+          ),
+        )
+        .returning({ id: restaurants.id });
+      if (!consumed) return null;
+      oneTimePasskeyUsed = true;
+    }
+
+    const identity = { restaurant: toRestaurantDto(row.r), codeId: row.c.id };
+    const token = makeAccessToken();
+    await tx.insert(integrationSessions).values({
+      tokenHash: hashToken(token),
+      restaurantId: identity.restaurant.id,
+      codeId: identity.codeId,
+      expiresAt: expires,
+      idleExpiresAt: idleAt,
+      lastUsedAt: now,
+      ipAddress: meta?.ipAddress ?? null,
+      userAgent: meta?.userAgent ?? null,
+    });
+
+    return {
+      identity,
+      token,
+      expiresAtIso: expires.toISOString(),
+      idleExpiresAtIso: idleAt.toISOString(),
+      oneTimePasskeyUsed,
+    };
   });
-  return { token, expiresAtIso: expires.toISOString(), idleExpiresAtIso: idleAt.toISOString() };
 }
 
 export async function getIntegrationSession(token: string): Promise<RestaurantDto | null> {
@@ -1998,7 +2207,7 @@ export async function upsertIntegrationIdentity(
 
 export type IntegrationAuditContext = {
   /** `ops` is an operator acting through the privileged surface, not the restaurant. */
-  actor: "restaurant" | "partner" | "system" | "ops";
+  actor: "restaurant" | "partner" | "merchant" | "system" | "ops";
   ipAddress?: string | null;
   userAgent?: string | null;
 };
@@ -2901,7 +3110,7 @@ export async function computeBill(
   // Ordering gate. Enforced before any line is priced so the bill preview and
   // the order itself agree — the customer is told at the estimate, not after
   // entering payment details.
-  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id))) {
+  if (orderingGateEnforced() && !(await hasActiveOrderFulfillment(r.id))) {
     return {
       ok: false,
       error: ORDERING_CLOSED_MESSAGE,
@@ -3118,15 +3327,20 @@ export async function createOrder(
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
 
-  // The gate decision is stamped on the order rather than re-derived later, so
-  // tracking shows the POS lifecycle this order was actually admitted into even
-  // if the restaurant's integration is disabled while the order is in flight.
-  const posConnected = await hasActiveIntegration(r.id);
+  // Merchant takes precedence when paired; otherwise an active POS owns
+  // fulfillment. Stamp the selected destination on the order.
+  const [merchantLinked, posReady] = await Promise.all([
+    hasMerchantFulfillmentLink(r.id),
+    hasActiveIntegration(r.id),
+  ]);
+  const destination = selectMarketplaceFulfillment({ posReady, merchantReady: merchantLinked });
+  const posConnected = destination === "pos";
+  const merchantFulfillment = destination === "merchant";
 
   // Phase 7 — validate the optional outlet claim against the integration
   // record BEFORE the order is created (fail-closed; no silent fallback).
   let claimedOutletId: string | null = null;
-  if (input.outletId) {
+  if (input.outletId && posConnected) {
     const outlet = await resolveOutletForRestaurant(r.id, input.outletId);
     if (!outlet.ok) {
       return { ok: false, error: OUTLET_ERROR_MESSAGES[outlet.code] ?? "Invalid outlet", code: outlet.code };
@@ -3167,7 +3381,9 @@ export async function createOrder(
         phone: input.phone,
         paymentMethod: input.paymentMethod,
         instructions: input.instructions ?? "",
-        riderName: ["Arjun Mehta", "Ravi Kumar", "Sana Sheikh", "Dev Patil"][Math.floor(Math.random() * 4)],
+        riderName: merchantFulfillment
+          ? ""
+          : ["Arjun Mehta", "Ravi Kumar", "Sana Sheikh", "Dev Patil"][Math.floor(Math.random() * 4)],
         subtotalCents: bill.subtotalCents,
         deliveryFeeCents: bill.deliveryFeeCents,
         platformFeeCents: bill.platformFeeCents,
@@ -3175,6 +3391,7 @@ export async function createOrder(
         totalCents: bill.totalCents,
         clientRequestId,
         posConnected,
+        merchantFulfillment,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
       })
       .returning();

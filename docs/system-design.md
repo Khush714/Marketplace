@@ -5,9 +5,9 @@ is shaped this way**, not how each module is implemented — that is
 `architecture.md`. Read this first; it is the map, not the terrain.
 
 The system is a single Next.js application that sits **between diners and
-restaurant point-of-sale (POS) systems**. It is not the POS and it does not cook
-or delivery food; it takes an order, takes the money, and hands the order to the
-restaurant's POS, which then owns fulfilment status.
+restaurant fulfillment systems**. It is not the kitchen; it takes the order and
+the money, then hands fulfillment to either the restaurant's POS or its paired
+Merchant app, which owns the restaurant-side order lifecycle.
 
 ---
 
@@ -17,15 +17,16 @@ Provide a public food-ordering marketplace where:
 
 - **Customers** discover restaurants, order, pay online (or choose cash on
   delivery), and track their order.
-- **Restaurant partners** list a restaurant, keep a menu in sync with their POS,
-  connect the POS to the marketplace, and manage the relationship.
-- **The restaurant's POS** is the fulfilment authority: it receives orders,
-  accepts/rejects them, and reports lifecycle status back.
+- **Restaurant partners** list a restaurant, keep a menu in sync with their POS
+  or Merchant app, connect a fulfillment system, and manage the relationship.
+- **The restaurant's POS or paired Merchant app** is the fulfilment authority:
+  it receives orders, accepts/rejects them, and reports lifecycle status back.
 
-The marketplace mirrors the POS for menu, order and payment data. The POS remains
-the source of truth for **catalogue** (menu, price, availability) and
-**fulfilment** (order lifecycle). The marketplace is the source of truth for
-**the customer order record** and **the money** (payment state, refunds).
+The marketplace mirrors the POS or Merchant app for menu, order and payment
+data. The restaurant-side system is the source of truth for **catalogue** (menu,
+price, availability) and **fulfilment** (order lifecycle). The marketplace is
+the source of truth for **the customer order record** and **the money** (payment
+state, refunds).
 
 ## 2. Actors
 
@@ -55,15 +56,15 @@ browse or featured slot. Discoverable is *not* the same as orderable (see 3.3).
    `acceptedTerms`, valid restaurant + item selection.
 2. Recompute the bill server-side; reject if the client total disagrees.
 3. Enforce the **ordering gate** (`lib/ordering-gate.ts`): in production a
-   restaurant must have an **ACTIVE** POS integration, otherwise checkout is
-   refused (`ORDERING_CLOSED_MESSAGE`). Failing closed beats accepting an order
-   nothing can fulfil.
+   restaurant must have an **ACTIVE** POS integration or a paired Merchant
+   business, otherwise checkout is refused (`ORDERING_CLOSED_MESSAGE`). Failing
+   closed beats accepting an order nothing can fulfil.
 4. Idempotency: the client supplies `client_request_id`; retries return the same
    order rather than creating a duplicate (`orders.client_request_id` UNIQUE).
 5. Create the order + a payment record (`PAYMENT_PENDING` for online, `UNPAID`
    for cash).
-6. Enqueue POS delivery (§3.4) and issue the per-order signed token + tracking
-   token.
+6. Enqueue POS delivery or expose the durable order to the paired Merchant API
+   (§3.4), then issue the per-order signed token + tracking token.
 
 ### 3.3 Online payment
 `POST /api/orders/[code]/pay/start` → allocate a provider order; the browser runs
@@ -73,7 +74,7 @@ authoritative capture always arrives as a **provider webhook**
 (`payment.captured`) and is applied idempotently. **A browser claim never marks
 an order paid.** See ADR-0004.
 
-### 3.4 POS order delivery
+### 3.4 Order fulfilment
 Every order eligible for POS delivery gets a durable journal row
 (`marketplace_pos_order_deliveries`). The order bridge pushes a flat payload keyed
 by a stable external order id (`mkt_ord_<id>`); the POS dedupes on it. Failures
@@ -81,11 +82,20 @@ retry with exponential backoff + jitter; deterministic failures (or exhausted
 retries) go terminal `FAILED`, and a paid order that never reached the kitchen is
 automatically marked for refund. See ADR-0005.
 
+Orders for a paired Merchant business remain durably stored in the Marketplace
+and are retrieved by the authenticated Merchant orders API. The Merchant app
+polls for new orders and writes lifecycle transitions back to the Marketplace
+order record. A restaurant may use either fulfillment path, but must have at
+least one configured. When both are linked, the paired Merchant app is the
+selected destination for newly created orders; a single order is never routed
+to both systems.
+
 ### 3.5 Order lifecycle (inbound)
 The POS posts signed status webhooks (`order-accepted`, `order-cancelled`,
 `order-rejected`, `order-status`). Each carries a stable `event_id`; the first
 insert wins and replays are acknowledged without re-applying. Transitions are
-forward-only and tenant/branch-scoped.
+forward-only and tenant/branch-scoped. The paired Merchant app applies
+tenant-scoped lifecycle changes through its authenticated orders API.
 
 ### 3.6 Order read, tracking and cancellation
 An order code alone is **not** a credential. Access requires either the signed
@@ -104,8 +114,9 @@ sealed secret.
 
 ### 3.8 Menu synchronisation
 Menu, categories, items and modifiers are mirrored from the POS via signed menu
-webhooks with a `menu_webhook_events` idempotency ledger. Minted marketplace ids
-are echoed back on every replay so the POS stores stable mappings.
+webhooks with a `menu_webhook_events` idempotency ledger, or edited in the
+paired Merchant app through its authenticated API. Minted marketplace ids are
+echoed back on every POS replay so the POS stores stable mappings.
 
 ### 3.9 Refunds and reconciliation
 Refunds are only confirmed by the provider. A reconciliation job

@@ -8,7 +8,7 @@ import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
-import { getRestaurant as queryRestaurant, hasActiveIntegration } from "@/db/queries";
+import { getRestaurant as queryRestaurant, hasActiveOrderFulfillment } from "@/db/queries";
 import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
@@ -81,7 +81,7 @@ export default async function RestaurantPage(props: {
   // consulted first so the banner cannot disagree with the gate by appearing
   // locally on seeded demo listings that are meant to stay orderable.
   const orderingClosed =
-    orderingGateEnforced() && !(await hasActiveIntegration(r.id));
+    orderingGateEnforced() && !(await hasActiveOrderFulfillment(r.id));
 
   return (
     <div className="pb-10">

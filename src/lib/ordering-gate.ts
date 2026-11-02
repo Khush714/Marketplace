@@ -1,15 +1,12 @@
 import "server-only";
 
 /**
- * Whether checkout requires a live POS connection.
+ * Whether checkout requires a live fulfillment connection.
  *
- * The Marketplace can only ever fulfil an order by handing it to a
- * restaurant's POS. A restaurant with no ACTIVE integration record can never
- * receive one — the delivery journal deliberately skips those restaurants
- * (`enqueueOrderDelivery` returns null before creating a row), so the order
- * would be accepted, charged, and then sit at PLACED forever with nothing
- * behind it and no failure ever recorded. Admitting that order is strictly
- * worse than refusing it, so production fails CLOSED.
+ * Production requires either an ACTIVE POS integration or a paired Merchant
+ * business. Merchant orders remain in the Marketplace's durable order store
+ * and are retrieved through its authenticated integration API; POS orders use
+ * the delivery journal. A restaurant with neither path cannot fulfil an order.
  *
  * Outside production the gate is open by default, because the seeded demo
  * restaurants have no integration record at all (src/db/seed.ts) and blocking

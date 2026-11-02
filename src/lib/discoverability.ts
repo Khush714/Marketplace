@@ -16,10 +16,10 @@ import { menuItems, restaurants } from "@/db/schema";
  * A listing is discoverable when it is ACTIVE and has at least one available
  * dish. That is the honest floor for a marketplace: no menu means the kitchen
  * cannot sell anything, so marketing surfaces are wasted on it. It is a floor
- * only — discoverable is NOT the same as orderable. A POS-less restaurant
- * still belongs on the browse grid (customers browse what exists near them);
- * the CHECKOUT gate (`orderingGateEnforced` + an ACTIVE integration record)
- * decides whether it can actually take money. An empty-menu restaurant remains
+ * only — discoverable is NOT the same as orderable. A restaurant without an
+ * active POS or paired Merchant connection still belongs on the browse grid
+ * (customers browse what exists near them); the CHECKOUT gate decides whether
+ * it can actually take money. An empty-menu restaurant remains
  * reachable by direct link on purpose: the listing page renders the "Menu
  * being prepared" state instead of a broken grid, so partners can eyeball
  * their page long before it earns a browse slot.

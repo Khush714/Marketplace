@@ -167,12 +167,13 @@ configured.
 2. Route: `guardWrite("checkout")` (origin + budget) → `readJsonBody` (capped).
 3. Validate/cap input (`order-input-core.ts`); recompute the bill; reject total
    mismatch.
-4. `computeBill` enforces the ordering gate and an ACTIVE integration.
+4. `computeBill` enforces the ordering gate and requires either an ACTIVE POS
+   integration or a paired Merchant business.
 5. Transactionally create `orders` row (idempotent on `client_request_id`) and
    the `marketplace_payments` record.
-6. `enqueuePosDelivery(orderId)` writes the journal row and performs the **first
-   POS attempt synchronously** (durability: the row is already persisted, so a
-   timeout still retries).
+6. POS orders are journaled for delivery. Merchant orders stay in the canonical
+   Marketplace order store and are polled through the authenticated Merchant
+   orders API. Merchant is the exclusive destination when both paths are linked.
 7. Respond with the order code, `x-order-token`, and tracking token. On a later
    `/attach`, the customer session is minted/renewed and the code bound to it.
 

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronDown, MapPin, ShoppingBag, CircleUserRound } from "lucide-react";
+import { ChevronDown, MapPin, ShoppingBag, CircleUserRound, Handshake } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
@@ -60,7 +60,7 @@ export function SiteHeader() {
       )}
     >
       <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 pt-3 md:h-16 md:gap-5 md:pt-0 lg:px-6">
-        {/* Mobile row-1: location + profile */}
+        {/* Mobile row-1: location + partner + cart + profile */}
         <div className="flex flex-1 items-center justify-between md:hidden">
           <button type="button" onClick={openPicker} className="flex items-center gap-1.5 press" aria-label="Change delivery location">
             <MapPin className="size-4 text-chili-400" />
@@ -73,7 +73,15 @@ export function SiteHeader() {
               </span>
             </span>
           </button>
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-1.5">
+            <Link
+              href="/partner/integrations"
+              aria-label="Merchant POS Integration"
+              title="Merchant POS Integration"
+              className="grid size-10 place-items-center rounded-full glass text-ember-300 transition-colors hover:bg-white/10 press"
+            >
+              <Handshake className="size-4" />
+            </Link>
             <HeaderCart itemCount={itemCount} bump={bump} />
             <Link
               href="/profile"
@@ -109,7 +117,18 @@ export function SiteHeader() {
         <SearchTrigger className="hidden md:flex md:min-w-0 md:flex-1 md:max-w-md md:mx-auto" />
 
         <div className="hidden items-center gap-2.5 md:flex">
+          {/* Partner & POS Integration Direct Link */}
+          <Link
+            href="/partner/integrations"
+            className="press inline-flex h-10 items-center gap-1.5 rounded-full glass px-3.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/10 hover:text-ember-300"
+            title="Connect POS & Manage Merchant Handshake"
+          >
+            <Handshake className="size-4 text-ember-400" />
+            <span>Merchant POS</span>
+          </Link>
+
           <HeaderCart itemCount={itemCount} bump={bump} labelled />
+
           <Link
             href="/profile"
             className="press grid size-10 place-items-center rounded-full glass text-sm font-bold text-ember-300 transition-colors hover:bg-white/10"

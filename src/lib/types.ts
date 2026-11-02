@@ -155,8 +155,13 @@ export interface OrderDto {
    * must be able to say so rather than showing a stalled courier.
    */
   posDeliveryStatus: string;
-  /** Whether this order was admitted while the restaurant had a live POS. */
+  /** Whether this order was admitted with a live POS or Merchant fulfillment path. */
   posConnected: boolean;
+  merchantFulfillment: boolean;
+  merchantDeliveryMode: string | null;
+  merchantDeliveryStatus: string;
+  merchantCourierName: string | null;
+  merchantDeliveryUpdatedAt: string | null;
   instructions: string;
   riderName: string;
   subtotalCents: number;

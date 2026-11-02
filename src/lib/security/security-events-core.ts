@@ -43,6 +43,8 @@ export const SECURITY_EVENTS = [
   "restaurant_session_revoked",
   /** Integration (POS) credential login, success or failure. */
   "integration_login",
+  /** Merchant App pairing, authentication failure, or link revocation. */
+  "merchant_pairing",
   /** The restaurant rotated its POS passkey. */
   "passkey_rotated",
   /** Listing deletion attempted, succeeded, or was refused. */
