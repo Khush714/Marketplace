@@ -1,5 +1,11 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": {
+      "master": false,
+      "main": false
+    }
+  },
   "crons": [
     {
       "path": "/api/cron/pos-drain",
