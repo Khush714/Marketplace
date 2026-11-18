@@ -6,6 +6,17 @@
  * imports so the money math and status mapping can be tested directly.
  */
 
+/** One page holds at most 200 rows; ten pages keep a manual Merchant sync bounded. */
+export const MERCHANT_SETTLEMENT_PAGE_SIZE = 200;
+export const MERCHANT_SETTLEMENT_MAX_PAGE = 10;
+
+/** Unknown or hostile page values collapse to page 1 before any database work. */
+export function normalizeMerchantSettlementPage(value: unknown): number {
+  const parsed = typeof value === "number" ? value : Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) return 1;
+  return Math.min(parsed, MERCHANT_SETTLEMENT_MAX_PAGE);
+}
+
 export type MerchantSettlementStatus = "pending" | "paid" | "failed" | "reversed";
 
 export type MerchantSettlementRecord = {

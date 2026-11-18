@@ -4,7 +4,9 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
+  MERCHANT_SETTLEMENT_MAX_PAGE,
   merchantSettlementStatus,
+  normalizeMerchantSettlementPage,
   toMerchantSettlement,
   type MerchantSettlementSource,
 } from "../src/lib/merchant-settlements";
@@ -68,13 +70,24 @@ test("payment lifecycle statuses map to the Merchant settlement vocabulary", () 
   assert.equal(merchantSettlementStatus("REFUND_PENDING"), "paid");
 });
 
-test("the settlement route is authenticated, budgeted, and dynamic", () => {
+test("hostile page values collapse to a bounded page number", () => {
+  assert.equal(normalizeMerchantSettlementPage(null), 1);
+  assert.equal(normalizeMerchantSettlementPage("not-a-number"), 1);
+  assert.equal(normalizeMerchantSettlementPage("0"), 1);
+  assert.equal(normalizeMerchantSettlementPage("-2"), 1);
+  assert.equal(normalizeMerchantSettlementPage("3"), 3);
+  assert.equal(normalizeMerchantSettlementPage("999"), MERCHANT_SETTLEMENT_MAX_PAGE);
+});
+
+test("the settlement route is authenticated, budgeted, paginated, and dynamic", () => {
   const route = join(process.cwd(), "src/app/api/integration/merchant/settlements/route.ts");
   assert.equal(existsSync(route), true);
   const text = readFileSync(route, "utf8");
   assert.match(text, /guardBudget\(req, "merchantServiceRead"\)/);
   assert.match(text, /authenticateMerchantApp\(req\)/);
   assert.match(text, /unauthenticatedMerchantApp\(\)/);
-  assert.match(text, /listMerchantSettlements\(auth\.restaurantId\)/);
+  assert.match(text, /normalizeMerchantSettlementPage\(req\.nextUrl\.searchParams\.get\("page"\)\)/);
+  assert.match(text, /listMerchantSettlements\(auth\.restaurantId, \{ page \}\)/);
+  assert.match(text, /ok: true, \.\.\.result/);
   assert.match(text, /export const dynamic = "force-dynamic"/);
 });
