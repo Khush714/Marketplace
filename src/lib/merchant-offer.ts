@@ -81,6 +81,20 @@ export interface PublicMerchantOffer {
 
 const CODE_PATTERN = /^[A-Z0-9_-]{3,40}$/;
 
+/**
+ * Last line of defence for tenant isolation. Every query is already scoped by
+ * restaurant id, but the public listing and the checkout lookup re-check the
+ * owner before an offer can be shown or redeemed. A future query edit that drops
+ * its WHERE clause therefore cannot turn one kitchen's promotion into another
+ * kitchen's promotion.
+ */
+export function offersForRestaurant<T extends { offer: { restaurantId: number } }>(
+  rows: readonly T[],
+  restaurantId: number,
+): T[] {
+  return rows.filter((row) => row.offer.restaurantId === restaurantId);
+}
+
 function optionalDate(value: unknown, label: string): string | null {
   if (value === undefined || value === null || value === "") return null;
   if (typeof value !== "string") throw new Error(`Invalid ${label.toLowerCase()}.`);

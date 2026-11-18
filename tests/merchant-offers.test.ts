@@ -12,6 +12,7 @@ import {
   evaluateMerchantOffer,
   merchantOfferDiscountCents,
   merchantOfferDto,
+  offersForRestaurant,
   parseMerchantOfferInput,
   parseOfferCode,
   publicMerchantOfferDto,
@@ -157,4 +158,27 @@ test("public DTO shows the code and terms without trusting the browser", () => {
   const exhausted = publicMerchantOfferDto(customerOfferRow({ usageLimit: 42 }), 42, now);
   assert.equal(exhausted.available, false);
   assert.equal(exhausted.unavailableReason, "This offer has reached its usage limit.");
+});
+
+test("offers never cross restaurant boundaries, even when codes match", () => {
+  const rows = [
+    { offer: { restaurantId: 9, code: "WELCOME10" }, redemptions: 0 },
+    { offer: { restaurantId: 12, code: "WELCOME10" }, redemptions: 3 },
+    { offer: { restaurantId: 9, code: "VERDE10" }, redemptions: 1 },
+  ];
+
+  const verde = offersForRestaurant(rows, 9);
+  assert.deepEqual(
+    verde.map((row) => row.offer.code),
+    ["WELCOME10", "VERDE10"],
+  );
+  assert.equal(verde[0].redemptions, 0, "same-code rows must keep their own counts");
+
+  const ember = offersForRestaurant(rows, 12);
+  assert.deepEqual(
+    ember.map((row) => row.offer.code),
+    ["WELCOME10"],
+  );
+  assert.equal(ember[0].redemptions, 3);
+  assert.deepEqual(offersForRestaurant(rows, 99), [], "an unlinked listing sees nothing");
 });

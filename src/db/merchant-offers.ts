@@ -3,6 +3,7 @@ import { and, desc, eq, isNotNull, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { merchantOffers, orders, restaurants } from "@/db/schema";
 import {
+  offersForRestaurant,
   publicMerchantOfferDto,
   type MerchantOfferInput,
   type PublicMerchantOffer,
@@ -95,8 +96,7 @@ function selectPublicOffers(restaurantId: number) {
       eq(merchantOffers.archived, false),
     ))
     .groupBy(merchantOffers.id)
-    .orderBy(desc(merchantOffers.createdAt))
-    .limit(100);
+    .orderBy(desc(merchantOffers.createdAt));
 }
 
 /**
@@ -117,7 +117,9 @@ export async function listPublicMerchantOffersForSlug(
     .limit(1);
   if (!restaurant) return [];
   const rows = await selectPublicOffers(restaurant.id);
-  return rows.map(({ offer, redemptions }) => publicMerchantOfferDto(offer, Number(redemptions), now));
+  return offersForRestaurant(rows, restaurant.id)
+    .slice(0, 100)
+    .map(({ offer, redemptions }) => publicMerchantOfferDto(offer, Number(redemptions), now));
 }
 
 /**
@@ -145,8 +147,7 @@ export async function findRedeemableMerchantOffer(restaurantId: number, code: st
       eq(merchantOffers.active, true),
       eq(merchantOffers.archived, false),
     ))
-    .groupBy(merchantOffers.id)
-    .limit(1);
-  const row = rows[0];
+    .groupBy(merchantOffers.id);
+  const row = offersForRestaurant(rows, restaurantId)[0];
   return row ? { offer: row.offer, redemptions: Number(row.redemptions) } : null;
 }
