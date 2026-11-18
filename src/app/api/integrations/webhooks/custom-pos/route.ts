@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
   const verification = verifyCustomPosSignature({
     rawBody,
     signature,
-    timestamp,
+    timestamp: timestampHeader,
     secret: webhookSecret,
   });
 

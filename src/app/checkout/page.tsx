@@ -7,6 +7,7 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  BadgePercent,
   Banknote,
   Check,
   ChevronDown,
@@ -19,6 +20,7 @@ import {
   ShieldCheck,
   Smartphone,
   TriangleAlert,
+  Truck,
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
@@ -70,18 +72,25 @@ function cartLines(items: CartItem[]): CartLinePayload[] {
   }));
 }
 
+interface BillPreview {
+  bill: BillBreakdown;
+  offer: string | null;
+  offerAvailable: boolean;
+}
+
 async function postBill(
   restaurantSlug: string,
   items: CartLinePayload[],
-): Promise<BillBreakdown | null> {
+  applyOffer: boolean,
+): Promise<BillPreview | null> {
   try {
     const res = await fetch("/api/orders/bill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurantSlug, items }),
+      body: JSON.stringify({ restaurantSlug, items, applyOffer }),
     });
-    const data = (await res.json()) as { ok?: boolean; bill?: BillBreakdown };
-    return res.ok && data.ok && data.bill ? data.bill : null;
+    const data = (await res.json()) as BillPreview & { ok?: boolean };
+    return res.ok && data.ok && data.bill ? data : null;
   } catch {
     return null;
   }
@@ -122,6 +131,10 @@ export default function CheckoutPage() {
   const [error, setError] = useState<string | null>(null);
   const [bill, setBill] = useState<BillBreakdown | null>(null);
   const [billLoading, setBillLoading] = useState(false);
+  /** Offers are opt-in by default — a customer must tick the box to use one. */
+  const [applyOffer, setApplyOffer] = useState(false);
+  const [offer, setOffer] = useState<string | null>(null);
+  const [offerAvailable, setOfferAvailable] = useState(false);
   const [placed, setPlaced] = useState<PlacedOrder | null>(null);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
@@ -135,22 +148,27 @@ export default function CheckoutPage() {
   // it so a lost-response retry never creates a duplicate order.
   const [placeRequestId] = useState(() => crypto.randomUUID());
 
-  const totalCents = bill?.totalCents ?? estimateBill(cart.subtotalCents).total;
+  // Until the authoritative preview lands, the client estimate supplies the
+  // same breakdown shape so the final bill never shows a missing delivery fee.
+  const estimate = estimateBill(cart.subtotalCents);
+  const totalCents = bill?.totalCents ?? estimate.total;
 
   // fetch the authoritative bill for the current cart (mirrors createOrder)
   useEffect(() => {
     if (!cart.hydrated || cart.items.length === 0) return;
     let cancelled = false;
     setBillLoading(true);
-    postBill(cart.restaurantSlug, cartLines(cart.items)).then((b) => {
+    postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer).then((preview) => {
       if (cancelled) return;
-      setBill(b);
+      setBill(preview?.bill ?? null);
+      setOffer(preview?.offer ?? null);
+      setOfferAvailable(preview?.offerAvailable ?? false);
       setBillLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [cart.hydrated, cart.restaurantSlug, cart.items]);
+  }, [cart.hydrated, cart.restaurantSlug, cart.items, applyOffer]);
 
   // 10s grace on the success screen before auto-navigating to the order
   useEffect(() => {
@@ -248,6 +266,9 @@ export default function CheckoutPage() {
           phone: digits,
           paymentMethod: choice === "online" ? "upi" : "cod",
           instructions: instructions.trim(),
+          // Explicit customer selection; the server re-checks the literal and
+          // recomputes the discount from the restaurant's own offer terms.
+          applyOffer,
           // The server re-checks this: `canPlace` only gates the button.
           acceptedTerms,
         }),
@@ -324,8 +345,13 @@ export default function CheckoutPage() {
     if (placeState === "loading") return;
     let target = bill;
     if (!target) {
-      target = await postBill(cart.restaurantSlug, cartLines(cart.items));
-      if (target) setBill(target);
+      const preview = await postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer);
+      if (preview) {
+        target = preview.bill;
+        setBill(preview.bill);
+        setOffer(preview.offer);
+        setOfferAvailable(preview.offerAvailable);
+      }
     }
     void placeOrder(payChoice);
   };
@@ -639,6 +665,19 @@ export default function CheckoutPage() {
             open={openSummary}
             onToggle={() => setOpenSummary((o) => !o)}
             totalCents={totalCents}
+            subtotalCents={cart.subtotalCents}
+            discountCents={bill?.discountCents ?? 0}
+            deliveryFeeCents={bill?.deliveryFeeCents ?? estimate.deliveryFee}
+            platformFeeCents={bill?.platformFeeCents ?? estimate.platformFee}
+            offer={offer}
+            offerAvailable={offerAvailable}
+            applyOffer={applyOffer}
+            onToggleOffer={(value) => {
+              // Drop the old preview so no stale total/discount is shown while
+              // the authoritative bill for the new selection is fetched.
+              setApplyOffer(value);
+              setBill(null);
+            }}
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
@@ -749,12 +788,28 @@ function CheckoutSummary({
   open,
   onToggle,
   totalCents,
+  subtotalCents,
+  discountCents,
+  deliveryFeeCents,
+  platformFeeCents,
   itemsNode,
+  offer,
+  offerAvailable,
+  applyOffer,
+  onToggleOffer,
 }: {
   open: boolean;
   onToggle: () => void;
   totalCents: number;
+  subtotalCents: number;
+  discountCents: number;
+  deliveryFeeCents: number;
+  platformFeeCents: number;
   itemsNode: ReactNode;
+  offer: string | null;
+  offerAvailable: boolean;
+  applyOffer: boolean;
+  onToggleOffer: (value: boolean) => void;
 }) {
   const cart = useCart();
   return (
@@ -778,6 +833,54 @@ function CheckoutSummary({
             })
             .join(", ")}
         </p>
+      )}
+      <div className="mt-3 flex flex-col gap-2 text-[13px]">
+        <div className="flex items-center justify-between">
+          <span className="text-cream-500">Item total</span>
+          <span className="font-semibold text-cream-100 tabular-nums">{formatINR(subtotalCents)}</span>
+        </div>
+        {discountCents > 0 && (
+          <div className="flex items-center justify-between text-mint-400">
+            <span className="flex items-center gap-1.5">
+              <BadgePercent className="size-3.5" /> Restaurant offer
+            </span>
+            <span className="font-semibold tabular-nums">−{formatINR(discountCents)}</span>
+          </div>
+        )}
+        <div className="flex items-center justify-between">
+          <span className="flex items-center gap-1.5 text-cream-500">
+            <Truck className="size-3.5" /> Delivery fee
+          </span>
+          <span className="font-semibold tabular-nums">
+            {deliveryFeeCents === 0 ? (
+              <span className="text-mint-400">FREE</span>
+            ) : (
+              <span className="text-cream-100">{formatINR(deliveryFeeCents)}</span>
+            )}
+          </span>
+        </div>
+        <div className="flex items-center justify-between">
+          <span className="text-cream-500">Platform fee</span>
+          <span className="font-semibold text-cream-100 tabular-nums">{formatINR(platformFeeCents)}</span>
+        </div>
+      </div>
+      {offerAvailable && (
+        <label className="press mt-4 flex cursor-pointer items-start gap-2.5 rounded-xl border border-ember-400/25 bg-ember-500/8 px-3 py-2.5">
+          <input
+            type="checkbox"
+            checked={applyOffer}
+            onChange={(event) => onToggleOffer(event.target.checked)}
+            className="mt-0.5 size-4 shrink-0 accent-mint-400"
+          />
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold text-cream-100">
+              Apply restaurant offer{offer ? `: ${offer}` : ""}
+            </span>
+            <span className="block text-[11px] leading-snug text-cream-500">
+              Optional — never applied unless you select it
+            </span>
+          </span>
+        </label>
       )}
       <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">
         <span className="text-xs font-bold uppercase tracking-[0.14em] text-cream-500">Total</span>

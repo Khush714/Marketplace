@@ -55,7 +55,7 @@ export async function POST(req: NextRequest) {
   const created = await createMenuItem(auth.restaurantId, {
     name, description, category, priceCents, imageUrl, isVeg: dietary === "veg", isBestseller: false, available: true,
   });
-  if (!created.ok || !created.item) return Response.json({ ok: false, error: created.error ?? "Could not create item" }, { status: 400 });
+  if (!created.ok) return Response.json({ ok: false, error: created.error }, { status: 400 });
   return Response.json({ item: mapItem(created.item, auth.businessId) }, { status: 201 });
 }
 
@@ -96,7 +96,7 @@ export async function PATCH(req: NextRequest) {
     };
   }
   const updated = await updateMenuItem(auth.restaurantId, id, changes);
-  if (!updated.ok || !updated.item) return Response.json({ ok: false, error: updated.error ?? "Could not update item" }, { status: updated.error === "Menu item not found" ? 404 : 400 });
+  if (!updated.ok) return Response.json({ ok: false, error: updated.error }, { status: updated.error === "Menu item not found" ? 404 : 400 });
   return Response.json({ item: mapItem(updated.item, auth.businessId) });
 }
 

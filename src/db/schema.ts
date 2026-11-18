@@ -19,6 +19,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 export interface ModifierSelectionSnapshot {
@@ -1009,6 +1010,38 @@ export type MerchantOrderEventRow = typeof merchantOrderEvents.$inferSelect;
 export type MerchantLinkCodeRow = typeof merchantLinkCodes.$inferSelect;
 export type MerchantAppLinkRow = typeof merchantAppLinks.$inferSelect;
 
+/**
+ * Promotions owned by the Marketplace for a listed restaurant. A paired Merchant
+ * App proxies its Offers screen here instead of keeping a second copy: the
+ * Marketplace stays the single source of truth for promo codes and their rules.
+ */
+export const merchantOffers = pgTable(
+  "merchant_offers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    discountType: text("discount_type").notNull(),
+    value: integer("value").notNull(),
+    minOrder: integer("min_order").notNull().default(0),
+    maxDiscount: integer("max_discount"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    usageLimit: integer("usage_limit"),
+    active: boolean("active").notNull().default(true),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_offers_restaurant_code_idx").on(t.restaurantId, t.code),
+    index("merchant_offers_restaurant_active_idx").on(t.restaurantId, t.active, t.archived),
+  ],
+);
+export type MerchantOfferRow = typeof merchantOffers.$inferSelect;
+
 export type MenuCategoryRow = typeof menuCategories.$inferSelect;
 export type ModifierGroupRow = typeof modifierGroups.$inferSelect;
 export type ModifierOptionRow = typeof modifierOptions.$inferSelect;
@@ -1047,6 +1080,30 @@ export const adminSessions = pgTable(
 export type AdminSessionRow = typeof adminSessions.$inferSelect;
 
 // --- Webhook Audit Logs ---
+/**
+ * Single-use authorization codes for the first-party Merchant App link flow.
+ *
+ * The plaintext code never lands in the database: only its SHA-256 hash is the
+ * primary key, so a read of this table cannot mint a session. `consumed_at` is
+ * set by the atomic exchange update, and `expires_at` bounds the window to ten
+ * minutes — a code that is never redeemed simply ages out.
+ */
+export const merchantAuthorizationCodes = pgTable(
+  "merchant_authorization_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    codeChallenge: text("code_challenge").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_authorization_codes_expires_at_idx").on(t.expiresAt),
+    index("merchant_authorization_codes_restaurant_idx").on(t.restaurantId),
+  ],
+);
+
 export const webhookLogs = pgTable("webhook_logs", {
   id: serial("id").primaryKey(),
   provider: text("provider").notNull(),

@@ -191,6 +191,43 @@ export const ABUSE_BUDGETS = {
    * mint replacements.
    */
   opsCodeRevoke: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Merchant App order inbox. The Merchant App polls every 30 seconds (backing
+   * off to two minutes after failures) and loads orders + overview together,
+   * so a busy workspace sends a steady trickle from its server, not a browser.
+   * The budget is generous because a deployment's outbound IP is shared across
+   * every connected workspace, then bounded because the route still runs a
+   * tenant-scoped query per request.
+   */
+  merchantServiceRead: { limit: 300, windowMs: MINUTE_MS },
+
+  /**
+   * Merchant App status transitions. Every accepted call performs a
+   * compare-and-set plus an event insert, and a person can only tap a button so
+   * often; the generous ceiling covers retries and double-submits without
+   * letting a leaked bearer token grind the order table.
+   */
+  merchantServiceWrite: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Partner-side order writes (accept, prepare, ready, dispatch, complete,
+   * reject, cancel). Session-gated, but every accepted call performs a
+   * compare-and-set plus an event insert plus the POS mirror, so a leaked
+   * session must not buy an unbounded write loop. A human working one inbox
+   * tops out far below this; the headroom covers retries and double-taps.
+   */
+  partnerOrderWrite: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Merchant App authorization-code exchange. The code is a single-use,
+   * ten-minute capability that mints a full partner session, so this is a
+   * credential endpoint: the budget is charged before the code is consumed,
+   * meaning a wrong guess costs the same as a right one. A real link flow does
+   * this once; 20 per ten minutes leaves room for a few restarts while staying
+   * far below a scripted grind against the code space.
+   */
+  merchantOAuthExchange: { limit: 20, windowMs: 10 * MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

@@ -205,18 +205,24 @@ export interface BillBreakdown {
 
 /**
  * Authoritative order bill for a restaurant offer + cart.
- * Mirrors what createOrder records so the amount paid always matches the order.
+ *
+ * `applyOffer` is an explicit customer choice. Restaurant offers are never
+ * applied automatically — a shopper who did not tick the offer must be charged
+ * the undiscounted bill, and the checkout and order paths must agree on it.
  */
 export function billFor(
   subtotalCents: number,
   offerPercent: number,
   offerMaxCents: number,
+  applyOffer = false,
 ): BillBreakdown {
   let discountCents = 0;
-  if (offerPercent > 0) {
-    discountCents = Math.min(Math.round((subtotalCents * offerPercent) / 100), offerMaxCents);
-  } else if (offerMaxCents > 0 && subtotalCents >= offerMaxCents * 3) {
-    discountCents = offerMaxCents;
+  if (applyOffer) {
+    if (offerPercent > 0) {
+      discountCents = Math.min(Math.round((subtotalCents * offerPercent) / 100), offerMaxCents);
+    } else if (offerMaxCents > 0 && subtotalCents >= offerMaxCents * 3) {
+      discountCents = offerMaxCents;
+    }
   }
   const deliveryFeeCents =
     subtotalCents >= DELIVERY_FREE_ABOVE_CENTS ? 0 : DELIVERY_FEE_CENTS;

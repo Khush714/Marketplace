@@ -96,6 +96,8 @@ export type CartResult =
 export interface CheckoutRequest {
   restaurantSlug: string;
   items: SanitizedCartLine[];
+  /** True only when the customer explicitly selected the restaurant offer. */
+  applyOffer?: boolean;
   /** Absent when the client sent no usable label — the row keeps its "Home" default. */
   addressLabel?: string;
   addressText: string;
@@ -274,6 +276,9 @@ export function validateCheckout(raw: unknown): CheckoutResult {
     request: {
       restaurantSlug,
       items: cart.items,
+      // Only a literal true opts in. Any other value (string, number, object)
+      // is treated as no selection — never as a discount the client invented.
+      ...(body.applyOffer === true ? { applyOffer: true } : {}),
       ...(addressLabel !== undefined ? { addressLabel } : {}),
       addressText,
       customerName,

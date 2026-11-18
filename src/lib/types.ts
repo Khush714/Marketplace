@@ -143,6 +143,13 @@ export interface OrderDto {
   code: string;
   restaurantSlug: string;
   restaurantName: string;
+  /** Public neighbourhood, shown when a customer collects an order in store. */
+  restaurantLocality: string;
+  /**
+   * How the customer receives this order. Merchant-managed orders can be
+   * switched by the restaurant; every other order keeps the delivery timeline.
+   */
+  fulfilment: "pickup" | "delivery";
   /** Internal ids — never surfaced in the customer tracking payload. */
   restaurantId: number;
   externalOrderId: string | null;

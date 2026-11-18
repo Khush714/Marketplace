@@ -5,15 +5,16 @@ import { merchantOrderEvents, orders, restaurants } from "@/db/schema";
 import { recordIntegrationAudit } from "@/db/queries";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
 
-export const MERCHANT_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "COMPLETED", "REJECTED", "CANCELLED"] as const;
+export const MERCHANT_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY", "COMPLETED", "REJECTED", "CANCELLED"] as const;
 export type MerchantOrderStatus = (typeof MERCHANT_ORDER_STATUSES)[number];
-const ACTIVE: MerchantOrderStatus[] = ["PLACED", "ACCEPTED", "PREPARING", "READY"];
+const ACTIVE: MerchantOrderStatus[] = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY"];
 const TERMINAL = new Set<MerchantOrderStatus>(["COMPLETED", "REJECTED", "CANCELLED"]);
 const TRANSITIONS: Record<MerchantOrderStatus, readonly MerchantOrderStatus[]> = {
   PLACED: ["ACCEPTED", "REJECTED", "CANCELLED"],
   ACCEPTED: ["PREPARING", "CANCELLED"],
   PREPARING: ["READY", "CANCELLED"],
-  READY: ["COMPLETED", "CANCELLED"],
+  READY: ["OUT_FOR_DELIVERY", "COMPLETED", "CANCELLED"],
+  OUT_FOR_DELIVERY: ["COMPLETED", "CANCELLED"],
   COMPLETED: [], REJECTED: [], CANCELLED: [],
 };
 
@@ -109,14 +110,26 @@ export async function transitionMerchantOrder(input: {
     if (!current) return { kind: "NOT_FOUND" } as const;
     if (current.merchantStatus !== input.expectedStatus) return { kind: "CONFLICT" } as const;
     if (TERMINAL.has(current.merchantStatus as MerchantOrderStatus)) return { kind: "INVALID_TRANSITION" } as const;
-    // A merchant may complete only pickup orders. Delivery completion requires a trusted fulfilment event.
-    if (input.nextStatus === "COMPLETED" && current.merchantFulfilment !== "pickup") return { kind: "INVALID_TRANSITION" } as const;
+    // Only a delivery order can be dispatched to a rider, and a delivery may
+    // only be completed once it has been sent out. Pickup keeps its direct
+    // ready → completed handoff.
+    if (input.nextStatus === "OUT_FOR_DELIVERY" && current.merchantFulfilment !== "delivery") return { kind: "INVALID_TRANSITION" } as const;
+    if (input.nextStatus === "COMPLETED" && current.merchantFulfilment !== "pickup" && current.merchantStatus !== "OUT_FOR_DELIVERY") return { kind: "INVALID_TRANSITION" } as const;
 
     const [updated] = await tx.update(orders).set({
       merchantStatus: input.nextStatus,
       merchantStatusUpdatedAt: now,
       ...(input.nextStatus === "ACCEPTED" ? { merchantPrepMinutes: input.prepMinutes! } : {}),
       ...(input.nextStatus === "REJECTED" ? { merchantRejectionReason: input.reason!.trim().slice(0, 250) } : {}),
+      // Mirror to POS/integration status for true bidirectional sync
+      ...(input.nextStatus === "ACCEPTED" ? { integrationStatus: "ACCEPTED" } : {}),
+      ...(input.nextStatus === "PREPARING" ? { integrationStatus: "PREPARING" } : {}),
+      ...(input.nextStatus === "READY" ? { integrationStatus: "READY" } : {}),
+      ...(input.nextStatus === "OUT_FOR_DELIVERY" ? { integrationStatus: "OUT_FOR_DELIVERY" } : {}),
+      ...(input.nextStatus === "COMPLETED" ? { integrationStatus: "COMPLETED" } : {}),
+      ...(input.nextStatus === "REJECTED" ? { integrationStatus: "REJECTED" } : {}),
+      ...(input.nextStatus === "CANCELLED" ? { integrationStatus: "CANCELLED" } : {}),
+      statusUpdatedAt: now,
     }).where(and(eq(orders.id, current.id), eq(orders.restaurantId, input.restaurantId), eq(orders.merchantStatus, input.expectedStatus)))
       .returning({ code: orders.code, externalOrderId: orders.externalOrderId, merchantStatus: orders.merchantStatus, merchantStatusUpdatedAt: orders.merchantStatusUpdatedAt, merchantPrepMinutes: orders.merchantPrepMinutes, merchantRejectionReason: orders.merchantRejectionReason });
     if (!updated) return { kind: "CONFLICT" } as const;
@@ -155,6 +168,111 @@ export async function transitionMerchantOrder(input: {
 }
 
 
+export type MerchantFulfilment = "pickup" | "delivery";
+export const MERCHANT_FULFILMENTS = ["pickup", "delivery"] as const;
+
+export type MerchantFulfilmentResult =
+  | { ok: true; order: { code: string; status: MerchantOrderStatus; statusUpdatedAt: string; prepMinutes: number | null; rejectionReason: string | null; fulfilment: MerchantFulfilment; addressText: string } }
+  | { ok: false; reason: "NOT_FOUND" | "CONFLICT" | "INVALID_TRANSITION" | "INVALID_INPUT" | "FULFILMENT_DISABLED" | "ADDRESS_REQUIRED" };
+
+/**
+ * Changes how an active merchant-managed order is fulfilled.
+ *
+ * The merchant may switch between pickup and delivery while the order is still
+ * in flight. Terminal orders are read-only, the target option must be enabled
+ * for the restaurant, and delivery requires a reachable address. The change is
+ * recorded against the order's current status so the audit trail keeps the
+ * fulfilment history without inventing a status transition.
+ */
+export async function updateMerchantOrderFulfilment(input: {
+  restaurantId: number;
+  orderCode: string;
+  fulfilment: MerchantFulfilment;
+  addressText?: string;
+}): Promise<MerchantFulfilmentResult> {
+  if (!(MERCHANT_FULFILMENTS as readonly string[]).includes(input.fulfilment)) return { ok: false, reason: "INVALID_INPUT" };
+  const addressText = input.addressText?.trim().slice(0, 500) ?? "";
+  const result = await db.transaction(async (tx) => {
+    const [current] = await tx.select().from(orders)
+      .where(and(eq(orders.code, input.orderCode), eq(orders.restaurantId, input.restaurantId), eq(orders.merchantManaged, true)))
+      .limit(1).for("update");
+    if (!current) return { kind: "NOT_FOUND" } as const;
+    if (TERMINAL.has(current.merchantStatus as MerchantOrderStatus)) return { kind: "INVALID_TRANSITION" } as const;
+    // Once a delivery is with the rider it can no longer become a pickup; an
+    // address correction is still allowed through the same path.
+    if (current.merchantStatus === "OUT_FOR_DELIVERY" && input.fulfilment === "pickup") return { kind: "INVALID_TRANSITION" } as const;
+
+    const [restaurant] = await tx.select({
+      pickupEnabled: restaurants.merchantPickupEnabled,
+      deliveryEnabled: restaurants.merchantDeliveryEnabled,
+    }).from(restaurants).where(eq(restaurants.id, input.restaurantId)).limit(1);
+    if (!restaurant) return { kind: "NOT_FOUND" } as const;
+    if (input.fulfilment === "pickup" && !restaurant.pickupEnabled) return { kind: "FULFILMENT_DISABLED" } as const;
+    if (input.fulfilment === "delivery" && !restaurant.deliveryEnabled) return { kind: "FULFILMENT_DISABLED" } as const;
+
+    const currentFulfilment: MerchantFulfilment = current.merchantFulfilment === "pickup" ? "pickup" : "delivery";
+    const nextAddress = addressText || current.addressText;
+    if (input.fulfilment === "delivery" && !nextAddress.trim()) return { kind: "ADDRESS_REQUIRED" } as const;
+
+    const fulfilmentChanged = input.fulfilment !== currentFulfilment;
+    const addressChanged = Boolean(addressText) && addressText !== current.addressText;
+    if (!fulfilmentChanged && !addressChanged) return { kind: "UNCHANGED", order: current } as const;
+
+    const [updated] = await tx.update(orders).set({
+      merchantFulfilment: input.fulfilment,
+      ...(addressChanged ? { addressText: nextAddress } : {}),
+    }).where(and(eq(orders.id, current.id), eq(orders.restaurantId, input.restaurantId))).returning({
+      code: orders.code,
+      merchantStatus: orders.merchantStatus,
+      merchantStatusUpdatedAt: orders.merchantStatusUpdatedAt,
+      merchantPrepMinutes: orders.merchantPrepMinutes,
+      merchantRejectionReason: orders.merchantRejectionReason,
+      merchantFulfilment: orders.merchantFulfilment,
+      addressText: orders.addressText,
+    });
+    if (!updated) return { kind: "CONFLICT" } as const;
+
+    const reason = fulfilmentChanged
+      ? `Fulfilment changed from ${currentFulfilment} to ${input.fulfilment} by merchant`
+      : "Delivery address updated by merchant";
+    await tx.insert(merchantOrderEvents).values({
+      orderId: current.id,
+      restaurantId: input.restaurantId,
+      fromStatus: current.merchantStatus,
+      toStatus: current.merchantStatus,
+      reason: reason.slice(0, 250),
+    });
+    return { kind: "UPDATED", updated, previousFulfilment: currentFulfilment } as const;
+  });
+
+  if (result.kind === "NOT_FOUND") return { ok: false, reason: "NOT_FOUND" };
+  if (result.kind === "CONFLICT") return { ok: false, reason: "CONFLICT" };
+  if (result.kind === "INVALID_TRANSITION") return { ok: false, reason: "INVALID_TRANSITION" };
+  if (result.kind === "FULFILMENT_DISABLED") return { ok: false, reason: "FULFILMENT_DISABLED" };
+  if (result.kind === "ADDRESS_REQUIRED") return { ok: false, reason: "ADDRESS_REQUIRED" };
+
+  const updated = result.kind === "UPDATED" ? result.updated : result.order;
+  if (result.kind === "UPDATED") {
+    await recordIntegrationAudit(input.restaurantId, "MERCHANT_ORDER_FULFILMENT_UPDATED", { actor: "partner" }, {
+      order_code: updated.code,
+      from_fulfilment: result.previousFulfilment,
+      to_fulfilment: input.fulfilment,
+    }).catch(() => undefined);
+  }
+  return {
+    ok: true,
+    order: {
+      code: updated.code,
+      status: updated.merchantStatus as MerchantOrderStatus,
+      statusUpdatedAt: updated.merchantStatusUpdatedAt.toISOString(),
+      prepMinutes: updated.merchantPrepMinutes,
+      rejectionReason: updated.merchantRejectionReason,
+      fulfilment: updated.merchantFulfilment === "pickup" ? "pickup" : "delivery",
+      addressText: updated.addressText,
+    },
+  };
+}
+
 /** Server-derived overview metrics for the connected Merchant App. */
 export async function getMerchantOrderSummary(restaurantId: number) {
   const date = new Intl.DateTimeFormat("en-CA", {
@@ -172,13 +290,13 @@ export async function getMerchantOrderSummary(restaurantId: number) {
     db.select({ count: sql<number>`count(*)::int` }).from(orders)
       .where(and(scope, gte(orders.createdAt, startOfDay))),
     db.select({ count: sql<number>`count(*)::int`, total: sql<number>`coalesce(sum(${orders.totalCents}), 0)::bigint`.mapWith(Number) })
-      .from(orders).where(and(scope, eq(orders.merchantStatus, "COMPLETED"), gte(orders.merchantStatusUpdatedAt, startOfDay))),
+      .from(orders).where(and(scope, inArray(orders.merchantStatus, ["COMPLETED", "DELIVERED"]), gte(orders.merchantStatusUpdatedAt, startOfDay))),
     db.select({ code: orders.code }).from(orders)
       .where(and(scope, eq(orders.merchantStatus, "PLACED")))
       .orderBy(desc(orders.createdAt)).limit(1),
   ]);
-  const counts: Record<string, number> = { new: 0, accepted: 0, preparing: 0, ready: 0, completed: 0, rejected: 0, cancelled: 0 };
-  const map: Record<string, string> = { PLACED: "new", ACCEPTED: "accepted", PREPARING: "preparing", READY: "ready", COMPLETED: "completed", REJECTED: "rejected", CANCELLED: "cancelled" };
+  const counts: Record<string, number> = { new: 0, accepted: 0, preparing: 0, ready: 0, out_for_delivery: 0, completed: 0, rejected: 0, cancelled: 0 };
+  const map: Record<string, string> = { PLACED: "new", ACCEPTED: "accepted", PREPARING: "preparing", READY: "ready", OUT_FOR_DELIVERY: "out_for_delivery", COMPLETED: "completed", DELIVERED: "completed", REJECTED: "rejected", CANCELLED: "cancelled" };
   for (const group of groups) {
     const key = map[group.status];
     if (key) counts[key] = Number(group.count);

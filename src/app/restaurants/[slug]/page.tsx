@@ -160,7 +160,7 @@ export default async function RestaurantPage(props: {
                 </span>
                 <div>
                   <p className="text-sm font-bold text-ember-300">{r.offer}</p>
-                  <p className="text-xs text-cream-500">Auto-applied at checkout</p>
+                  <p className="text-xs text-cream-500">Select this offer at checkout</p>
                 </div>
               </div>
             )}

@@ -1,4 +1,5 @@
 import "server-only";
+import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { externalOrderIdFor } from "@/db/pos-delivery";
@@ -13,6 +14,7 @@ import {
   menuItemModifierGroups,
   menuItems,
   merchantAppLinks,
+  merchantAuthorizationCodes,
   modifierGroups,
   modifierOptions,
   orders,
@@ -221,6 +223,82 @@ const MAINLINE_STAGE_KEYS = [
 ];
 
 /**
+ * Pickup lifecycle. Collection never has a courier step, so it gets its own
+ * stage vocabulary rather than borrowing the delivery timeline and hiding the
+ * last two steps: `collected` is a distinct terminal outcome, and `ready` means
+ * "come and get it" instead of "packed for dispatch".
+ */
+const PICKUP_TRACKING_STAGES: Record<string, OrderLifecycleStage> = {
+  PLACED: {
+    stageIndex: 0,
+    stageKey: "placed",
+    stageLabel: "Order placed",
+    stageSub: "Waiting for the restaurant to accept",
+    delivered: false,
+    riderProgress: 0,
+  },
+  ACCEPTED: {
+    stageIndex: 1,
+    stageKey: "accepted",
+    stageLabel: "Order accepted",
+    stageSub: "The restaurant confirmed your order",
+    delivered: false,
+    riderProgress: 0,
+  },
+  PREPARING: {
+    stageIndex: 2,
+    stageKey: "preparing",
+    stageLabel: "Being prepared",
+    stageSub: "Chefs are on it",
+    delivered: false,
+    riderProgress: 0,
+  },
+  READY: {
+    stageIndex: 3,
+    stageKey: "ready",
+    stageLabel: "Ready for pickup",
+    stageSub: "Show your order code at the counter",
+    delivered: false,
+    riderProgress: 0,
+  },
+  COMPLETED: {
+    stageIndex: 4,
+    stageKey: "collected",
+    stageLabel: "Collected",
+    stageSub: "Thanks for picking up your order",
+    delivered: true,
+    riderProgress: 0,
+  },
+  CANCELLED: {
+    stageIndex: 5,
+    stageKey: "cancelled",
+    stageLabel: "Order cancelled",
+    stageSub: "This order was cancelled",
+    delivered: false,
+    riderProgress: 0,
+  },
+  REJECTED: {
+    stageIndex: 6,
+    stageKey: "rejected",
+    stageLabel: "Order rejected",
+    stageSub: "The restaurant couldn't take this order",
+    delivered: false,
+    riderProgress: 0,
+  },
+};
+
+const PICKUP_MAINLINE_STAGE_KEYS = ["PLACED", "ACCEPTED", "PREPARING", "READY", "COMPLETED"];
+
+function pickupStagesFor(current: string): OrderLifecycleStage[] {
+  const reachedIndex =
+    current === "CANCELLED" ? 2 : current === "REJECTED" ? 0 : Math.min(4, Math.max(0, statusRank(current)));
+  return PICKUP_MAINLINE_STAGE_KEYS.map((key) => {
+    const s = PICKUP_TRACKING_STAGES[key];
+    return { ...s, delivered: s.stageIndex <= reachedIndex };
+  });
+}
+
+/**
  * Full canonical step list for the tracking UI, derived solely from the current
  * order status (spec: no mapping lives in components). Terminals show the
  * mainline reached so far plus their own settlement step.
@@ -241,13 +319,17 @@ function integrationStagesFor(current: string): OrderLifecycleStage[] {
 /** Customer tracking projection for orders managed by the Savour Merchant App. */
 function merchantOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
   const current = o.merchantStatus || "PLACED";
-  const stage = INTEGRATION_TRACKING_STAGES[current] ?? INTEGRATION_TRACKING_STAGES.PLACED;
-  const etaSeconds = current === "READY" ? 900 : current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0;
+  const pickup = o.merchantFulfilment === "pickup";
+  const stagesByStatus = pickup ? PICKUP_TRACKING_STAGES : INTEGRATION_TRACKING_STAGES;
+  const stage = stagesByStatus[current] ?? stagesByStatus.PLACED;
+  const etaSeconds = pickup
+    ? current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0
+    : current === "OUT_FOR_DELIVERY" ? 1200 : current === "READY" ? 900 : current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0;
   const cancellable = current === "PLACED" || current === "ACCEPTED";
-  const stages = integrationStagesFor(current);
+  const stages = pickup ? pickupStagesFor(current) : integrationStagesFor(current);
   return {
     ...stage,
-    stageSub: current === "READY" ? "Your order is ready for pickup or dispatch" : stage.stageSub,
+    stageSub: current === "READY" && !pickup ? "Your order is ready for pickup or dispatch" : stage.stageSub,
     etaIso: new Date(Date.now() + etaSeconds * 1000).toISOString(),
     etaSeconds,
     statusUpdatedAt: o.merchantStatusUpdatedAt ? new Date(o.merchantStatusUpdatedAt).toISOString() : null,
@@ -270,7 +352,7 @@ const INTEGRATION_ETA_SECONDS: Record<string, number> = {
   REJECTED: 0,
 };
 
-function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
+function toOrderDto(o: typeof orders.$inferSelect, restaurantLocality = ""): OrderDto {
   // `posConnected`, not `externalOrderId` — see the column comment. Only an
   // order admitted through a live POS integration is driven by POS events; a
   // seeded/demo order keeps the elapsed-time timeline it was always meant to
@@ -287,6 +369,8 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
     code: o.code,
     restaurantSlug: o.restaurantSlug,
     restaurantName: o.restaurantName,
+    restaurantLocality,
+    fulfilment: o.merchantManaged && o.merchantFulfilment === "pickup" ? "pickup" : "delivery",
     restaurantId: o.restaurantId,
     externalOrderId: o.externalOrderId,
     // Snapshots freeze the item at order time; re-sanitising on the way out
@@ -1758,7 +1842,7 @@ export async function listIntegrationOrders(restaurantId: number, limit = 30): P
     .where(eq(orders.restaurantId, restaurantId))
     .orderBy(desc(orders.createdAt))
     .limit(limit);
-  return rows.map(toOrderDto);
+  return rows.map((row) => toOrderDto(row));
 }
 
 /* ------------------------------- identity -------------------------------- */
@@ -2790,6 +2874,8 @@ export interface DroppedCartItem {
 export interface CreateOrderInput {
   restaurantSlug: string;
   items: CartLineSubmit[];
+  /** Customer opt-in for the restaurant offer. Never inferred from the cart. */
+  applyOffer?: boolean;
   /** Absent → the row's "Home" default applies. */
   addressLabel?: string;
   addressText: string;
@@ -2849,10 +2935,13 @@ function withinMerchantHours(restaurant: typeof restaurants.$inferSelect, now = 
 export async function computeBill(
   restaurantSlug: string,
   items: CartLineSubmit[],
+  applyOffer = false,
 ): Promise<
   | {
       ok: true;
       restaurant: typeof restaurants.$inferSelect;
+      offer: string | null;
+      offerAvailable: boolean;
       lines: {
         menuItem: typeof menuItems.$inferSelect;
         quantity: number;
@@ -2961,8 +3050,16 @@ export async function computeBill(
     lines.push({ menuItem: m, quantity: qty, stalePrice, modifiers: priced });
   }
 
-  const bill = billFor(subtotal, r.offerPercent, r.offerMaxCents);
-  return { ok: true, restaurant: r, lines, bill, dropped };
+  const bill = billFor(subtotal, r.offerPercent, r.offerMaxCents, applyOffer);
+  return {
+    ok: true,
+    restaurant: r,
+    offer: r.offer,
+    offerAvailable: r.offerPercent > 0 || r.offerMaxCents > 0,
+    lines,
+    bill,
+    dropped,
+  };
 }
 
 /** Load active modifier scopes (group + available options) for menu items. */
@@ -3089,7 +3186,7 @@ export async function createOrder(
   // single time it is ever available.
   const trackingToken = makeTrackingToken();
 
-  const computed = await computeBill(input.restaurantSlug, input.items);
+  const computed = await computeBill(input.restaurantSlug, input.items, input.applyOffer === true);
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
 
@@ -3194,17 +3291,23 @@ export async function getIntegrationOrderByCodeForRestaurant(
   code: string,
   restaurantId: number,
 ): Promise<OrderDto | null> {
-  const [o] = await db
-    .select()
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(and(eq(orders.code, code.toUpperCase()), eq(orders.restaurantId, restaurantId)))
     .limit(1);
-  return o ? toOrderDto(o) : null;
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 export async function getOrderByCode(code: string): Promise<OrderDto | null> {
-  const [o] = await db.select().from(orders).where(eq(orders.code, code.toUpperCase())).limit(1);
-  return o ? toOrderDto(o) : null;
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
+    .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
+    .where(eq(orders.code, code.toUpperCase()))
+    .limit(1);
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 /**
@@ -3214,12 +3317,13 @@ export async function getOrderByCode(code: string): Promise<OrderDto | null> {
  * so a leaked query log cannot be used as a working tracking URL either.
  */
 export async function getOrderByTrackingToken(token: string): Promise<OrderDto | null> {
-  const [o] = await db
-    .select()
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(eq(orders.trackingTokenHash, hashTrackingToken(token)))
     .limit(1);
-  return o ? toOrderDto(o) : null;
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 export interface OrderCancelContext {
@@ -3272,10 +3376,62 @@ export async function listOrders(codes: string[]): Promise<OrderDto[]> {
   if (!codes.length) return [];
   const upper = codes.map((c) => c.toUpperCase());
   const rows = await db
-    .select()
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(inArray(orders.code, upper))
     .orderBy(desc(orders.createdAt))
     .limit(30);
-  return rows.map(toOrderDto);
+  return rows.map((row) => toOrderDto(row.order, row.locality));
+}
+
+/**
+ * Merchant App link flow — the authorization half.
+ *
+ * The partner session mints a 32-byte code, hands it to the Merchant App in a
+ * redirect, and the App posts it back with the PKCE verifier. Only the hash of
+ * the code is stored, so the redirect is the one and only place the plaintext
+ * ever exists. Ten minutes is short enough that a leaked redirect URL is a
+ * narrow window and long enough to survive a slow app switch.
+ */
+const MERCHANT_AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
+
+/** Mint a single-use authorization code bound to a restaurant and PKCE challenge. */
+export async function createMerchantAuthorizationCode(
+  restaurantId: number,
+  codeChallenge: string,
+): Promise<string> {
+  const code = randomBytes(32).toString("base64url");
+  await db.insert(merchantAuthorizationCodes).values({
+    codeHash: hashToken(code),
+    restaurantId,
+    codeChallenge,
+    expiresAt: new Date(Date.now() + MERCHANT_AUTHORIZATION_TTL_MS),
+  });
+  return code;
+}
+
+/**
+ * Redeem an authorization code. Returns the restaurant id on success.
+ *
+ * The conditions live in the UPDATE itself rather than in a read-then-write, so
+ * two concurrent exchanges of the same code cannot both win: the first sets
+ * `consumed_at`, and the second matches no row and returns null. Expiry is
+ * checked in the same statement for the same reason.
+ */
+export async function consumeMerchantAuthorizationCode(
+  code: string,
+  codeChallenge: string,
+): Promise<number | null> {
+  const [row] = await db
+    .update(merchantAuthorizationCodes)
+    .set({ consumedAt: new Date() })
+    .where(and(
+      eq(merchantAuthorizationCodes.codeHash, hashToken(code)),
+      eq(merchantAuthorizationCodes.codeChallenge, codeChallenge),
+      isNull(merchantAuthorizationCodes.consumedAt),
+      gt(merchantAuthorizationCodes.expiresAt, new Date()),
+    ))
+    .returning({ restaurantId: merchantAuthorizationCodes.restaurantId });
+  return row?.restaurantId ?? null;
 }

@@ -15,11 +15,11 @@ export async function POST(req: NextRequest) {
   const blocked = await guardWrite(req, "billPreview");
   if (blocked) return blocked;
 
-  let body: { restaurantSlug?: unknown; items?: unknown };
+  let body: { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown };
   {
     const parsed = await readJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    body = parsed.body as { restaurantSlug?: unknown; items?: unknown };
+    body = parsed.body as { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown };
   }
 
   const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
@@ -40,7 +40,10 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: false, error: cart.error, code: cart.code }, { status: 400 });
   }
 
-  const result = await computeBill(restaurantSlug, cart.items);
+  // Offers are opt-in: a literal `true` is the customer's selection, anything
+  // else leaves the offer unapplied. computeBill is the same path createOrder
+  // uses, so the preview and the charge cannot disagree.
+  const result = await computeBill(restaurantSlug, cart.items, body?.applyOffer === true);
   if (!result.ok) {
     // Same status mapping as POST /api/orders: an integration/outlet refusal is
     // 422 (the client's request named a restaurant that cannot take the order),
@@ -49,5 +52,10 @@ export async function POST(req: NextRequest) {
       result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
     return Response.json({ ok: false, error: result.error, code: result.code }, { status });
   }
-  return Response.json({ ok: true, bill: result.bill });
+  return Response.json({
+    ok: true,
+    bill: result.bill,
+    offer: result.offer,
+    offerAvailable: result.offerAvailable,
+  });
 }

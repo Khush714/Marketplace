@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronDown, MapPin, ShoppingBag, CircleUserRound } from "lucide-react";
+import { ChevronDown, MapPin, ShoppingBag, CircleUserRound, Store } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
@@ -74,6 +74,13 @@ export function SiteHeader() {
             </span>
           </button>
           <div className="flex items-center gap-2">
+            <Link
+              href="/partner/merchant-app"
+              aria-label="Merchant App integration"
+              className="grid size-10 place-items-center rounded-full glass text-cream-300 press"
+            >
+              <Store className="size-5" />
+            </Link>
             <HeaderCart itemCount={itemCount} bump={bump} />
             <Link
               href="/profile"
@@ -109,6 +116,13 @@ export function SiteHeader() {
         <SearchTrigger className="hidden md:flex md:min-w-0 md:flex-1 md:max-w-md md:mx-auto" />
 
         <div className="hidden items-center gap-2.5 md:flex">
+          <Link
+            href="/partner/merchant-app"
+            className="press flex items-center gap-1.5 rounded-full glass px-4 py-2 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/10"
+          >
+            <Store className="size-[18px] text-ember-300" />
+            Merchant App
+          </Link>
           <HeaderCart itemCount={itemCount} bump={bump} labelled />
           <Link
             href="/profile"
