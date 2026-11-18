@@ -81,6 +81,15 @@ export const ABUSE_BUDGETS = {
   restaurants: { limit: 240, windowMs: MINUTE_MS },
 
   /**
+   * Merchant-created offers for one listing. Fetched on the restaurant page and
+   * again at checkout, so it is a genuine per-customer read — but each call runs
+   * a redemption COUNT and returns only a handful of rows. Generous enough for
+   * back-navigation and cart edits, bounded against a scrape of every listing's
+   * promotion library.
+   */
+  merchantOffers: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Owner-key verification. The key is 18 random bytes, so guessing is not the
    * risk; *submitting* guesses is. This is the credential-check endpoint an
    * attacker scripts against to test a leaked or harvested key, and it returns a

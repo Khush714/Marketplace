@@ -4,6 +4,7 @@ import {
   createMerchantOffer,
   findMerchantOffer,
   listMerchantOffers,
+  redemptionCountsForRestaurant,
   updateMerchantOffer,
 } from "@/db/merchant-offers";
 import { guardBudget, readJsonBody } from "@/lib/abuse";
@@ -38,9 +39,15 @@ async function jsonBody(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const result = await auth(req, false);
   if ("response" in result) return result.response;
-  const rows = await listMerchantOffers(result.merchant.restaurantId);
+  const [rows, redemptions] = await Promise.all([
+    listMerchantOffers(result.merchant.restaurantId),
+    redemptionCountsForRestaurant(result.merchant.restaurantId),
+  ]);
   return Response.json(
-    { offers: rows.map((row) => merchantOfferDto(row, result.merchant.businessId)) },
+    {
+      offers: rows.map((row) =>
+        merchantOfferDto(row, result.merchant.businessId, redemptions.get(row.code) ?? 0)),
+    },
     { headers: { "Cache-Control": "no-store" } },
   );
 }

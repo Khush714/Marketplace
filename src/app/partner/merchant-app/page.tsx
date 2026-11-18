@@ -36,6 +36,9 @@ export default function PartnerMerchantAppPage() {
   }, []);
 
   useEffect(() => {
+    // The initial load is the external-system sync this effect exists for; the
+    // loading flag is set by the async fetch it starts, not by render state.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     if (session.status === "signed-in") void load();
   }, [session.status, load]);
 

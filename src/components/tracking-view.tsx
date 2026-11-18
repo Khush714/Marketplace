@@ -388,7 +388,7 @@ export function TrackingView({
               </div>
               {order.discountCents > 0 && (
                 <div className="flex justify-between text-mint-400">
-                  <dt>Restaurant offer</dt>
+                  <dt>{order.offerCode ? `Offer ${order.offerCode}` : "Restaurant offer"}</dt>
                   <dd className="tabular-nums">−{formatINR(order.discountCents)}</dd>
                 </div>
               )}

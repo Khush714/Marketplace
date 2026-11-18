@@ -176,6 +176,8 @@ export interface OrderDto {
   platformFeeCents: number;
   discountCents: number;
   totalCents: number;
+  /** Merchant App promo code used for this discount; null for legacy/no offer. */
+  offerCode: string | null;
   createdAt: string;
   status: OrderStatusDto;
 }

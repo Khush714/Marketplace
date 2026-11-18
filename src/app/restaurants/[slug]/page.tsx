@@ -7,8 +7,9 @@ import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
+import { listPublicMerchantOffersForSlug } from "@/db/merchant-offers";
 import { getRestaurant, hasActiveIntegration, hasActiveMerchantAppLink } from "@/db/queries";
-import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
+import { cn, formatDistance, formatINR, formatK, isUnrated, priceSymbol } from "@/lib/domain";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
 export const dynamic = "force-dynamic";
@@ -72,6 +73,10 @@ export default async function RestaurantPage(props: {
   if (!data) notFound();
 
   const { restaurant: r, sections } = data;
+  // The Merchant App owns the offer library; rendering the same rows here is
+  // what makes a promotion created in that app visible to shoppers. Selection
+  // stays explicit — these cards advertise codes, they never discount a cart.
+  const merchantOffers = await listPublicMerchantOffersForSlug(slug);
 
   // Same predicate checkout enforces, so the page never advertises an order
   // button that the checkout is about to reject. `orderingGateEnforced()` is
@@ -161,6 +166,44 @@ export default async function RestaurantPage(props: {
                 <div>
                   <p className="text-sm font-bold text-ember-300">{r.offer}</p>
                   <p className="text-xs text-cream-500">Select this offer at checkout</p>
+                </div>
+              </div>
+            )}
+
+            {merchantOffers.length > 0 && (
+              <div className="mt-4 border-t border-white/8 pt-4">
+                <p className="mb-2.5 text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500">
+                  Offers from this kitchen
+                </p>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {merchantOffers.map((offer) => (
+                    <div
+                      key={offer.id}
+                      className={cn(
+                        "rounded-2xl border px-3.5 py-3",
+                        offer.available
+                          ? "border-ember-400/25 bg-ember-500/8"
+                          : "border-white/10 bg-white/[0.03] opacity-70",
+                      )}
+                    >
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <p className="truncate text-[13px] font-bold text-ember-200">{offer.title}</p>
+                          <p className="mt-0.5 text-xs font-semibold text-cream-200">{offer.discountLabel}</p>
+                        </div>
+                        <code className="shrink-0 rounded-lg bg-black/25 px-2 py-1 text-[10px] font-bold tracking-wide text-ember-300">
+                          {offer.code}
+                        </code>
+                      </div>
+                      {offer.description && (
+                        <p className="mt-2 text-[11px] leading-snug text-cream-500">{offer.description}</p>
+                      )}
+                      <p className="mt-2 text-[11px] font-medium text-cream-400">
+                        {offer.minOrderCents > 0 && `Min order ${formatINR(offer.minOrderCents)} · `}
+                        {offer.available ? "Select at checkout" : offer.unavailableReason}
+                      </p>
+                    </div>
+                  ))}
                 </div>
               </div>
             )}

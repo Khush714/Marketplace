@@ -507,6 +507,13 @@ export const orders = pgTable(
     discountCents: integer("discount_cents").notNull().default(0),
     totalCents: integer("total_cents").notNull(),
     /**
+     * Canonical merchant-offer code applied at checkout, when one was used.
+     * Stamped from the server-evaluated promotion — never from a client-supplied
+     * discount — so usage limits and the Merchant App's redemptions count come
+     * from real orders. NULL for the legacy restaurant offer or no discount.
+     */
+    offerCode: text("offer_code"),
+    /**
      * Client-supplied idempotency key: the first order carrying a given key
      * wins; retries return the same order instead of creating a duplicate.
      */
@@ -581,6 +588,10 @@ export const orders = pgTable(
     // Phase 10 (10.3): cross-restaurant recency/time-range scans, which the
     // composite cannot serve because created_at is not its leading column.
     index("orders_created_at_idx").on(t.createdAt),
+    // Redemption counts for merchant offers are always restaurant-scoped. The
+    // composite's leading column also serves plain restaurant lookups, and its
+    // suffix serves the per-code COUNT at offer validation time.
+    index("orders_restaurant_offer_code_idx").on(t.restaurantId, t.offerCode),
     index("orders_restaurant_merchant_status_created_idx").on(t.restaurantId, t.merchantStatus, t.createdAt),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),

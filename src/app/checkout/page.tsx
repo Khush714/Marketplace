@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -19,13 +19,16 @@ import {
   Plus,
   ShieldCheck,
   Smartphone,
+  Tag,
   TriangleAlert,
   Truck,
+  X,
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { PaymentStage } from "@/components/payment-stage";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
+import { parseOfferCode, type PublicMerchantOffer } from "@/lib/merchant-offer";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
 import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
@@ -73,24 +76,45 @@ function cartLines(items: CartItem[]): CartLinePayload[] {
 }
 
 interface BillPreview {
-  bill: BillBreakdown;
-  offer: string | null;
-  offerAvailable: boolean;
+  ok?: boolean;
+  bill?: BillBreakdown;
+  offer?: string | null;
+  offerAvailable?: boolean;
+  promo?: PublicMerchantOffer | null;
+  promoCode?: string | null;
+  error?: string;
+  code?: string;
 }
+
+/**
+ * The bill route answers with structured errors (an expired code, a code that
+ * belongs to another kitchen, …). Returning the full body rather than collapsing
+ * a refusal to `null` is what lets the offer picker explain why a selection did
+ * not take instead of silently charging the undiscounted total.
+ */
+const PROMO_ERROR_CODES = new Set([
+  "INVALID_PROMO_CODE",
+  "PROMO_NOT_FOUND",
+  "OFFER_UNAVAILABLE",
+  "OFFER_NOT_STARTED",
+  "OFFER_ENDED",
+  "OFFER_EXHAUSTED",
+  "MIN_ORDER_NOT_MET",
+]);
 
 async function postBill(
   restaurantSlug: string,
   items: CartLinePayload[],
   applyOffer: boolean,
+  promoCode: string,
 ): Promise<BillPreview | null> {
   try {
     const res = await fetch("/api/orders/bill", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurantSlug, items, applyOffer }),
+      body: JSON.stringify({ restaurantSlug, items, applyOffer, promoCode }),
     });
-    const data = (await res.json()) as BillPreview & { ok?: boolean };
-    return res.ok && data.ok && data.bill ? data : null;
+    return (await res.json()) as BillPreview;
   } catch {
     return null;
   }
@@ -135,6 +159,13 @@ export default function CheckoutPage() {
   const [applyOffer, setApplyOffer] = useState(false);
   const [offer, setOffer] = useState<string | null>(null);
   const [offerAvailable, setOfferAvailable] = useState(false);
+  /** Merchant App promotions for this listing, published by the kitchen. */
+  const [merchantOffers, setMerchantOffers] = useState<PublicMerchantOffer[]>([]);
+  const [offersLoading, setOffersLoading] = useState(false);
+  const [promoCode, setPromoCode] = useState("");
+  const [promoInput, setPromoInput] = useState("");
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [appliedPromo, setAppliedPromo] = useState<PublicMerchantOffer | null>(null);
   const [placed, setPlaced] = useState<PlacedOrder | null>(null);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
@@ -153,22 +184,66 @@ export default function CheckoutPage() {
   const estimate = estimateBill(cart.subtotalCents);
   const totalCents = bill?.totalCents ?? estimate.total;
 
+  const applyPreview = useCallback((preview: BillPreview | null) => {
+    const promoFailed = Boolean(preview && preview.ok === false && preview.code && PROMO_ERROR_CODES.has(preview.code));
+    setBill(preview?.ok && preview.bill ? preview.bill : null);
+    setOffer(preview?.offer ?? null);
+    setOfferAvailable(preview?.offerAvailable ?? false);
+    setAppliedPromo(preview?.promo ?? null);
+    setPromoError(promoFailed ? preview?.error ?? "That offer could not be applied." : null);
+  }, []);
+
+  // Merchant-created promotions are public, but they are scoped to the listing
+  // in the cart. Loading them here (rather than at build time) means a code the
+  // kitchen creates or edits is visible on the very next checkout visit.
+  useEffect(() => {
+    if (!cart.hydrated || !cart.restaurantSlug) {
+      setMerchantOffers([]);
+      return;
+    }
+    let cancelled = false;
+    setOffersLoading(true);
+    fetch(`/api/restaurants/${encodeURIComponent(cart.restaurantSlug)}/offers`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : Promise.resolve({ offers: [] })))
+      .then((data: { offers?: PublicMerchantOffer[] }) => {
+        if (cancelled) return;
+        setMerchantOffers(Array.isArray(data.offers) ? data.offers : []);
+      })
+      .catch(() => {
+        if (!cancelled) setMerchantOffers([]);
+      })
+      .finally(() => {
+        if (!cancelled) setOffersLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [cart.hydrated, cart.restaurantSlug]);
+
+  // A code belongs to one kitchen. If the shopper swaps carts, drop the old
+  // selection instead of carrying a discount into a restaurant that never
+  // published it.
+  useEffect(() => {
+    setPromoCode("");
+    setPromoInput("");
+    setPromoError(null);
+    setAppliedPromo(null);
+  }, [cart.restaurantSlug]);
+
   // fetch the authoritative bill for the current cart (mirrors createOrder)
   useEffect(() => {
     if (!cart.hydrated || cart.items.length === 0) return;
     let cancelled = false;
     setBillLoading(true);
-    postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer).then((preview) => {
+    postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer, promoCode).then((preview) => {
       if (cancelled) return;
-      setBill(preview?.bill ?? null);
-      setOffer(preview?.offer ?? null);
-      setOfferAvailable(preview?.offerAvailable ?? false);
+      applyPreview(preview);
       setBillLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [cart.hydrated, cart.restaurantSlug, cart.items, applyOffer]);
+  }, [cart.hydrated, cart.restaurantSlug, cart.items, applyOffer, promoCode, applyPreview]);
 
   // 10s grace on the success screen before auto-navigating to the order
   useEffect(() => {
@@ -233,7 +308,36 @@ export default function CheckoutPage() {
   /** Everything needed to actually submit: contact, address and consent. */
   const detailsComplete =
     name.trim().length > 0 && phoneDigits.length >= 10 && effectiveAddressText.trim().length > 10;
-  const canPlace = detailsComplete && acceptedTerms;
+  // An unapplied code must not look successful: block the order until the shopper
+  // fixes or removes it. The server re-checks every code at order time anyway.
+  const canPlace = detailsComplete && acceptedTerms && !promoError;
+
+  const selectPromo = (code: string) => {
+    setPromoCode(code);
+    setPromoInput(code);
+    setPromoError(null);
+    // Only one discount per order. A promo selection replaces the legacy flag;
+    // ticking the legacy offer below clears the promo instead.
+    setApplyOffer(false);
+    setBill(null);
+  };
+
+  const clearPromo = () => {
+    setPromoCode("");
+    setPromoInput("");
+    setPromoError(null);
+    setAppliedPromo(null);
+    setBill(null);
+  };
+
+  const applyTypedPromo = () => {
+    const parsed = parseOfferCode(promoInput);
+    if (!parsed) {
+      setPromoError("Enter a valid offer code");
+      return;
+    }
+    selectPromo(parsed);
+  };
 
   /**
    * Create the order first, then take the money. For online payments the server
@@ -269,6 +373,8 @@ export default function CheckoutPage() {
           // Explicit customer selection; the server re-checks the literal and
           // recomputes the discount from the restaurant's own offer terms.
           applyOffer,
+          // Explicit code selection, re-resolved and repriced by the server.
+          promoCode,
           // The server re-checks this: `canPlace` only gates the button.
           acceptedTerms,
         }),
@@ -345,12 +451,10 @@ export default function CheckoutPage() {
     if (placeState === "loading") return;
     let target = bill;
     if (!target) {
-      const preview = await postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer);
-      if (preview) {
+      const preview = await postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer, promoCode);
+      if (preview?.ok && preview.bill) {
         target = preview.bill;
-        setBill(preview.bill);
-        setOffer(preview.offer);
-        setOfferAvailable(preview.offerAvailable);
+        applyPreview(preview);
       }
     }
     void placeOrder(payChoice);
@@ -647,8 +751,24 @@ export default function CheckoutPage() {
             )}
           </Section>
 
+          {/* ------------------------------ offers ------------------------------ */}
+          <Section step={4} title="Offers" Icon={Tag} optional>
+            <OfferPicker
+              offers={merchantOffers}
+              loading={offersLoading}
+              selectedCode={promoCode}
+              codeInput={promoInput}
+              error={promoError}
+              subtotalCents={cart.subtotalCents}
+              onCodeInput={setPromoInput}
+              onApplyCode={applyTypedPromo}
+              onSelect={selectPromo}
+              onClear={clearPromo}
+            />
+          </Section>
+
           {/* --------------------------- instructions --------------------------- */}
-          <Section step={4} title="Anything we should know?" Icon={NotebookPen} optional>
+          <Section step={5} title="Anything we should know?" Icon={NotebookPen} optional>
             <textarea
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
@@ -672,12 +792,16 @@ export default function CheckoutPage() {
             offer={offer}
             offerAvailable={offerAvailable}
             applyOffer={applyOffer}
+            promoCode={promoCode}
+            appliedPromo={appliedPromo}
             onToggleOffer={(value) => {
               // Drop the old preview so no stale total/discount is shown while
               // the authoritative bill for the new selection is fetched.
+              if (value) clearPromo();
               setApplyOffer(value);
               setBill(null);
             }}
+            onClearPromo={clearPromo}
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
@@ -784,6 +908,125 @@ function Section({
   );
 }
 
+function OfferPicker({
+  offers,
+  loading,
+  selectedCode,
+  codeInput,
+  error,
+  subtotalCents,
+  onCodeInput,
+  onApplyCode,
+  onSelect,
+  onClear,
+}: {
+  offers: PublicMerchantOffer[];
+  loading: boolean;
+  selectedCode: string;
+  codeInput: string;
+  error: string | null;
+  subtotalCents: number;
+  onCodeInput: (value: string) => void;
+  onApplyCode: () => void;
+  onSelect: (code: string) => void;
+  onClear: () => void;
+}) {
+  return (
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input
+          value={codeInput}
+          onChange={(e) => onCodeInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") {
+              e.preventDefault();
+              onApplyCode();
+            }
+          }}
+          placeholder="Have a code? Enter it here"
+          aria-label="Offer code"
+          className="min-w-0 flex-1 rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm uppercase tracking-wide text-cream-50 placeholder:normal-case placeholder:tracking-normal placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+        />
+        <button
+          type="button"
+          onClick={onApplyCode}
+          disabled={!codeInput.trim()}
+          className="press shrink-0 rounded-xl border border-ember-400/35 bg-ember-500/10 px-4 text-sm font-bold text-ember-200 transition-colors hover:bg-ember-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+        >
+          Apply
+        </button>
+      </div>
+      {error && <p className="text-xs font-medium text-chili-300">{error}</p>}
+
+      {loading ? (
+        <p className="text-xs text-cream-500">Loading this kitchen&apos;s offers…</p>
+      ) : offers.length === 0 ? (
+        <p className="text-xs text-cream-500">This kitchen has not published any offers.</p>
+      ) : (
+        <div className="grid gap-2 sm:grid-cols-2">
+          {offers.map((offer) => {
+            const shortfall = Math.max(0, offer.minOrderCents - subtotalCents);
+            const selected = selectedCode === offer.code;
+            const disabled = !offer.available || shortfall > 0;
+            return (
+              <button
+                key={offer.id}
+                type="button"
+                disabled={disabled}
+                onClick={() => onSelect(offer.code)}
+                className={cn(
+                  "press min-w-0 rounded-2xl border p-3 text-left transition-all duration-200",
+                  selected
+                    ? "border-mint-400/50 bg-mint-500/10"
+                    : disabled
+                      ? "cursor-not-allowed border-white/8 bg-white/[0.02] opacity-60"
+                      : "border-white/10 bg-white/[0.03] hover:border-ember-400/40 hover:bg-white/[0.06]",
+                )}
+              >
+                <span className="flex items-start justify-between gap-2">
+                  <span className="min-w-0">
+                    <span className="block truncate text-[13px] font-bold text-cream-100">{offer.title}</span>
+                    <span className="mt-0.5 block text-xs font-semibold text-ember-300">{offer.discountLabel}</span>
+                  </span>
+                  <code className="shrink-0 rounded-lg bg-black/25 px-2 py-1 text-[10px] font-bold tracking-wide text-ember-300">
+                    {offer.code}
+                  </code>
+                </span>
+                {offer.description && (
+                  <span className="mt-2 block text-[11px] leading-snug text-cream-500">{offer.description}</span>
+                )}
+                <span className="mt-2 block text-[11px] font-medium text-cream-400">
+                  {selected
+                    ? "Selected"
+                    : shortfall > 0
+                      ? `Add ${formatINR(shortfall)} more`
+                      : !offer.available
+                        ? offer.unavailableReason
+                        : "Select offer"}
+                </span>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {selectedCode && (
+        <button
+          type="button"
+          onClick={onClear}
+          className="press inline-flex items-center gap-1.5 text-xs font-semibold text-cream-400 transition-colors hover:text-cream-100"
+        >
+          <X className="size-3.5" /> Remove {selectedCode}
+        </button>
+      )}
+      <p className="text-[11px] leading-relaxed text-cream-600">
+        Offers are applied only when you select one. The final discount is recalculated from your
+        cart and the kitchen&apos;s offer terms when you place the order.
+      </p>
+    </div>
+  );
+}
+
 function CheckoutSummary({
   open,
   onToggle,
@@ -796,7 +1039,10 @@ function CheckoutSummary({
   offer,
   offerAvailable,
   applyOffer,
+  promoCode,
+  appliedPromo,
   onToggleOffer,
+  onClearPromo,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -809,7 +1055,10 @@ function CheckoutSummary({
   offer: string | null;
   offerAvailable: boolean;
   applyOffer: boolean;
+  promoCode: string;
+  appliedPromo: PublicMerchantOffer | null;
   onToggleOffer: (value: boolean) => void;
+  onClearPromo: () => void;
 }) {
   const cart = useCart();
   return (
@@ -842,7 +1091,8 @@ function CheckoutSummary({
         {discountCents > 0 && (
           <div className="flex items-center justify-between text-mint-400">
             <span className="flex items-center gap-1.5">
-              <BadgePercent className="size-3.5" /> Restaurant offer
+              <BadgePercent className="size-3.5" />
+              {promoCode ? `Offer ${promoCode}` : "Restaurant offer"}
             </span>
             <span className="font-semibold tabular-nums">−{formatINR(discountCents)}</span>
           </div>
@@ -864,7 +1114,27 @@ function CheckoutSummary({
           <span className="font-semibold text-cream-100 tabular-nums">{formatINR(platformFeeCents)}</span>
         </div>
       </div>
-      {offerAvailable && (
+      {promoCode && (
+        <div className="mt-4 flex items-center justify-between gap-2 rounded-xl border border-mint-400/25 bg-mint-500/8 px-3 py-2.5">
+          <span className="min-w-0">
+            <span className="block text-[13px] font-semibold text-mint-300">
+              {appliedPromo?.title ?? `Promo ${promoCode}`}
+            </span>
+            <span className="block text-[11px] text-cream-500">
+              Code {promoCode} · recalculated on the final bill
+            </span>
+          </span>
+          <button
+            type="button"
+            onClick={onClearPromo}
+            aria-label={`Remove offer ${promoCode}`}
+            className="press grid size-7 shrink-0 place-items-center rounded-lg text-cream-400 transition-colors hover:bg-white/8 hover:text-cream-100"
+          >
+            <X className="size-3.5" />
+          </button>
+        </div>
+      )}
+      {offerAvailable && !promoCode && (
         <label className="press mt-4 flex cursor-pointer items-start gap-2.5 rounded-xl border border-ember-400/25 bg-ember-500/8 px-3 py-2.5">
           <input
             type="checkbox"

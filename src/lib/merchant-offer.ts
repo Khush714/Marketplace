@@ -5,7 +5,14 @@
  * tests. The Merchant App sends the same shape its own editor uses; validating
  * again here is deliberate — the Marketplace is authoritative, so a modified
  * client must never be able to store a malformed or out-of-range promotion.
+ *
+ * The customer-facing half of this module is equally important: the codes shown
+ * on a listing and accepted at checkout are the very same rows, and the discount
+ * is recalculated from them on the server. A browser may propose a code, never
+ * a discount amount.
  */
+
+import { formatINR, type BillBreakdown } from "./domain";
 
 export type MerchantOfferInput = {
   code: string;
@@ -21,7 +28,7 @@ export type MerchantOfferInput = {
   active: boolean;
 };
 
-type MerchantOfferRow = {
+export type MerchantOfferRow = {
   id: string;
   code: string;
   title: string;
@@ -38,6 +45,39 @@ type MerchantOfferRow = {
   createdAt: Date;
   updatedAt: Date;
 };
+
+export type MerchantOfferIssue =
+  | "OFFER_UNAVAILABLE"
+  | "OFFER_NOT_STARTED"
+  | "OFFER_ENDED"
+  | "OFFER_EXHAUSTED";
+
+export type MerchantOfferErrorCode = MerchantOfferIssue | "MIN_ORDER_NOT_MET" | "INVALID_PROMO_CODE";
+
+export type MerchantOfferEvaluation =
+  | { ok: true; discountCents: number }
+  | { ok: false; code: MerchantOfferErrorCode; error: string };
+
+export interface PublicMerchantOffer {
+  id: string;
+  code: string;
+  title: string;
+  description: string;
+  discountType: "percent" | "flat";
+  value: number;
+  /** Ready-made customer copy, e.g. "20% off" or "₹100 off". */
+  discountLabel: string;
+  minOrderCents: number;
+  maxDiscountCents: number | null;
+  startsAt: string | null;
+  endsAt: string | null;
+  usageLimit: number | null;
+  redemptions: number;
+  remainingUses: number | null;
+  /** Schedule and usage only; cart-size eligibility is checked at checkout. */
+  available: boolean;
+  unavailableReason: string | null;
+}
 
 const CODE_PATTERN = /^[A-Z0-9_-]{3,40}$/;
 
@@ -78,8 +118,112 @@ export function parseMerchantOfferInput(body: Record<string, unknown>): Merchant
   return { code, title, description, discountType, value, minOrder, maxDiscount, startsAt, endsAt, usageLimit, active };
 }
 
+/**
+ * Normalise a customer-entered code to the canonical stored form. Unlike the
+ * merchant editor, a shopper is not told whether a code exists — an unusable
+ * code simply never resolves to a discount.
+ */
+export function parseOfferCode(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const code = raw.trim().toUpperCase();
+  return CODE_PATTERN.test(code) ? code : null;
+}
+
+/** The few codes that describe why an otherwise valid offer cannot be used. */
+function availabilityIssue(
+  row: MerchantOfferRow,
+  redemptions: number,
+  now: Date,
+): MerchantOfferIssue | null {
+  if (!row.active || row.archived) return "OFFER_UNAVAILABLE";
+  if (row.startsAt && now.getTime() < row.startsAt.getTime()) return "OFFER_NOT_STARTED";
+  if (row.endsAt && now.getTime() > row.endsAt.getTime()) return "OFFER_ENDED";
+  if (row.usageLimit !== null && redemptions >= row.usageLimit) return "OFFER_EXHAUSTED";
+  return null;
+}
+
+function issueMessage(issue: MerchantOfferIssue): string {
+  switch (issue) {
+    case "OFFER_NOT_STARTED": return "This offer is not live yet.";
+    case "OFFER_ENDED": return "This offer has ended.";
+    case "OFFER_EXHAUSTED": return "This offer has reached its usage limit.";
+    default: return "This offer is no longer available.";
+  }
+}
+
+/** Integer paise off, capped by the offer's own ceiling and never below zero. */
+export function merchantOfferDiscountCents(row: MerchantOfferRow, subtotalCents: number): number {
+  if (!Number.isFinite(subtotalCents) || subtotalCents <= 0) return 0;
+  const raw = row.discountType === "percent"
+    ? Math.round((subtotalCents * row.value) / 100)
+    : row.value;
+  const capped = row.maxDiscount === null ? raw : Math.min(raw, row.maxDiscount);
+  return Math.max(0, Math.min(capped, subtotalCents));
+}
+
+/**
+ * Single eligibility decision shared by the customer API and the authoritative
+ * bill. `minOrder` depends on the cart, so it is checked here rather than in the
+ * display-only DTO above.
+ */
+export function evaluateMerchantOffer(
+  row: MerchantOfferRow,
+  redemptions: number,
+  subtotalCents: number,
+  now = new Date(),
+): MerchantOfferEvaluation {
+  const issue = availabilityIssue(row, redemptions, now);
+  if (issue) return { ok: false, code: issue, error: issueMessage(issue) };
+  if (subtotalCents < row.minOrder) {
+    return {
+      ok: false,
+      code: "MIN_ORDER_NOT_MET",
+      error: `Add ${formatINR(row.minOrder - subtotalCents)} more to use ${row.code}.`,
+    };
+  }
+  const discountCents = merchantOfferDiscountCents(row, subtotalCents);
+  if (discountCents <= 0) return { ok: false, code: "OFFER_UNAVAILABLE", error: issueMessage("OFFER_UNAVAILABLE") };
+  return { ok: true, discountCents };
+}
+
+/** Re-price an authoritative bill after a merchant promo has been accepted. */
+export function billWithMerchantOffer(bill: BillBreakdown, discountCents: number): BillBreakdown {
+  return {
+    ...bill,
+    discountCents,
+    totalCents: bill.subtotalCents - discountCents + bill.deliveryFeeCents + bill.platformFeeCents,
+  };
+}
+
+/** Customer-safe projection: no internal ids, business ids or secrets. */
+export function publicMerchantOfferDto(
+  row: MerchantOfferRow,
+  redemptions: number,
+  now = new Date(),
+): PublicMerchantOffer {
+  const issue = availabilityIssue(row, redemptions, now);
+  return {
+    id: row.id,
+    code: row.code,
+    title: row.title,
+    description: row.description,
+    discountType: row.discountType === "flat" ? "flat" : "percent",
+    value: row.value,
+    discountLabel: row.discountType === "flat" ? `${formatINR(row.value)} off` : `${row.value}% off`,
+    minOrderCents: row.minOrder,
+    maxDiscountCents: row.maxDiscount,
+    startsAt: row.startsAt ? row.startsAt.toISOString() : null,
+    endsAt: row.endsAt ? row.endsAt.toISOString() : null,
+    usageLimit: row.usageLimit,
+    redemptions,
+    remainingUses: row.usageLimit === null ? null : Math.max(0, row.usageLimit - redemptions),
+    available: issue === null,
+    unavailableReason: issue ? issueMessage(issue) : null,
+  };
+}
+
 /** DTO consumed directly by the Merchant App's Offers screen. */
-export function merchantOfferDto(row: MerchantOfferRow, businessId: string) {
+export function merchantOfferDto(row: MerchantOfferRow, businessId: string, redemptions = 0) {
   return {
     id: row.id,
     businessId,
@@ -97,9 +241,10 @@ export function merchantOfferDto(row: MerchantOfferRow, businessId: string) {
     archived: row.archived,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    // Marketplace orders record the listing's discount but not a promo-code
-    // reference yet, so per-code attribution is not fabricated here.
-    redemptions: 0,
+    // Marketplace orders now stamp the chosen code, so the Merchant App can see
+    // real redemptions per promotion. Revenue attribution is still not derived
+    // here — that needs a full order-level report, not an offer row field.
+    redemptions,
     discountGiven: 0,
     influencedGross: 0,
   };

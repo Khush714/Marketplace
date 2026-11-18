@@ -2,6 +2,7 @@ import "server-only";
 import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
+import { findRedeemableMerchantOffer } from "@/db/merchant-offers";
 import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
   connectionCodes,
@@ -51,6 +52,13 @@ import { discoverableRestaurant } from "@/lib/discoverability";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "@/lib/security/security-events";
 import { MAX_ITEM_QUANTITY } from "@/lib/order-input-core";
+import {
+  billWithMerchantOffer,
+  evaluateMerchantOffer,
+  parseOfferCode,
+  publicMerchantOfferDto,
+  type PublicMerchantOffer,
+} from "@/lib/merchant-offer";
 import {
   blocksRedemption,
   normalizeConnectionCode,
@@ -395,6 +403,7 @@ function toOrderDto(o: typeof orders.$inferSelect, restaurantLocality = ""): Ord
     platformFeeCents: o.platformFeeCents,
     discountCents: o.discountCents,
     totalCents: o.totalCents,
+    offerCode: o.offerCode,
     createdAt: new Date(o.createdAt).toISOString(),
     status,
   };
@@ -2876,6 +2885,8 @@ export interface CreateOrderInput {
   items: CartLineSubmit[];
   /** Customer opt-in for the restaurant offer. Never inferred from the cart. */
   applyOffer?: boolean;
+  /** Selected Merchant App promo code. Re-resolved and repriced here, never trusted as a discount. */
+  promoCode?: string;
   /** Absent → the row's "Home" default applies. */
   addressLabel?: string;
   addressText: string;
@@ -2936,12 +2947,16 @@ export async function computeBill(
   restaurantSlug: string,
   items: CartLineSubmit[],
   applyOffer = false,
+  promoCode?: string,
 ): Promise<
   | {
       ok: true;
       restaurant: typeof restaurants.$inferSelect;
       offer: string | null;
       offerAvailable: boolean;
+      /** The resolved Merchant App promotion, when a code was selected. */
+      promo?: PublicMerchantOffer | null;
+      promoCode?: string | null;
       lines: {
         menuItem: typeof menuItems.$inferSelect;
         quantity: number;
@@ -3050,14 +3065,45 @@ export async function computeBill(
     lines.push({ menuItem: m, quantity: qty, stalePrice, modifiers: priced });
   }
 
+  const normalizedPromo = promoCode ? parseOfferCode(promoCode) : null;
+  if (promoCode && !normalizedPromo) {
+    return { ok: false, error: "Enter a valid offer code", code: "INVALID_PROMO_CODE" };
+  }
+
   const bill = billFor(subtotal, r.offerPercent, r.offerMaxCents, applyOffer);
+  if (!normalizedPromo) {
+    return {
+      ok: true,
+      restaurant: r,
+      offer: r.offer,
+      offerAvailable: r.offerPercent > 0 || r.offerMaxCents > 0,
+      lines,
+      bill,
+      dropped,
+    };
+  }
+
+  // A Merchant App code is an explicit alternative to the legacy listing offer,
+  // never a second discount stacked on top of it. Re-resolve the row by the
+  // restaurant AND the canonical code, then re-price from that row's rules; a
+  // client can no more name the percentage than it can name the total.
+  const found = await findRedeemableMerchantOffer(r.id, normalizedPromo);
+  if (!found) {
+    return { ok: false, error: "That offer is not available for this restaurant", code: "PROMO_NOT_FOUND" };
+  }
+  const evaluated = evaluateMerchantOffer(found.offer, found.redemptions, subtotal);
+  if (!evaluated.ok) return { ok: false, error: evaluated.error, code: evaluated.code };
+
+  const promo = publicMerchantOfferDto(found.offer, found.redemptions);
   return {
     ok: true,
     restaurant: r,
-    offer: r.offer,
-    offerAvailable: r.offerPercent > 0 || r.offerMaxCents > 0,
+    offer: promo.title,
+    offerAvailable: true,
+    promo,
+    promoCode: normalizedPromo,
     lines,
-    bill,
+    bill: billWithMerchantOffer(bill, evaluated.discountCents),
     dropped,
   };
 }
@@ -3186,7 +3232,12 @@ export async function createOrder(
   // single time it is ever available.
   const trackingToken = makeTrackingToken();
 
-  const computed = await computeBill(input.restaurantSlug, input.items, input.applyOffer === true);
+  const computed = await computeBill(
+    input.restaurantSlug,
+    input.items,
+    input.applyOffer === true,
+    input.promoCode,
+  );
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
 
@@ -3253,6 +3304,9 @@ export async function createOrder(
         platformFeeCents: bill.platformFeeCents,
         discountCents: bill.discountCents,
         totalCents: bill.totalCents,
+        // Only a server-resolved code is ever stamped. This is what makes the
+        // offer's usage limit and the Merchant App's redemption count real.
+        offerCode: computed.promoCode ?? null,
         clientRequestId,
         posConnected,
         merchantManaged,

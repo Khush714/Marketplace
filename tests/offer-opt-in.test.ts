@@ -2,6 +2,8 @@
  * Restaurant offers are opt-in: a customer must explicitly select one. The
  * authoritative bill, its preview and the stored order all use the same flag,
  * and no client-supplied value other than a literal `true` may opt in.
+ * Merchant-created codes are a separate, equally explicit selection: the client
+ * may name a code but never a discount amount.
  *
  * Run with: npm test
  */
@@ -64,19 +66,40 @@ test("checkout whitelist keeps applyOffer as a literal opt-in", () => {
   }
 });
 
+test("checkout whitelist normalises a promo code and rejects malformed ones", () => {
+  const selected = validateCheckout(checkoutBody({ promoCode: " welcome20 " }));
+  assert.ok(selected.ok);
+  if (selected.ok) assert.equal(selected.request.promoCode, "WELCOME20");
+
+  const empty = validateCheckout(checkoutBody({ promoCode: "  " }));
+  assert.ok(empty.ok);
+  if (empty.ok) assert.equal("promoCode" in empty.request, false);
+
+  for (const value of ["ab", "bad code", 123, { yes: true }]) {
+    const result = validateCheckout(checkoutBody({ promoCode: value }));
+    assert.equal(result.ok, false, `${String(value)} must be refused`);
+    if (!result.ok) assert.equal(result.code, "INVALID_PROMO_CODE");
+  }
+});
+
 test("offer selection reaches billFor through both pricing paths", () => {
   const queries = readSource("src/db/queries.ts");
-  assert.match(queries, /async function computeBill\(\s*restaurantSlug: string,\s*items: CartLineSubmit\[\],\s*applyOffer = false,/);
+  assert.match(queries, /async function computeBill\(\s*restaurantSlug: string,\s*items: CartLineSubmit\[\],\s*applyOffer = false,\s*promoCode\?: string,/);
   assert.match(queries, /billFor\(subtotal, r\.offerPercent, r\.offerMaxCents, applyOffer\)/);
-  assert.match(queries, /computeBill\(input\.restaurantSlug, input\.items, input\.applyOffer === true\)/);
+  assert.match(queries, /computeBill\(\s*input\.restaurantSlug,\s*input\.items,\s*input\.applyOffer === true,\s*input\.promoCode,\s*\)/);
   assert.match(queries, /applyOffer\?: boolean/);
+  // A promo is attributed from the server-resolved code, not from the request's
+  // discount field, and the same value survives into the customer's order DTO.
+  assert.match(queries, /offerCode: computed\.promoCode \?\? null/);
+  assert.match(queries, /offerCode: o\.offerCode/);
 
   const preview = readSource("src/app/api/orders/bill/route.ts");
-  assert.match(preview, /computeBill\(restaurantSlug, cart\.items, body\?\.applyOffer === true\)/);
+  assert.match(preview, /computeBill\(\s*restaurantSlug,\s*cart\.items,\s*body\?\.applyOffer === true,\s*promoCode \?\? undefined,\s*\)/);
 
   const checkout = readSource("src/app/checkout/page.tsx");
-  assert.match(checkout, /postBill\(cart\.restaurantSlug, cartLines\(cart\.items\), applyOffer\)/);
+  assert.match(checkout, /postBill\(cart\.restaurantSlug, cartLines\(cart\.items\), applyOffer, promoCode\)/);
   assert.match(checkout, /^\s*applyOffer,$/m, "the place-order request must carry the selection");
+  assert.match(checkout, /^\s*promoCode,$/m, "the place-order request must carry the selected code");
 });
 
 test("no customer-facing copy still claims offers are automatic", () => {
