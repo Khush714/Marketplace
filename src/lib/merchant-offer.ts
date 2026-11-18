@@ -236,8 +236,19 @@ export function publicMerchantOfferDto(
   };
 }
 
+/** Order-level attribution the Merchant App displays on each promotion. */
+export type MerchantOfferMetrics = {
+  redemptions: number;
+  discountGiven: number;
+  influencedGross: number;
+};
+
 /** DTO consumed directly by the Merchant App's Offers screen. */
-export function merchantOfferDto(row: MerchantOfferRow, businessId: string, redemptions = 0) {
+export function merchantOfferDto(
+  row: MerchantOfferRow,
+  businessId: string,
+  metrics: Partial<MerchantOfferMetrics> = {},
+) {
   return {
     id: row.id,
     businessId,
@@ -255,11 +266,10 @@ export function merchantOfferDto(row: MerchantOfferRow, businessId: string, rede
     archived: row.archived,
     createdAt: row.createdAt.toISOString(),
     updatedAt: row.updatedAt.toISOString(),
-    // Marketplace orders now stamp the chosen code, so the Merchant App can see
-    // real redemptions per promotion. Revenue attribution is still not derived
-    // here — that needs a full order-level report, not an offer row field.
-    redemptions,
-    discountGiven: 0,
-    influencedGross: 0,
+    // These come from the orders that actually used the code, never from the
+    // browser or an offer row field. A missing aggregate is zero, not a guess.
+    redemptions: metrics.redemptions ?? 0,
+    discountGiven: metrics.discountGiven ?? 0,
+    influencedGross: metrics.influencedGross ?? 0,
   };
 }

@@ -6,6 +6,7 @@ import {
   offersForRestaurant,
   publicMerchantOfferDto,
   type MerchantOfferInput,
+  type MerchantOfferMetrics,
   type PublicMerchantOffer,
 } from "@/lib/merchant-offer";
 
@@ -61,18 +62,30 @@ export async function archiveMerchantOffer(restaurantId: number, id: string) {
 }
 
 /**
- * Redemptions are read from the orders that actually used each code. COUNT is
- * cast to int so the driver gives the policy layer a number, not pg's bigint
- * string. Every order with a stamp counts, including cancelled ones — releasing
+ * Redemptions and their money are read from the orders that actually used each
+ * code. Every stamped order counts, including cancelled ones — releasing
  * capacity on cancellation would let a single customer churn a limited offer.
+ * Sums stay as bigint until the driver boundary so a busy restaurant cannot
+ * overflow int4; the Merchant App contract still caps each value at int4.
  */
-export async function redemptionCountsForRestaurant(restaurantId: number): Promise<Map<string, number>> {
+export async function redemptionMetricsForRestaurant(
+  restaurantId: number,
+): Promise<Map<string, MerchantOfferMetrics>> {
   const rows = await db
-    .select({ code: orders.offerCode, redemptions: sql<number>`count(*)::int` })
+    .select({
+      code: orders.offerCode,
+      redemptions: sql<number>`count(*)::int`,
+      discountGiven: sql<number>`coalesce(sum(${orders.discountCents}), 0)::bigint`.mapWith(Number),
+      influencedGross: sql<number>`coalesce(sum(${orders.totalCents}), 0)::bigint`.mapWith(Number),
+    })
     .from(orders)
     .where(and(eq(orders.restaurantId, restaurantId), isNotNull(orders.offerCode)))
     .groupBy(orders.offerCode);
-  return new Map(rows.map((r) => [r.code as string, Number(r.redemptions)]));
+  return new Map(rows.map((row) => [row.code as string, {
+    redemptions: Number(row.redemptions),
+    discountGiven: Number(row.discountGiven),
+    influencedGross: Number(row.influencedGross),
+  }]));
 }
 
 /** Active, unarchived offers with real redemption counts, newest first. */

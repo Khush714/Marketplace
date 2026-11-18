@@ -80,6 +80,21 @@ test("DTO matches the Merchant App offer contract", () => {
   assert.equal(dto.discountType, "flat");
   assert.equal(dto.createdAt, now.toISOString());
   assert.equal(dto.redemptions, 0);
+  assert.equal(dto.discountGiven, 0);
+  assert.equal(dto.influencedGross, 0);
+});
+
+test("Merchant DTO carries real order-level attribution", () => {
+  const now = new Date("2026-11-18T10:00:00.000Z");
+  const dto = merchantOfferDto({
+    id: "9b2c2f1e-4a0e-4a1f-9d76-0c2b7c64e123",
+    code: "WELCOME20", title: "Welcome", description: "", discountType: "percent",
+    value: 20, minOrder: 0, maxDiscount: null, startsAt: null, endsAt: null,
+    usageLimit: null, active: true, archived: false, createdAt: now, updatedAt: now,
+  }, "business-1", { redemptions: 7, discountGiven: 14_000, influencedGross: 98_000 });
+  assert.equal(dto.redemptions, 7);
+  assert.equal(dto.discountGiven, 14_000);
+  assert.equal(dto.influencedGross, 98_000);
 });
 
 function customerOfferRow(overrides: Partial<MerchantOfferRow> = {}): MerchantOfferRow {

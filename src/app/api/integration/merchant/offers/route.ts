@@ -4,7 +4,7 @@ import {
   createMerchantOffer,
   findMerchantOffer,
   listMerchantOffers,
-  redemptionCountsForRestaurant,
+  redemptionMetricsForRestaurant,
   updateMerchantOffer,
 } from "@/db/merchant-offers";
 import { guardBudget, readJsonBody } from "@/lib/abuse";
@@ -39,14 +39,14 @@ async function jsonBody(req: NextRequest) {
 export async function GET(req: NextRequest) {
   const result = await auth(req, false);
   if ("response" in result) return result.response;
-  const [rows, redemptions] = await Promise.all([
+  const [rows, metrics] = await Promise.all([
     listMerchantOffers(result.merchant.restaurantId),
-    redemptionCountsForRestaurant(result.merchant.restaurantId),
+    redemptionMetricsForRestaurant(result.merchant.restaurantId),
   ]);
   return Response.json(
     {
       offers: rows.map((row) =>
-        merchantOfferDto(row, result.merchant.businessId, redemptions.get(row.code) ?? 0)),
+        merchantOfferDto(row, result.merchant.businessId, metrics.get(row.code))),
     },
     { headers: { "Cache-Control": "no-store" } },
   );
@@ -65,7 +65,8 @@ export async function POST(req: NextRequest) {
   }
   try {
     const row = await createMerchantOffer(result.merchant.restaurantId, input);
-    return Response.json({ offer: merchantOfferDto(row, result.merchant.businessId) }, { status: 201 });
+    const metrics = await redemptionMetricsForRestaurant(result.merchant.restaurantId);
+    return Response.json({ offer: merchantOfferDto(row, result.merchant.businessId, metrics.get(row.code)) }, { status: 201 });
   } catch (error) {
     if (isUniqueViolation(error)) {
       return Response.json({ ok: false, error: "That code is already in use. Choose another one." }, { status: 409 });
@@ -108,7 +109,8 @@ export async function PATCH(req: NextRequest) {
   try {
     const row = await updateMerchantOffer(result.merchant.restaurantId, id, changes);
     if (!row) return Response.json({ ok: false, error: "Offer not found." }, { status: 404 });
-    return Response.json({ offer: merchantOfferDto(row, result.merchant.businessId) });
+    const metrics = await redemptionMetricsForRestaurant(result.merchant.restaurantId);
+    return Response.json({ offer: merchantOfferDto(row, result.merchant.businessId, metrics.get(row.code)) });
   } catch (error) {
     if (isUniqueViolation(error)) {
       return Response.json({ ok: false, error: "That code is already in use. Choose another one." }, { status: 409 });
