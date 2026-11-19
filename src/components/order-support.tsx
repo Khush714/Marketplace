@@ -4,15 +4,16 @@ import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ArrowRight, ChevronDown, LoaderCircle, MessageCircle, Send } from "lucide-react";
 import { cn } from "@/lib/domain";
-import { useDocumentVisible } from "@/lib/order-access";
+import { orderAuthHeaders, useDocumentVisible } from "@/lib/order-access";
 import { MAX_SUPPORT_MESSAGE_CHARS, type SupportThreadDto } from "@/lib/support-core";
 
 /**
- * Order-aware customer support. This only renders for the browser that placed
- * the order, because the thread API is gated by the same HMAC order token as the
- * order itself — a shared tracking link stays read-only and never sees chat.
+ * Order-aware customer support. Rendering is gated by `supportAccess` in the
+ * tracking view; the thread API itself accepts either the HMAC order token or a
+ * live session bound to the code, so a browser that cleared localStorage can
+ * still chat with its cookie. `token` is optional for exactly that case.
  */
-export function OrderSupport({ code, token }: { code: string; token: string }) {
+export function OrderSupport({ code, token }: { code: string; token?: string }) {
   const [open, setOpen] = useState(false);
   const [thread, setThread] = useState<SupportThreadDto | null>(null);
   const [loaded, setLoaded] = useState(false);
@@ -26,7 +27,7 @@ export function OrderSupport({ code, token }: { code: string; token: string }) {
   const load = useCallback(async () => {
     try {
       const res = await fetch(`/api/orders/${encodeURIComponent(code)}/support`, {
-        headers: { "x-order-token": token },
+        headers: orderAuthHeaders(token),
         cache: "no-store",
       });
       if (!res.ok) throw new Error("We couldn't load your conversation. Please try again.");
@@ -79,7 +80,7 @@ export function OrderSupport({ code, token }: { code: string; token: string }) {
     try {
       const res = await fetch(`/api/orders/${encodeURIComponent(code)}/support`, {
         method: "POST",
-        headers: { "x-order-token": token, "Content-Type": "application/json" },
+        headers: { ...orderAuthHeaders(token), "Content-Type": "application/json" },
         body: JSON.stringify({ message }),
       });
       const data = (await res.json().catch(() => null)) as {

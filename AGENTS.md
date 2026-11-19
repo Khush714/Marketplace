@@ -87,10 +87,11 @@ If Postgres is unavailable it is skipped locally but **fails closed in CI**
 
 ## Known gaps (do not mistake for current behaviour)
 
-See `docs/architecture.md` §12. Highlights: the customer-session read path is not
-fully wired (`lib/order-authorized.ts` is unused; cancel route lacks `guardWrite`);
-`lib/security/integration-auth.ts` is dead code; 9 high dependency advisories;
-the least-privilege DB role is unused; per-instance rate limits.
+See `docs/architecture.md` §12. Highlights: `lib/security/integration-auth.ts` is
+dead code; 9 high dependency advisories; the least-privilege DB role is unused;
+per-instance rate limits. (The customer-session path is now wired: per-order
+routes use `lib/order-authorized.ts`, cancel is guarded, and checkout binds the
+order code to the session.)
 
 ## Committing
 

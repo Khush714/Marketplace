@@ -11,8 +11,8 @@ import {
   providerMode,
   verifyCheckoutSignature,
 } from "@/integrations/payments/provider-session";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { orderAuthorized } from "@/lib/order-authorized";
 import { isAuthorizedAwaitingCapture } from "@/lib/payment-security-core";
 
 export const dynamic = "force-dynamic";
@@ -33,8 +33,9 @@ export const runtime = "nodejs";
  * Without this route a lost or slow webhook would leave a paid customer staring
  * at a pending screen until reconciliation notices 24h later.
  *
- * Budgeted before the token check: every call can cost a provider API read, so
- * the order token is not a licence to spend quota (ABUSE_BUDGETS.paymentVerify).
+ * Budgeted before the credential check: every call can cost a provider API read,
+ * so an order token or session is not a licence to spend quota
+ * (ABUSE_BUDGETS.paymentVerify).
  * Capture polling deliberately reads GET /api/orders/[code] instead, so a slow
  * bank transfer never consumes this budget.
  */
@@ -43,7 +44,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   if (blocked) return blocked;
 
   const { code } = await ctx.params;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 

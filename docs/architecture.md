@@ -148,11 +148,15 @@ and tracking token — lived in `localStorage`. Any script on the page could rea
 the PII *and* the credentials to read/cancel every order. The credential now
 lives server-side: a `customer_sessions` row holds only order **codes** (hashed
 token, `expires_at`, `revoked_at`), and the browser holds an `HttpOnly` cookie.
-The session is bound to codes by `POST /api/orders/attach`, which accepts only
-HMAC-verified `code`+`token` pairs. Access is then decided by
-`lib/order-authorized.ts`: a valid `x-order-token` **or** a live session whose
-bound list contains the code. Failures are indistinguishable from "order not
-found".
+New orders are bound at checkout in the same response that mints the token, so
+clearing localStorage cannot strand them. `POST /api/orders/attach` remains for
+legacy `code`+`token` pairs already in web storage and accepts only
+HMAC-verified pairs. `GET /api/orders/history` reads the bound codes with the
+cookie alone, so history survives a storage clear. Access to a single order is
+decided by `lib/order-authorized.ts`: a valid `x-order-token` **or** a live
+session whose bound list contains the code. Every per-order route uses that
+helper after its `guardRead`/`guardWrite`; failures are indistinguishable from
+"order not found".
 
 ### 3.4 Ops and cron
 `requireOpsToken` compares a bearer secret in constant time, fails closed in
@@ -173,8 +177,9 @@ configured.
 6. `enqueuePosDelivery(orderId)` writes the journal row and performs the **first
    POS attempt synchronously** (durability: the row is already persisted, so a
    timeout still retries).
-7. Respond with the order code, `x-order-token`, and tracking token. On a later
-   `/attach`, the customer session is minted/renewed and the code bound to it.
+7. Respond with the order code, `x-order-token`, and tracking token. The session
+   is minted/renewed and the code bound in that same response; `/attach` remains
+   the migration path for orders placed before this wiring.
 
 ## 5. Payment flow
 
@@ -303,18 +308,14 @@ ids are `bigint` (epoch-ms can overflow int4).
 These are **existing** conditions, recorded here so the architecture doc does not
 overstate completeness. They are not introduced by this document.
 
-1. **Customer-session migration incomplete.** `lib/order-authorized.ts` exists but
-   is imported by **no route**; order read/pay/cancel still gate on
-   `x-order-token` alone. `ABUSE_BUDGETS.orderCancel` is declared but not wired —
-   `api/orders/[code]/cancel` has no `guardWrite` (no origin check, no budget).
-2. **Dead integration session store.** `lib/security/integration-auth.ts`
+1. **Dead integration session store.** `lib/security/integration-auth.ts`
    (in-memory `Map`) is referenced only by the Phase 0 inventory doc; the live
    POS session path is `db/queries.ts`. Safe to delete, but deleting source is out
    of scope for Phase 1.
-3. **Per-instance state.** Rate-limit buckets (and the dead store) are in-process;
+2. **Per-instance state.** Rate-limit buckets (and the dead store) are in-process;
    a multi-instance deployment needs a shared store for these to be authoritative.
-4. **Dependency advisories.** 9 high, notably `next@16.3.6` (fix `16.4.0`) and
+3. **Dependency advisories.** 9 high, notably `next@16.3.6` (fix `16.4.0`) and
    `sharp@0.35.4` (fix `>=0.35.5`).
-5. **Least-privilege DB role unused; `.env` credential rotation pending.**
+4. **Least-privilege DB role unused; `.env` credential rotation pending.**
 6. **10 non-fatal build warnings** (Edge-Runtime Node-builtin traces, Turbopack
    lockfile location).

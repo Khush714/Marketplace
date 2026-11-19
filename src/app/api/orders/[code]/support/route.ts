@@ -1,22 +1,23 @@
 import { customerSendSupportMessage, customerSupportThread } from "@/db/support";
 import { guardRead, guardWrite, readJsonBody } from "@/lib/abuse";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { orderAuthorized } from "@/lib/order-authorized";
 import { parseSupportMessage } from "@/lib/support-core";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Customer support for one order. The code alone is not a credential — the
- * signed token minted at checkout is — and the message body is parsed again
- * here. The author role, order identity and timestamps are fixed server-side,
- * so a caller cannot post an "ops" reply or attach a message to another order.
+ * signed token minted at checkout or a session bound to that code is — and the
+ * message body is parsed again here. The author role, order identity and
+ * timestamps are fixed server-side, so a caller cannot post an "ops" reply or
+ * attach a message to another order.
  */
 
 export async function GET(req: Request, ctx: { params: Promise<{ code: string }> }) {
   const { code } = await ctx.params;
   const blocked = guardRead(req, "supportRead");
   if (blocked) return blocked;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 
@@ -29,7 +30,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   const { code } = await ctx.params;
   const blocked = await guardWrite(req, "supportWrite");
   if (blocked) return blocked;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 

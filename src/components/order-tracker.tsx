@@ -6,25 +6,26 @@ import { usePublicOrder } from "@/lib/order-access";
 import { TrackingView } from "@/components/tracking-view";
 
 /**
- * Client entry for /order/[code]/track. The order is read through the token this
- * browser was issued at checkout, so the page itself never has to be trusted
- * with an unauthenticated read.
+ * Client entry for /order/[code]/track. The order is read with the HMAC token
+ * this browser was issued at checkout, or — once web storage has been cleared —
+ * with the HttpOnly session cookie. The server authorises either one; the page
+ * never performs an unauthenticated read.
  */
 export function OrderTracker({ code }: { code: string }) {
   const hydrated = useProfileReady();
   const { order, access, token } = usePublicOrder(code);
 
-  if (!hydrated || access === "loading" || (access === "ready" && order && !token)) {
+  if (!hydrated || access === "loading") {
     return <Skeleton />;
   }
 
-  if (access === "denied" || !order || !token) {
+  if (access === "denied" || !order) {
     return (
       <div className="mx-auto max-w-lg px-4 py-20 text-center">
         <h1 className="font-display text-2xl font-bold text-cream-50">We can&apos;t open this order</h1>
         <p className="mt-2 text-sm leading-relaxed text-cream-400">
-          Order links only work in the browser that placed them, because the access key is stored
-          there. If you placed this order on another device, contact support with the order code.
+          This link only works in a browser that placed the order or still holds its session. If
+          you placed it on another device, contact support with the order code.
         </p>
         <p className="mt-4 font-mono text-sm text-cream-500">{code}</p>
         <Link
@@ -37,7 +38,9 @@ export function OrderTracker({ code }: { code: string }) {
     );
   }
 
-  return <TrackingView initialOrder={order} token={token} />;
+  // A ready order means the server accepted a token or the session, so the
+  // actions (cancel/review/support) can use the same credential the read used.
+  return <TrackingView initialOrder={order} token={token ?? undefined} supportAccess />;
 }
 
 function Skeleton() {

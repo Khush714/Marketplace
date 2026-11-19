@@ -57,7 +57,7 @@ test("supportMailto prefills the order code when one was handed over", () => {
 test("the tracking view offers the contact fallback when there is no HMAC token", () => {
   const view = source("src/components/tracking-view.tsx");
   assert.match(view, /OrderSupportFallback/);
-  const branch = view.slice(view.indexOf("{token ? ("));
+  const branch = view.slice(view.indexOf("{supportAccess ? ("));
   assert.match(branch, /<OrderSupport code=\{order\.code\} token=\{token\} \/>/);
   assert.match(branch, /<OrderSupportFallback code=\{order\.code\} \/>/);
 });

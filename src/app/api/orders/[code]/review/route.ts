@@ -2,23 +2,24 @@ import { submitOrderFeedback } from "@/db/order-feedback";
 import { getOrderByCode } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
 import { parseReviewInput } from "@/lib/order-feedback";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { orderAuthorized } from "@/lib/order-authorized";
 
 export const dynamic = "force-dynamic";
 
 /**
  * Customer review for a delivered order. The order code alone is not a
- * credential — the signed token minted at checkout is — and the rating and
- * comment are parsed again here. The stored feedback timestamp, merchant reply
- * and order identity never come from the browser.
+ * credential — the signed token minted at checkout, or a live session bound to
+ * it, is — and the rating and comment are parsed again here. The stored
+ * feedback timestamp, merchant reply and order identity never come from the
+ * browser. The budget is charged before either credential is checked.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {
-  const { code } = await ctx.params;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
-    return Response.json({ error: "Not found" }, { status: 404 });
-  }
   const blocked = await guardWrite(req, "orderReview");
   if (blocked) return blocked;
+  const { code } = await ctx.params;
+  if (!(await orderAuthorized(req, code))) {
+    return Response.json({ error: "Not found" }, { status: 404 });
+  }
 
   const parsed = await readJsonBody(req);
   if (!parsed.ok) return parsed.response;

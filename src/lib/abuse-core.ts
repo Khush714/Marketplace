@@ -66,6 +66,17 @@ export const ABUSE_BUDGETS = {
   orderLookup: { limit: 60, windowMs: MINUTE_MS },
 
   /**
+   * Session-backed order history. One cookie-authenticated read returns up to
+   * 30 public order DTOs — the same payload as the token-based lookup, without
+   * asking the client to replay credentials from storage. It cannot enumerate
+   * orders (the codes come from the bound session row), but it is still the
+   * read a history page runs on every visit and while live orders poll, so it
+   * gets its own tier rather than riding on `orderLookup`'s token-verification
+   * budget.
+   */
+  orderHistory: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Search. Every request runs an ILIKE across restaurants plus a dish scan.
    * A scrape loop is the reason this is budgeted at all; 60/min still lets a
    * person search continuously.

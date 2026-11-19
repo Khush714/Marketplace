@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createOrder, recordIntegrationAudit } from "@/db/queries";
+import { bindOrderCodesToSession, createOrder, recordIntegrationAudit } from "@/db/queries";
 import { bindProviderOrderId, createPaymentRecord, isOnlinePayment } from "@/db/payments";
 import { validateCheckout, type CheckoutResult } from "@/lib/order-input-core";
 import { enqueuePosDelivery } from "@/integrations/pos/order-bridge";
@@ -10,6 +10,7 @@ import {
   type ProviderOrderResult,
 } from "@/integrations/payments/provider-session";
 import { orderTokensAvailable, signOrderToken } from "@/lib/order-token";
+import { appendCustomerSessionCookie, ensureCustomerSession } from "@/lib/customer-session";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
@@ -143,11 +144,12 @@ async function checkout(req: NextRequest) {
     await enqueuePosDelivery(result.order.id);
   }
 
-  return Response.json(
+  const orderToken = signOrderToken(result.order.code);
+  const res = Response.json(
     {
       ...result,
       // The browser's code-bound access token for this order from here on.
-      orderToken: signOrderToken(result.order.code),
+      orderToken,
       // `result` also carries the Phase 6 trackingToken on a fresh order — the
       // customer's URL becomes /order/<tracking-token>. Omitted on an
       // idempotent retry, when only the hash exists and the browser already
@@ -168,4 +170,18 @@ async function checkout(req: NextRequest) {
     },
     { status: 201 },
   );
+
+  // Bind here, in the same response that mints the order, rather than asking
+  // the browser to call /attach afterwards: the cookie and the code land
+  // together, so clearing localStorage cannot strand a freshly placed order.
+  // Best-effort by design — the signed token above is still a complete
+  // credential, so a session/DB hiccup must not report a placed order as failed.
+  try {
+    const ensured = await ensureCustomerSession(req);
+    await bindOrderCodesToSession(ensured.session.id, [result.order.code]);
+    if (ensured.expiresAt) appendCustomerSessionCookie(req, res, ensured.token, ensured.expiresAt);
+  } catch {
+    /* the order token remains the fallback credential for this browser */
+  }
+  return res;
 }

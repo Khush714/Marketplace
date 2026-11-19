@@ -6,7 +6,7 @@ import { useCallback, useEffect, useState } from "react";
 import { ArrowRight, ChevronRight, Clock3, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
-import { useOrderPoll } from "@/lib/order-access";
+import { fetchSessionOrders, useOrderPoll } from "@/lib/order-access";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 import { useProfileOrders, useProfileReady } from "@/lib/profile";
 
@@ -16,28 +16,37 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
 
   /**
-   * Order history is read through the token-authenticated bulk lookup — a code
-   * on its own grants nothing, so this is also what stops the list from ever
-   * showing somebody else's order.
+   * Two sources, one list. The session read is the durable one — it works after
+   * localStorage is cleared because the credential is an HttpOnly cookie bound
+   * to the order codes at checkout. The token lookup is kept for older orders
+   * that predate session binding (and for a session that has since lapsed); a
+   * code alone still grants nothing there. Merging by code means a browser
+   * migrating from web storage never sees an order twice or loses one while the
+   * two paths overlap.
    */
   const loadOrders = useCallback(async (): Promise<PublicOrder[]> => {
-    const res = await fetch("/api/orders/lookup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
-      cache: "no-store",
-    });
-    const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
-    return data?.orders ?? [];
+    const tokenOrders = stored.length
+      ? await fetch("/api/orders/lookup", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
+          cache: "no-store",
+        })
+          .then((res) => res.json().catch(() => null))
+          .then((data: { orders?: PublicOrder[] } | null) => data?.orders ?? [])
+          .catch(() => [])
+      : [];
+    const sessionOrders = await fetchSessionOrders().catch(() => []);
+
+    const byCode = new Map<string, PublicOrder>();
+    for (const order of tokenOrders) byCode.set(order.code, order);
+    for (const order of sessionOrders) byCode.set(order.code, order);
+    return [...byCode.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   }, [stored]);
 
   // First paint only. The interval below owns every fetch after this one.
   useEffect(() => {
     if (!hydrated) return;
-    if (!stored.length) {
-      setOrders([]);
-      return;
-    }
     let cancelled = false;
     loadOrders()
       .then((rows) => {

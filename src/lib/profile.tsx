@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Context,
   type ReactNode,
@@ -178,6 +179,42 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, [state, hydrated]);
+
+  // One-time migration for browsers that already hold legacy orders: their
+  // codes are verified by /attach against the tokens in this same profile, then
+  // bound to the HttpOnly session so a later storage clear does not erase the
+  // history. New orders are bound by checkout itself; this only carries the old
+  // ones across. sessionStorage keeps a reload in the same tab from replaying a
+  // whole history on every page (the route is idempotent, but not free).
+  const attachStarted = useRef(false);
+  useEffect(() => {
+    if (!hydrated || attachStarted.current || !state.orders.length) return;
+    attachStarted.current = true;
+    const marker = "crave.session.attach.v1";
+    try {
+      if (sessionStorage.getItem(marker) === "1") return;
+    } catch {
+      /* storage disabled — the attach is still worth trying */
+    }
+    const orders = state.orders.slice(0, 30).map((o) => ({ code: o.code, token: o.token }));
+    if (!orders.length) return;
+    void fetch("/api/orders/attach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orders }),
+      cache: "no-store",
+    })
+      .then((res) => {
+        if (res.ok) {
+          try {
+            sessionStorage.setItem(marker, "1");
+          } catch {
+            /* ignore */
+          }
+        }
+      })
+      .catch(() => {});
+  }, [hydrated, state.orders]);
 
   const setIdentity = useCallback((name: string, phone: string) => {
     setState((s) => ({ ...s, name, phone }));

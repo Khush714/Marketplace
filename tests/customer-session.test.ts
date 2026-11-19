@@ -38,6 +38,8 @@ import {
   makeCustomerSessionToken,
   normalizeOrderCode,
   normalizeOrderCodes,
+  sessionHistoryCodes,
+  CUSTOMER_SESSION_HISTORY_LIMIT,
   type CustomerSessionRowLike,
 } from "../src/lib/customer-session-core";
 
@@ -138,6 +140,20 @@ test("empty and non-string entries never occupy a slot", () => {
   const cleaned = normalizeOrderCodes(["", "   ", null, undefined, "CRV-REAL"]);
   assert.deepEqual(cleaned, ["CRV-REAL"]);
   assert.equal(CUSTOMER_SESSION_MAX_CODES >= 60, true, "at least two screens of history");
+});
+
+test("history reads what the session bound, capped to one screen", () => {
+  // The row remembers 60 codes so an old order is not evicted, but the history
+  // endpoint loads at most 30 — one screen — so a stale or hand-edited row
+  // cannot turn one request into 60 queries.
+  const codes = Array.from({ length: CUSTOMER_SESSION_MAX_CODES }, (_, i) => `CRV-${i}`);
+  const read = sessionHistoryCodes(codes);
+  assert.equal(read.length, CUSTOMER_SESSION_HISTORY_LIMIT);
+  assert.deepEqual(read, codes.slice(0, CUSTOMER_SESSION_HISTORY_LIMIT), "newest first");
+
+  assert.deepEqual(sessionHistoryCodes([" crv-a ", "CRV-A", "CRV-B"]), ["CRV-A", "CRV-B"]);
+  assert.deepEqual(sessionHistoryCodes(["", null, "CRV-REAL"]), ["CRV-REAL"]);
+  assert.deepEqual(sessionHistoryCodes([]), []);
 });
 
 /* ---------------------------------- cookie --------------------------------- */

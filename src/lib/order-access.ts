@@ -8,16 +8,21 @@ import { experiments } from "@/lib/experiments";
 /**
  * Customer-side access to a single order.
  *
- * An order code on its own is not a credential: every read needs the signed
- * token minted at checkout (see lib/order-token), which lives in this browser's
- * profile. That is also why these pages are client components — the token is in
- * localStorage, not in the request, and the server must not be asked for an
- * order it cannot authenticate.
+ * An order code on its own is not a credential: a read needs either the signed
+ * token minted at checkout (see lib/order-token) or a live customer session
+ * bound to that code. The token may be in this browser's profile; the session
+ * rides an HttpOnly cookie that script cannot read. Both are checked by the
+ * server, so a client without either gets the same 404 as a missing order.
  */
 
-export async function fetchPublicOrder(code: string, token: string): Promise<PublicOrder | null> {
+/** The per-order header, only when this browser actually holds the token. */
+export function orderAuthHeaders(token?: string | null): Record<string, string> {
+  return token ? { "x-order-token": token } : {};
+}
+
+export async function fetchPublicOrder(code: string, token?: string | null): Promise<PublicOrder | null> {
   const res = await fetch(`/api/orders/${encodeURIComponent(code)}`, {
-    headers: { "x-order-token": token },
+    headers: orderAuthHeaders(token),
     cache: "no-store",
   });
   if (!res.ok) return null;
@@ -37,18 +42,30 @@ export async function fetchOrderByTrackingToken(trackingToken: string): Promise<
   return data?.order ?? null;
 }
 
+/**
+ * History from the HttpOnly customer session — no per-order credentials in
+ * web storage and none in the request body. The cookie rides the same-origin
+ * fetch automatically; no session simply means an empty list.
+ */
+export async function fetchSessionOrders(): Promise<PublicOrder[]> {
+  const res = await fetch("/api/orders/history", { cache: "no-store" });
+  if (!res.ok) return [];
+  const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
+  return data?.orders ?? [];
+}
+
 export type OrderAccess = "loading" | "ready" | "denied";
 
 function deriveAccess(input: {
   hydrated: boolean;
-  token: string | null;
   resultCode: string | null;
   order: PublicOrder | null;
   code: string;
 }): OrderAccess {
   if (!input.hydrated) return "loading";
-  if (!input.token) return "denied";
   if (input.resultCode !== input.code) return "loading";
+  // The server already decided whether the token OR the session authorised the
+  // read. A null token with a ready order is the session path, not a failure.
   return input.order ? "ready" : "denied";
 }
 
@@ -60,7 +77,7 @@ export function usePublicOrder(code: string) {
   const token = orders.find((o) => o.code === code)?.token ?? null;
 
   useEffect(() => {
-    if (!hydrated || !token) return;
+    if (!hydrated) return;
     let cancelled = false;
     fetchPublicOrder(code, token)
       .then((found) => {
@@ -78,11 +95,10 @@ export function usePublicOrder(code: string) {
   // fetching" are both knowable during render, so they need no setState and
   // cannot cascade an extra pass.
   const order = result && result.code === code ? result.order : null;
-  const access = deriveAccess({ hydrated, token, resultCode: result?.code ?? null, order, code });
+  const access = deriveAccess({ hydrated, resultCode: result?.code ?? null, order, code });
 
   /** Re-read the order (used by the tracking poller). */
   const refresh = useCallback(async () => {
-    if (!token) return;
     const found = await fetchPublicOrder(code, token);
     if (found) setResult({ code, order: found });
   }, [code, token]);

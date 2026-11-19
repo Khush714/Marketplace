@@ -114,9 +114,6 @@ never trust the browser.** Organised as layers, each cheap and independent:
 
 ## Notes for future work (open items, not design choices)
 
-- `api/orders/[code]/cancel` still lacks a `guardWrite` and the declared
-  `ABUSE_BUDGETS.orderCancel` is unwired; the customer-session read path is not
-  fully switched over (see `architecture.md` §12).
 - 9 high dependency advisories remain (`next@16.3.6`, `sharp@0.35.4`, transitives).
 - The least-privilege `marketplace_app` DB role exists but the app still connects
   as an over-privileged role.
