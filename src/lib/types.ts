@@ -1,4 +1,5 @@
 import type { OrderItemSnapshot } from "@/db/schema";
+import type { FeedbackDto } from "@/lib/order-feedback";
 
 /* Shared shapes used across server components, API routes and client UI. */
 
@@ -178,6 +179,8 @@ export interface OrderDto {
   totalCents: number;
   /** Merchant App promo code used for this discount; null for legacy/no offer. */
   offerCode: string | null;
+  /** One immutable customer review per delivered order; empty until submitted. */
+  feedback: FeedbackDto;
   createdAt: string;
   status: OrderStatusDto;
 }

@@ -47,6 +47,7 @@ import {
 import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONFIRM_TTL_MS } from "@/lib/restaurant-session-core";
 import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes } from "@/lib/customer-session-core";
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
+import { feedbackDto } from "@/lib/order-feedback";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
@@ -404,6 +405,7 @@ function toOrderDto(o: typeof orders.$inferSelect, restaurantLocality = ""): Ord
     discountCents: o.discountCents,
     totalCents: o.totalCents,
     offerCode: o.offerCode,
+    feedback: feedbackDto(o),
     createdAt: new Date(o.createdAt).toISOString(),
     status,
   };

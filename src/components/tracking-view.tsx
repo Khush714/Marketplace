@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import {
   BadgeCheck,
   Ban,
@@ -16,6 +16,7 @@ import {
   Star,
   TriangleAlert,
   Store,
+  X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
@@ -23,6 +24,7 @@ import { RollingNumber } from "@/components/motion-primitives";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatINR } from "@/lib/domain";
 import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
+import { MAX_REVIEW_CHARS } from "@/lib/order-feedback";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 
 /* Canonical Marketplace stage keys — always rendered from the server-provided
@@ -68,6 +70,12 @@ export function TrackingView({
 }) {
   const [order, setOrder] = useState(initialOrder);
   const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
+  const [reviewOpen, setReviewOpen] = useState(false);
+  const [reviewRating, setReviewRating] = useState(0);
+  const [reviewText, setReviewText] = useState("");
+  const [reviewBusy, setReviewBusy] = useState(false);
+  const [reviewError, setReviewError] = useState("");
+  const [reviewNotice, setReviewNotice] = useState("");
 
   /* Live polling — the engine behind status updates.
      Stops on its own once the order reaches a terminal stage, and while the tab
@@ -104,6 +112,56 @@ export function TrackingView({
       }
     } catch {
       setCancel({ kind: "error", message: "Something went wrong — please try again" });
+    }
+  }
+
+  function openReview() {
+    // Seed the form from the saved review so "View review" is truthful and a
+    // duplicate submit can still report the original rating back to the user.
+    setReviewRating(order.feedback?.rating ?? 0);
+    setReviewText(order.feedback?.review ?? "");
+    setReviewError("");
+    setReviewNotice("");
+    setReviewOpen(true);
+  }
+
+  async function submitReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!token) return;
+    if (!reviewRating) {
+      setReviewError("Choose a star rating first, then send your review.");
+      return;
+    }
+    setReviewBusy(true);
+    setReviewError("");
+    setReviewNotice("");
+    try {
+      const res = await fetch(`/api/orders/${encodeURIComponent(order.code)}/review`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-order-token": token },
+        body: JSON.stringify({ rating: reviewRating, review: reviewText }),
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        alreadySubmitted?: boolean;
+        feedback?: PublicOrder["feedback"];
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.ok || !data.feedback) {
+        throw new Error(data?.error ?? "Could not save your review. Please try again.");
+      }
+      const savedFeedback = data.feedback;
+      setOrder((current) => ({ ...current, feedback: savedFeedback }));
+      setReviewNotice(
+        data.alreadySubmitted
+          ? "You already rated this order — here is what you saved."
+          : "Thanks! Your rating and review have been saved.",
+      );
+    } catch (error) {
+      setReviewError(error instanceof Error ? error.message : "Could not save your review. Please try again.");
+    } finally {
+      setReviewBusy(false);
     }
   }
 
@@ -340,19 +398,45 @@ export function TrackingView({
               <p className="mt-1 text-sm leading-relaxed text-cream-400">
                 Hope it hits the spot. Rate your meal or fire up a reorder.
               </p>
-              <div className="mt-4 flex gap-2.5">
+              {order.feedback?.feedbackAt && (
+                <div className="mt-3 rounded-2xl bg-white/[0.05] p-3 text-xs text-cream-400">
+                  <div className="flex items-center gap-1 text-ember-300" aria-label={`${order.feedback.rating ?? 0} out of 5 stars`}>
+                    {Array.from({ length: 5 }, (_, index) => (
+                      <Star
+                        key={index}
+                        className="size-3.5"
+                        fill={index < (order.feedback?.rating ?? 0) ? "currentColor" : "none"}
+                      />
+                    ))}
+                    <span className="ml-1 font-semibold text-cream-200">Thanks for sharing.</span>
+                  </div>
+                  {order.feedback.review && <p className="mt-1.5 leading-relaxed">“{order.feedback.review}”</p>}
+                  {order.feedback.merchantResponse && (
+                    <p className="mt-1.5 leading-relaxed">
+                      <span className="font-semibold text-mint-400">The kitchen replied:</span>{" "}
+                      {order.feedback.merchantResponse}
+                    </p>
+                  )}
+                </div>
+              )}
+              <div className="mt-4 flex flex-wrap gap-2.5">
                 <Link
                   href={`/restaurants/${order.restaurantSlug}`}
                   className="press flex items-center gap-1.5 rounded-xl bg-mint-500 px-4 py-2.5 text-sm font-bold text-emerald-950"
                 >
                   <RefreshCcw className="size-4" /> Reorder
                 </Link>
-                <button
-                  type="button"
-                  className="press flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
-                >
-                  <Star className="size-4" /> Rate meal
-                </button>
+                {/* A shared tracking link is read-only: only the browser that
+                    placed the order holds the token the review API accepts. */}
+                {token && (
+                  <button
+                    type="button"
+                    onClick={openReview}
+                    className="press flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+                  >
+                    <Star className="size-4" /> {order.feedback?.feedbackAt ? "View review" : "Rate meal"}
+                  </button>
+                )}
               </div>
             </div>
           )}
@@ -416,6 +500,116 @@ export function TrackingView({
           </div>
         </div>
       </div>
+
+      {reviewOpen && (
+        <div role="dialog" aria-modal="true" aria-label="Rate your meal" className="fixed inset-0 z-[90]">
+          <button
+            type="button"
+            aria-label="Close review"
+            onClick={() => setReviewOpen(false)}
+            className="animate-overlay-in absolute inset-0 cursor-default bg-black/65 backdrop-blur-sm"
+          />
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center p-4">
+            <div className="glass-strong animate-sheet-up pointer-events-auto w-full max-w-md rounded-3xl p-6">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <h2 className="font-display text-lg font-bold text-cream-50">
+                    {order.feedback?.feedbackAt ? "Your review" : "Rate your meal"}
+                  </h2>
+                  <p className="mt-1 text-xs text-cream-500">{order.restaurantName}</p>
+                </div>
+                <button
+                  type="button"
+                  aria-label="Close review"
+                  onClick={() => setReviewOpen(false)}
+                  className="press glass grid size-9 shrink-0 place-items-center rounded-full text-cream-400 transition-colors hover:text-cream-50"
+                >
+                  <X className="size-4" />
+                </button>
+              </div>
+
+              {order.feedback?.feedbackAt ? (
+                <div className="mt-5">
+                  <div className="flex items-center gap-1 text-ember-300" aria-label={`${order.feedback.rating ?? 0} out of 5 stars`}>
+                    {Array.from({ length: 5 }, (_, index) => (
+                      <Star
+                        key={index}
+                        className="size-5"
+                        fill={index < (order.feedback?.rating ?? 0) ? "currentColor" : "none"}
+                      />
+                    ))}
+                  </div>
+                  {order.feedback.review && (
+                    <p className="mt-3 text-sm leading-relaxed text-cream-300">“{order.feedback.review}”</p>
+                  )}
+                  {order.feedback.merchantResponse && (
+                    <p className="mt-3 rounded-2xl bg-white/[0.05] p-3 text-sm leading-relaxed text-cream-400">
+                      <span className="font-semibold text-mint-400">The kitchen replied:</span>{" "}
+                      {order.feedback.merchantResponse}
+                    </p>
+                  )}
+                  {reviewNotice && <p role="status" className="mt-3 text-sm text-mint-400">{reviewNotice}</p>}
+                  <button
+                    type="button"
+                    onClick={() => setReviewOpen(false)}
+                    className="press mt-5 w-full rounded-xl bg-white/8 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+                  >
+                    Done
+                  </button>
+                </div>
+              ) : (
+                <form onSubmit={submitReview} className="mt-5">
+                  <div className="flex items-center gap-2" role="group" aria-label="Rating from 1 to 5 stars">
+                    {[1, 2, 3, 4, 5].map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        aria-label={`${value} star${value === 1 ? "" : "s"}`}
+                        aria-pressed={value === reviewRating}
+                        onClick={() => { setReviewRating(value); setReviewError(""); }}
+                        className={cn(
+                          "press grid size-10 place-items-center rounded-full transition-colors",
+                          value <= reviewRating
+                            ? "bg-ember-400/20 text-ember-300 ring-1 ring-ember-400/40"
+                            : "bg-white/6 text-cream-600 hover:text-cream-300",
+                        )}
+                      >
+                        <Star className="size-5" fill={value <= reviewRating ? "currentColor" : "none"} />
+                      </button>
+                    ))}
+                  </div>
+                  <p aria-live="polite" className="mt-2 text-xs text-cream-500">
+                    {reviewRating
+                      ? `${reviewRating} of 5 · ${["", "Poor", "Fair", "Good", "Great", "Excellent"][reviewRating]}`
+                      : "Select a star rating"}
+                  </p>
+                  <label htmlFor="order-review-text" className="mt-4 block text-xs font-semibold text-cream-300">
+                    Anything else you&apos;d like them to know? <span className="font-normal text-cream-600">(optional)</span>
+                  </label>
+                  <textarea
+                    id="order-review-text"
+                    rows={3}
+                    maxLength={MAX_REVIEW_CHARS}
+                    value={reviewText}
+                    onChange={(event) => setReviewText(event.target.value)}
+                    placeholder="Tell the kitchen what worked and what didn’t."
+                    className="mt-2 w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-sm text-cream-100 placeholder:text-cream-600 focus:border-ember-400/50 focus:outline-none"
+                  />
+                  {reviewError && <p role="alert" className="mt-2 text-sm text-chili-300">{reviewError}</p>}
+                  {reviewNotice && <p role="status" className="mt-2 text-sm text-mint-400">{reviewNotice}</p>}
+                  <button
+                    type="submit"
+                    disabled={reviewBusy || !reviewRating}
+                    className="press mt-5 w-full rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 py-3 text-sm font-bold text-white transition-opacity disabled:opacity-50"
+                  >
+                    {reviewBusy ? "Saving your review…" : "Rate meal"}
+                  </button>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

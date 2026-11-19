@@ -154,6 +154,15 @@ export const ABUSE_BUDGETS = {
   orderCancel: { limit: 30, windowMs: 10 * MINUTE_MS },
 
   /**
+   * Submit a delivered-order review. Token-gated and single-use per order, but
+   * the guard is charged first so a holder of one leaked token cannot grind a
+   * write that appends an audit event. A customer rates an order once; 20 per
+   * ten minutes clears every retry of a slow submission, stays looser than the
+   * credential-check tier, and still bounds audit-event spam.
+   */
+  orderReview: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
    * POS passkey rotation. Not a guessing endpoint — it is bearer-gated by a
    * live integration session — but every call mints a replacement passkey AND
    * revokes every session the restaurant holds, so a stolen session grinding

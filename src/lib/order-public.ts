@@ -31,6 +31,7 @@ export type PublicOrder = Pick<
   | "discountCents"
   | "totalCents"
   | "offerCode"
+  | "feedback"
   | "createdAt"
   | "status"
 >;
@@ -65,6 +66,7 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
     discountCents: o.discountCents,
     totalCents: o.totalCents,
     offerCode: o.offerCode,
+    feedback: o.feedback,
     createdAt: o.createdAt,
     status: o.status,
   };

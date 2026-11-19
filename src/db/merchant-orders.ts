@@ -3,6 +3,7 @@ import { and, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { merchantOrderEvents, orders, restaurants } from "@/db/schema";
 import { recordIntegrationAudit } from "@/db/queries";
+import { feedbackDto } from "@/lib/order-feedback";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
 
 export const MERCHANT_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY", "COMPLETED", "REJECTED", "CANCELLED"] as const;
@@ -76,6 +77,10 @@ export async function listMerchantOrders(restaurantId: number, options: Merchant
       prepMinutes: order.merchantPrepMinutes,
       rejectionReason: order.merchantRejectionReason,
       fulfilment: order.merchantFulfilment,
+      // The Merchant App reads this nested object and exposes the same five
+      // fields on its own Order DTO. Timestamps are ISO strings; no internal
+      // order id or code is repeated inside the review payload.
+      feedback: feedbackDto(order),
     })),
     hasMore,
     page: options.page,

@@ -576,6 +576,17 @@ export const orders = pgTable(
     merchantPrepMinutes: integer("merchant_prep_minutes"),
     merchantRejectionReason: text("merchant_rejection_reason").notNull().default(""),
     merchantFulfilment: text("merchant_fulfilment").notNull().default("delivery"),
+    /**
+     * Customer rating for a delivered order (1–5). One immutable review per
+     * order: the first write wins, and the Merchant App may add a single public
+     * reply. Stored on the order itself so the order token is also the review
+     * capability and there is a second table to keep in sync.
+     */
+    rating: integer("rating"),
+    review: text("review").notNull().default(""),
+    feedbackAt: timestamp("feedback_at", { withTimezone: true }),
+    merchantResponse: text("merchant_response").notNull().default(""),
+    merchantRespondedAt: timestamp("merchant_responded_at", { withTimezone: true }),
   },
   (t) => [
     index("orders_phone_idx").on(t.phone),
@@ -592,6 +603,9 @@ export const orders = pgTable(
     // composite's leading column also serves plain restaurant lookups, and its
     // suffix serves the per-code COUNT at offer validation time.
     index("orders_restaurant_offer_code_idx").on(t.restaurantId, t.offerCode),
+    // Merchant feedback inbox and the 30-day feedback summary are both scoped
+    // to one restaurant and ordered/filtered by feedback_at.
+    index("orders_restaurant_feedback_idx").on(t.restaurantId, t.feedbackAt),
     index("orders_restaurant_merchant_status_created_idx").on(t.restaurantId, t.merchantStatus, t.createdAt),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
