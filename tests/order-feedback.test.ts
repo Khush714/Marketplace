@@ -14,6 +14,7 @@ import {
   MAX_REVIEW_CHARS,
   feedbackDto,
   feedbackSummary,
+  feedbackThemes,
   parseReplyInput,
   parseReviewInput,
   type FeedbackRow,
@@ -86,4 +87,20 @@ test("an empty feedback inbox is still an available, zeroed summary", () => {
     badOrders: 0,
     pendingReplies: 0,
   });
+});
+
+test("themes classify only recent written reviews and keep their own averages", () => {
+  const now = new Date("2026-11-19T12:00:00.000Z");
+  const themes = feedbackThemes([
+    row({ rating: 2, review: "Food was cold and delivery was late", feedbackAt: now }),
+    row({ rating: 1, review: "Rider was rude on delivery", feedbackAt: now }),
+    row({ rating: 5, review: "Great taste and fresh food", feedbackAt: now }),
+    row({ rating: 3, review: "", feedbackAt: now }),
+    row({ rating: 1, review: "Leaked packaging", feedbackAt: new Date(now.getTime() - (FEEDBACK_WINDOW_DAYS + 1) * 86_400_000) }),
+  ], now);
+  assert.deepEqual(themes, [
+    { key: "delivery", label: "Delivery", count: 2, averageRating: 1.5 },
+    { key: "food", label: "Food quality", count: 2, averageRating: 3.5 },
+    { key: "service", label: "Service", count: 1, averageRating: 1 },
+  ]);
 });

@@ -1,13 +1,15 @@
 import "server-only";
-import { and, eq, gte, isNotNull, isNull } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, isNull } from "drizzle-orm";
 import { db } from "@/db";
 import { merchantOrderEvents, orders } from "@/db/schema";
 import {
   feedbackDto,
   feedbackSummary,
+  feedbackThemes,
   FEEDBACK_WINDOW_DAYS,
   type FeedbackRow,
   type FeedbackSummary,
+  type FeedbackTheme,
 } from "@/lib/order-feedback";
 
 type Feedback = ReturnType<typeof feedbackDto>;
@@ -114,4 +116,58 @@ export async function orderFeedbackSummary(restaurantId: number): Promise<Feedba
     gte(orders.feedbackAt, since),
   ));
   return feedbackSummary(rows as FeedbackRow[]);
+}
+
+type MerchantFeedbackRow = FeedbackRow & { code: string };
+
+/** The order code is the reply handle; the customer DTO deliberately omits it. */
+function merchantFeedbackDto(row: MerchantFeedbackRow) {
+  return { orderCode: row.code, ...feedbackDto(row) };
+}
+
+export type MerchantFeedbackInbox = {
+  reviews: ReturnType<typeof merchantFeedbackDto>[];
+  summary: FeedbackSummary;
+  themes: FeedbackTheme[];
+};
+
+/**
+ * Merchant-owned review inbox. Both the base row and the rolling aggregates are
+ * scoped to the restaurant resolved from the paired business token, so knowing
+ * an order code can never expose another restaurant's feedback.
+ */
+export async function orderFeedbackInbox(restaurantId: number, limit = 50): Promise<MerchantFeedbackInbox> {
+  const bounded = Math.max(1, Math.min(100, Math.floor(limit)));
+  const since = new Date(Date.now() - FEEDBACK_WINDOW_DAYS * 86_400_000);
+  const [rows, recent] = await Promise.all([
+    db.select({
+      code: orders.code,
+      rating: orders.rating,
+      review: orders.review,
+      feedbackAt: orders.feedbackAt,
+      merchantResponse: orders.merchantResponse,
+      merchantRespondedAt: orders.merchantRespondedAt,
+    }).from(orders).where(and(
+      eq(orders.restaurantId, restaurantId),
+      eq(orders.merchantManaged, true),
+      isNotNull(orders.feedbackAt),
+    )).orderBy(desc(orders.feedbackAt)).limit(bounded),
+    db.select({
+      rating: orders.rating,
+      review: orders.review,
+      feedbackAt: orders.feedbackAt,
+      merchantResponse: orders.merchantResponse,
+      merchantRespondedAt: orders.merchantRespondedAt,
+    }).from(orders).where(and(
+      eq(orders.restaurantId, restaurantId),
+      eq(orders.merchantManaged, true),
+      isNotNull(orders.feedbackAt),
+      gte(orders.feedbackAt, since),
+    )),
+  ]);
+  return {
+    reviews: rows.map(merchantFeedbackDto),
+    summary: feedbackSummary(recent as FeedbackRow[]),
+    themes: feedbackThemes(recent as FeedbackRow[]),
+  };
 }

@@ -3,6 +3,7 @@ import { randomBytes } from "node:crypto";
 import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { findRedeemableMerchantOffer } from "@/db/merchant-offers";
+import { publicRatingSql, publicRestaurantColumns } from "@/db/public-rating";
 import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
   connectionCodes,
@@ -48,6 +49,7 @@ import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONF
 import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes } from "@/lib/customer-session-core";
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { feedbackDto } from "@/lib/order-feedback";
+import { publicRating } from "@/lib/public-rating-core";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
 import { closedReason, isRestaurantClosed } from "@/lib/restaurant-closure";
@@ -103,15 +105,24 @@ import type {
  * rendered catalogue and the fetch surface in agreement.
  */
 
-function toRestaurantDto(r: typeof restaurants.$inferSelect): RestaurantDto {
+type RestaurantRow = typeof restaurants.$inferSelect & {
+  publicRating?: number | null;
+  publicRatingCount?: number;
+};
+
+function toRestaurantDto(r: RestaurantRow): RestaurantDto {
+  const rating = publicRating(
+    { rating: r.rating, ratingsCount: r.ratingsCount },
+    r.publicRating == null ? null : { averageRating: r.publicRating, reviewCount: r.publicRatingCount ?? 0 },
+  );
   return {
     id: r.id,
     slug: r.slug,
     name: r.name,
     tagline: r.tagline,
     cuisines: r.cuisines,
-    rating: r.rating,
-    ratingsCount: r.ratingsCount,
+    rating: rating.rating,
+    ratingsCount: rating.ratingsCount,
     priceLevel: r.priceLevel,
     deliveryMinutes: r.deliveryMinutes,
     distanceKm: r.distanceKm,
@@ -534,12 +545,12 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
   }
   if (filters.locality) conditions.push(eq(restaurants.locality, filters.locality));
   if (filters.offers) conditions.push(sql`${restaurants.offer} is not null`);
-  if (filters.minRating) conditions.push(gt(restaurants.rating, 4.5));
+  if (filters.minRating) conditions.push(gt(publicRatingSql, 4.5));
   if (filters.veg) conditions.push(eq(restaurants.pureVeg, true));
 
   const orderBy =
     filters.sort === "rating"
-      ? [desc(restaurants.rating)]
+      ? [desc(publicRatingSql)]
       : filters.sort === "fast"
         ? [asc(restaurants.deliveryMinutes)]
         : filters.sort === "price-low"
@@ -551,10 +562,10 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
               // place in a "nearest" ranking, and Postgres only guarantees this
               // implicitly for ASC.
               ? [sql`${restaurants.distanceKm} asc nulls last`]
-              : [desc(restaurants.featured), desc(restaurants.rating)];
+              : [desc(restaurants.featured), desc(publicRatingSql)];
 
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(...orderBy);
@@ -565,10 +576,10 @@ export async function featuredRestaurants(locality?: string): Promise<Restaurant
   const conditions = [discoverableRestaurant, eq(restaurants.featured, true)];
   if (locality) conditions.push(eq(restaurants.locality, locality));
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(...conditions))
-    .orderBy(desc(restaurants.rating));
+    .orderBy(desc(publicRatingSql));
   return rows.map(toRestaurantDto);
 }
 
@@ -596,7 +607,7 @@ export async function discoverableRestaurantSlugs(): Promise<{ slug: string; cre
 
 export async function getRestaurant(slug: string) {
   const [r] = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(eq(restaurants.slug, slug), eq(restaurants.isActive, true)))
     .limit(1);
@@ -650,23 +661,29 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     ),
   );
   const restRows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(locality ? and(restaurantCondition, eq(restaurants.locality, locality)) : restaurantCondition)
-    .orderBy(desc(restaurants.rating))
+    .orderBy(desc(publicRatingSql))
     .limit(5);
 
-  const restResults: SearchResult[] = restRows.map((r) => ({
-    type: "restaurant",
-    slug: r.slug,
-    name: r.name,
-    cuisines: r.cuisines,
-    rating: r.rating,
-    ratingsCount: r.ratingsCount,
-    deliveryMinutes: r.deliveryMinutes,
-    imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
-    offer: r.offer,
-  }));
+  const restResults: SearchResult[] = restRows.map((r) => {
+    const rating = publicRating(
+      { rating: r.rating, ratingsCount: r.ratingsCount },
+      r.publicRating == null ? null : { averageRating: r.publicRating, reviewCount: r.publicRatingCount ?? 0 },
+    );
+    return {
+      type: "restaurant",
+      slug: r.slug,
+      name: r.name,
+      cuisines: r.cuisines,
+      rating: rating.rating,
+      ratingsCount: rating.ratingsCount,
+      deliveryMinutes: r.deliveryMinutes,
+      imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
+      offer: r.offer,
+    };
+  });
 
   const dishLike = await db
     .select({
@@ -718,7 +735,7 @@ export async function restaurantsBySlugs(slugs: string[]): Promise<RestaurantDto
   const bounded = slugs.slice(0, MAX_SLUGS);
   if (!bounded.length) return [];
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(eq(restaurants.isActive, true), inArray(restaurants.slug, bounded)));
   return rows.map(toRestaurantDto);

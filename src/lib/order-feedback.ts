@@ -30,6 +30,13 @@ export type FeedbackSummary = {
   pendingReplies: number;
 };
 
+export type FeedbackTheme = {
+  key: string;
+  label: string;
+  count: number;
+  averageRating: number | null;
+};
+
 /** A customer rating is an integer 1–5; a comment is optional and bounded. */
 export function parseReviewInput(body: Record<string, unknown>): { rating: number; review: string } | null {
   const rating = body.rating;
@@ -79,4 +86,70 @@ export function feedbackSummary(
     badOrders: recent.filter((row) => (row.rating ?? 6) <= 2).length,
     pendingReplies: recent.filter((row) => !row.merchantResponse.trim()).length,
   };
+}
+
+/**
+ * Deterministic keyword buckets for the 30-day inbox summary. Marketplace owns
+ * the classification so the Merchant App never has to guess what a theme means
+ * or re-derive it from a different copy of the review text.
+ */
+const THEME_RULES = [
+  {
+    key: "food",
+    label: "Food quality",
+    terms: ["taste", "tasty", "delicious", "flavour", "flavor", "fresh", "bland", "dry", "burnt", "salty", "spicy", "cold", "hot", "quality"],
+  },
+  {
+    key: "delivery",
+    label: "Delivery",
+    terms: ["delivery", "late", "delay", "rider", "arrived", "arrival", "slow", "fast", "minutes", "time"],
+  },
+  {
+    key: "packaging",
+    label: "Packaging",
+    terms: ["pack", "packaging", "leak", "leaked", "spill", "spilled", "box", "wrapper", "seal"],
+  },
+  {
+    key: "service",
+    label: "Service",
+    terms: ["staff", "rude", "service", "support", "behaviour", "behavior", "response", "called"],
+  },
+  {
+    key: "value",
+    label: "Value",
+    terms: ["price", "priced", "expensive", "worth", "value", "money", "cost", "portion", "quantity"],
+  },
+] as const;
+
+export function feedbackThemes(rows: readonly FeedbackRow[], now = new Date()): FeedbackTheme[] {
+  const since = now.getTime() - FEEDBACK_WINDOW_DAYS * 86_400_000;
+  const recent = rows.filter((row) => row.feedbackAt && row.feedbackAt.getTime() >= since);
+  const buckets = new Map<string, { label: string; count: number; ratings: number[] }>();
+
+  const add = (key: string, label: string, rating: number | null) => {
+    const bucket = buckets.get(key) ?? { label, count: 0, ratings: [] };
+    bucket.count += 1;
+    if (typeof rating === "number") bucket.ratings.push(rating);
+    buckets.set(key, bucket);
+  };
+
+  for (const row of recent) {
+    const text = row.review.trim().toLowerCase();
+    if (!text) continue;
+    const matched = THEME_RULES.filter((rule) => rule.terms.some((term) => text.includes(term)));
+    if (!matched.length) add("other", "Other", row.rating);
+    else for (const rule of matched) add(rule.key, rule.label, row.rating);
+  }
+
+  return [...buckets.entries()]
+    .map(([key, bucket]) => ({
+      key,
+      label: bucket.label,
+      count: bucket.count,
+      averageRating: bucket.ratings.length
+        ? Math.round((bucket.ratings.reduce((sum, rating) => sum + rating, 0) / bucket.ratings.length) * 10) / 10
+        : null,
+    }))
+    .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
+    .slice(0, 5);
 }
