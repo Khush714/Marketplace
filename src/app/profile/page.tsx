@@ -146,7 +146,7 @@ export default function ProfilePage() {
 
           {/* stats */}
           <div className="mt-5 grid grid-cols-3 gap-2.5">
-            <StatCard Icon={ReceiptText} label="Orders" value={`${profile.orderCodes.length}`} />
+            <StatCard Icon={ReceiptText} label="Orders" value={`${profile.orderCodes.length}`} href="/orders" />
             <StatCard Icon={Heart} label="Favorites" value={`${profile.favorites.length}`} />
             <StatCard Icon={Wallet} label="Spent" value={spent === null ? "—" : formatINR(spent)} />
           </div>
@@ -298,12 +298,33 @@ export default function ProfilePage() {
   );
 }
 
-function StatCard({ Icon, label, value }: { Icon: typeof ReceiptText; label: string; value: ReactNode }) {
-  return (
-    <div className={cn("rounded-2xl bg-white/[0.045] px-4 py-3.5 text-left")}>
+function StatCard({
+  Icon,
+  label,
+  value,
+  href,
+}: {
+  Icon: typeof ReceiptText;
+  label: string;
+  value: ReactNode;
+  href?: string;
+}) {
+  const className = cn(
+    "rounded-2xl bg-white/[0.045] px-4 py-3.5 text-left transition-colors",
+    href && "press hover:bg-white/[0.08]",
+  );
+  const body = (
+    <>
       <Icon className="size-4 text-ember-400" />
       <p className="mt-2 font-display text-lg font-bold leading-none text-cream-50 tabular-nums">{value}</p>
       <p className="mt-1 text-[11px] font-medium text-cream-500">{label}</p>
-    </div>
+    </>
+  );
+  return href ? (
+    <Link href={href} className={className} aria-label={`${label}: ${value}. Open order history`}>
+      {body}
+    </Link>
+  ) : (
+    <div className={className}>{body}</div>
   );
 }
