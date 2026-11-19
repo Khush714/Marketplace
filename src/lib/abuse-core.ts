@@ -254,6 +254,38 @@ export const ABUSE_BUDGETS = {
    * far below a scripted grind against the code space.
    */
   merchantOAuthExchange: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Order support thread read. The customer view polls for an ops reply while
+   * open, so this is a short-window read budget rather than a write tier; the
+   * guard is charged before the HMAC check so a leaked token still costs the
+   * caller something. Two per second per address clears any real chat screen.
+   */
+  supportRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Customer support message. Token-gated and reopening a resolved thread on
+   * every accepted call, so it is graded like `orderReview`: charged ahead of
+   * the token check, with room for a slow customer's retries but far below a
+   * scripted loop appending to one conversation.
+   */
+  supportWrite: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Ops support inbox. The console refreshes the list while open and reads one
+   * thread at a time; charged before `requireOpsToken` so a wrong token is
+   * counted instead of answered for free. Generous because the operator works
+   * several threads in one session, bounded because each read is one query.
+   */
+  opsSupportRead: { limit: 240, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Ops support reply / status change. Each accepted call writes a message or
+   * moves a thread and re-reads it for the response. Charged before the token
+   * check like the other ops credential endpoints; a human replying to tickets
+   * stays far below this ceiling.
+   */
+  opsSupportWrite: { limit: 120, windowMs: 10 * MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

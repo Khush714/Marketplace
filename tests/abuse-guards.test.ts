@@ -267,6 +267,44 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
     scope: "opsCodeRevoke",
     db: "revokeConnectionCode",
   },
+  // Support chat has four dedicated tiers. Customers are charged before the
+  // HMAC order-token check, ops before `requireOpsToken`.
+  {
+    path: "src/app/api/orders/[code]/support/route.ts",
+    guard: "guardRead",
+    scope: "supportRead",
+    db: "customerSupportThread",
+  },
+  {
+    path: "src/app/api/orders/[code]/support/route.ts",
+    guard: "guardWrite",
+    scope: "supportWrite",
+    db: "customerSendSupportMessage",
+  },
+  {
+    path: "src/app/api/ops/support/route.ts",
+    guard: "guardRead",
+    scope: "opsSupportRead",
+    db: "opsListSupportThreads",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardRead",
+    scope: "opsSupportRead",
+    db: "opsSupportThread",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardWrite",
+    scope: "opsSupportWrite",
+    db: "opsReplyToSupportThread",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardWrite",
+    scope: "opsSupportWrite",
+    db: "opsSetSupportStatus",
+  },
 ];
 
 test("every budgeted route is actually wired to its guard", () => {
@@ -321,12 +359,15 @@ test("the budget is charged before the credential check", () => {
     "src/app/api/integration/passkey/rotate/route.ts",
     "src/app/api/partner/codes/route.ts",
     "src/app/api/partner/codes/[code]/route.ts",
+    "src/app/api/orders/[code]/support/route.ts",
+    "src/app/api/ops/support/route.ts",
+    "src/app/api/ops/support/[threadId]/route.ts",
   ];
   for (const path of paths) {
     const handlers = readSource(path).split(/export async function/).slice(1);
     assert.ok(handlers.length >= 1, `${path} has no handler`);
     for (const handler of handlers) {
-      const authAt = handler.search(/require(?:OpsToken|IntegrationAuth)\(/);
+      const authAt = handler.search(/require(?:OpsToken|IntegrationAuth)\(|verifyOrderToken\(/);
       if (authAt === -1) continue;
       const guardAt = handler.search(/\b(?:guardWrite|guardRead|guardBudget)\(/);
       assert.ok(guardAt >= 0, `${path} checks a credential with no budget ahead of it`);

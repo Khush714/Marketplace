@@ -21,6 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
+import { OrderSupport } from "@/components/order-support";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatINR } from "@/lib/domain";
 import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
@@ -498,6 +499,8 @@ export function TrackingView({
               </span>
             </div>
           </div>
+
+          {token && <OrderSupport code={order.code} token={token} />}
         </div>
       </div>
 
