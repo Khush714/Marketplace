@@ -78,6 +78,8 @@ export interface PartnerMenuItemDto {
   isVeg: boolean;
   isBestseller: boolean;
   available: boolean;
+  /** Null means stock is not tracked; zero is sold out at checkout. */
+  stockQuantity: number | null;
   sort: number;
   /** Modifier group ids currently attached to this dish. */
   modifierGroupIds: number[];

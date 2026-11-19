@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
 import { findRedeemableMerchantOffer } from "@/db/merchant-offers";
 import { publicRatingSql, publicRestaurantColumns } from "@/db/public-rating";
@@ -3038,9 +3038,16 @@ export async function computeBill(
     // silently rewritten here.
     const qty = Math.min(MAX_ITEM_QUANTITY, Math.max(1, Math.floor(item.quantity) || 1));
 
-    if (!m.available) {
+    if (!m.available || (m.stockQuantity !== null && m.stockQuantity <= 0)) {
       dropped.push({ menuItemId: m.id, name: m.name, reason: "sold_out" });
       continue;
+    }
+    if (m.stockQuantity !== null && m.stockQuantity < qty) {
+      return {
+        ok: false,
+        error: `Only ${m.stockQuantity} ${m.name} left in stock`,
+        code: "INSUFFICIENT_STOCK",
+      };
     }
 
     const selected = (item.modifiers ?? []).map((mod) => ({
@@ -3233,6 +3240,13 @@ export async function getMenuModifierGroups(
   return result;
 }
 
+/** Raised inside the order transaction when concurrent buyers exhaust a tracked item. */
+class StockUnavailable extends Error {
+  constructor(readonly itemName: string) {
+    super(`${itemName} is sold out`);
+  }
+}
+
 export async function createOrder(
   input: CreateOrderInput,
 ): Promise<{ ok: true; order: OrderDto; trackingToken?: string } | { ok: false; error: string; code?: string }> {
@@ -3307,10 +3321,28 @@ export async function createOrder(
   }));
 
   try {
-    const [created] = await db
-      .insert(orders)
-      .values({
-        code: makeOrderCode(),
+    const created = await db.transaction(async (tx) => {
+      // Reserve tracked stock and create the order in one transaction. The
+      // conditional decrement is the lock: if another buyer took the last unit
+      // between bill preview and insert, no row updates and the order aborts.
+      for (const { menuItem: m, quantity } of lines) {
+        if (m.stockQuantity === null) continue;
+        const [reserved] = await tx
+          .update(menuItems)
+          .set({ stockQuantity: sql`${menuItems.stockQuantity} - ${quantity}` })
+          .where(and(
+            eq(menuItems.id, m.id),
+            isNotNull(menuItems.stockQuantity),
+            gte(menuItems.stockQuantity, quantity),
+          ))
+          .returning({ id: menuItems.id });
+        if (!reserved) throw new StockUnavailable(m.name);
+      }
+
+      const [row] = await tx
+        .insert(orders)
+        .values({
+          code: makeOrderCode(),
         trackingTokenHash: hashTrackingToken(trackingToken),
         restaurantId: r.id,
         restaurantName: r.name,
@@ -3335,21 +3367,26 @@ export async function createOrder(
         posConnected,
         merchantManaged,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
-      })
-      .returning();
+        })
+        .returning();
 
-    // Phase 4 — persist the stable external order id (mkt_ord_<id>) so the
-    // POS status webhook resolver can find this order by (restaurant, external
-    // order id). Derived from id but stored explicitly for unique lookup.
-    if (created.externalOrderId == null) {
-      await db
-        .update(orders)
-        .set({ externalOrderId: externalOrderIdFor(created.id) })
-        .where(eq(orders.id, created.id));
-    }
+      // Phase 4 — persist the stable external order id (mkt_ord_<id>) so the
+      // POS status webhook resolver can find this order by (restaurant, external
+      // order id). Derived from id but stored explicitly for unique lookup.
+      if (row.externalOrderId == null) {
+        await tx
+          .update(orders)
+          .set({ externalOrderId: externalOrderIdFor(row.id) })
+          .where(eq(orders.id, row.id));
+      }
+      return row;
+    });
 
     return { ok: true, order: toOrderDto(created), trackingToken };
   } catch (e) {
+    if (e instanceof StockUnavailable) {
+      return { ok: false, error: e.message, code: "INSUFFICIENT_STOCK" };
+    }
     // Concurrent retry with the same key: the unique constraint let one win;
     // return the surviving order so the caller sees a single result.
     if (clientRequestId && isUniqueViolation(e)) {

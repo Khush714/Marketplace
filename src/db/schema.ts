@@ -266,6 +266,8 @@ export const menuItems = pgTable(
     isBestseller: boolean("is_bestseller").notNull().default(false),
     sort: integer("sort").notNull().default(0),
     available: boolean("available").notNull().default(true),
+    /** Null = stock is not tracked; checkout treats zero as sold out and decrements on order. */
+    stockQuantity: integer("stock_quantity"),
     posItemId: bigint("pos_item_id", { mode: "number" }),
     posCategoryId: bigint("pos_category_id", { mode: "number" }),
     categoryId: integer("category_id").references(() => menuCategories.id, {

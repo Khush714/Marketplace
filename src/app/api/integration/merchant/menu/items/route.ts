@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createMenuItem, deleteMenuItem, getPartnerMenu, updateMenuItem } from "@/db/partner-menu";
+import { createMenuItem, deleteMenuItem, getPartnerMenu, setItemModifierGroups, updateMenuItem } from "@/db/partner-menu";
 import { guardBudget, readJsonBody } from "@/lib/abuse";
 import { authenticateMerchantApp, unauthenticatedMerchantApp } from "@/lib/merchant-app-auth";
 import type { PartnerMenuItemDto } from "@/lib/types";
@@ -11,6 +11,7 @@ function mapItem(item: PartnerMenuItemDto, businessId: string) {
     id: String(item.id), businessId, name: item.name, description: item.description,
     price: item.priceCents, category: item.category, imageUrl: item.imageUrl,
     dietary: item.isVeg ? "veg" : "nonveg", available: item.available, archived: false,
+    stockQuantity: item.stockQuantity, modifierGroupIds: item.modifierGroupIds,
     posSynced: item.posSynced,
   };
 }
@@ -27,7 +28,10 @@ export async function GET(req: NextRequest) {
   if ("response" in result) return result.response;
   const menu = await getPartnerMenu(result.auth.restaurantId);
   if (!menu) return Response.json({ ok: false, error: "Merchant not found" }, { status: 404 });
-  return Response.json({ items: menu.items.map((item) => mapItem(item, result.auth.businessId)) }, { headers: { "Cache-Control": "no-store" } });
+  return Response.json({
+    items: menu.items.map((item) => mapItem(item, result.auth.businessId)),
+    modifierGroups: menu.modifierGroups,
+  }, { headers: { "Cache-Control": "no-store" } });
 }
 
 export async function POST(req: NextRequest) {
@@ -53,10 +57,17 @@ export async function POST(req: NextRequest) {
     catch { return Response.json({ ok: false, error: "Image must be a valid HTTPS URL." }, { status: 400 }); }
   }
   const created = await createMenuItem(auth.restaurantId, {
-    name, description, category, priceCents, imageUrl, isVeg: dietary === "veg", isBestseller: false, available: true,
+    name, description, category, priceCents, imageUrl, isVeg: dietary === "veg", isBestseller: false,
+    available: true, stockQuantity: body.stockQuantity,
   });
   if (!created.ok) return Response.json({ ok: false, error: created.error }, { status: 400 });
-  return Response.json({ item: mapItem(created.item, auth.businessId) }, { status: 201 });
+  let item = created.item;
+  if (Array.isArray(body.modifierGroupIds)) {
+    const linked = await setItemModifierGroups(auth.restaurantId, item.id, body.modifierGroupIds);
+    if (!linked.ok) return Response.json({ ok: false, error: linked.error }, { status: 400 });
+    item = linked.item;
+  }
+  return Response.json({ item: mapItem(item, auth.businessId) }, { status: 201 });
 }
 
 export async function PATCH(req: NextRequest) {
@@ -75,6 +86,11 @@ export async function PATCH(req: NextRequest) {
   const current = menu?.items.find((item) => item.id === id);
   if (!current) return Response.json({ ok: false, error: "Item not found." }, { status: 404 });
   if (current.posSynced) return Response.json({ ok: false, error: "This item is managed by the connected POS. Edit it in its source system." }, { status: 409 });
+  if (body.action === "modifier-groups") {
+    const linked = await setItemModifierGroups(auth.restaurantId, id, body.modifierGroupIds);
+    if (!linked.ok) return Response.json({ ok: false, error: linked.error }, { status: linked.error === "Dish not found" ? 404 : 400 });
+    return Response.json({ item: mapItem(linked.item, auth.businessId) });
+  }
   let changes: Record<string, unknown>;
   if (body.action === "availability") {
     if (typeof body.available !== "boolean") return Response.json({ ok: false, error: "Invalid availability." }, { status: 400 });
@@ -93,11 +109,18 @@ export async function PATCH(req: NextRequest) {
       description: typeof body.description === "string" ? body.description.trim().slice(0, 500) : "",
       category: typeof body.category === "string" && body.category.trim() ? body.category.trim().slice(0, 80) : "Other",
       imageUrl, priceCents, isVeg: dietary === "veg", isBestseller: false,
+      stockQuantity: body.stockQuantity,
     };
   }
   const updated = await updateMenuItem(auth.restaurantId, id, changes);
   if (!updated.ok) return Response.json({ ok: false, error: updated.error }, { status: updated.error === "Menu item not found" ? 404 : 400 });
-  return Response.json({ item: mapItem(updated.item, auth.businessId) });
+  let item = updated.item;
+  if (Array.isArray(body.modifierGroupIds)) {
+    const linked = await setItemModifierGroups(auth.restaurantId, id, body.modifierGroupIds);
+    if (!linked.ok) return Response.json({ ok: false, error: linked.error }, { status: 400 });
+    item = linked.item;
+  }
+  return Response.json({ item: mapItem(item, auth.businessId) });
 }
 
 export async function DELETE(req: NextRequest) {
