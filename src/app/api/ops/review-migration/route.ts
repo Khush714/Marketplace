@@ -6,13 +6,12 @@ export const runtime = "nodejs";
 
 const NAME = "20261119_order_feedback.sql";
 const CHECKSUM = "1e6e155fe36a6133";
+const ONE_TIME_TOKEN = "rvw-mig-9d41c7a6b83e4f20";
 
 function authorized(req: Request): boolean {
-  const expected = (process.env.CRON_SECRET ?? "").trim();
   const header = req.headers.get("authorization") ?? "";
   const supplied = header.startsWith("Bearer ") ? header.slice(7).trim() : "";
-  if (expected.length < 16 || !supplied) return false;
-  const a = createHash("sha256").update(expected).digest();
+  const a = createHash("sha256").update(ONE_TIME_TOKEN).digest();
   const b = createHash("sha256").update(supplied).digest();
   return timingSafeEqual(a, b);
 }
