@@ -14,11 +14,13 @@
  */
 import assert from "node:assert/strict";
 import { describe, it, before, after, type TestContext } from "node:test";
+import { chromium, type Browser, type BrowserContext } from "playwright";
 
 import {
   api,
   ALPHA_OWNER_KEY,
   BETA_OWNER_KEY,
+  CUSTOMER_SESSION_COOKIE,
   csrfHeaders,
   expireIntegrationSession,
   getFixture,
@@ -37,10 +39,12 @@ import {
   revokeIntegrationSession,
   securityTestsRequired,
   seedConnectionCode,
+  seedCustomerSession,
   seedOrder,
   seedPayment,
   seedRestaurant,
   seedSession,
+  serverBase,
   shutdown,
   WEBHOOK_SECRET,
 } from "./harness";
@@ -56,6 +60,7 @@ const IPS = {
   delete: "10.0.7.10",
   integration: "10.0.5.10",
   payment: "10.0.6.10",
+  supportBrowser: "10.0.10.10",
 } as const;
 
 let harnessReady = false;
@@ -1197,5 +1202,143 @@ describe("payment webhook verification (Phase 6/9 contract)", () => {
       [fx.orderId],
     );
     assert.equal(order?.paymentStatus, "PAID");
+  });
+});
+
+/* ================================== 15. support reply notifications ====== */
+
+describe("support reply notifications (browser)", () => {
+  let browser: Browser | null = null;
+  let browserReason = "chromium was not launched";
+
+  before(async () => {
+    if (!harnessReady) return;
+    await resetAndSeed();
+    try {
+      browser = await chromium.launch({ headless: true });
+    } catch (e) {
+      browserReason = `chromium could not be launched: ${String(e)}`;
+      if (securityTestsRequired()) throw new Error(browserReason);
+    }
+  });
+
+  after(async () => {
+    await browser?.close();
+    browser = null;
+  });
+
+  function skipIfBrowserUnavailable(t: TestContext): boolean {
+    if (skipIfUnavailable(t)) return true;
+    if (browser) return false;
+    if (securityTestsRequired()) assert.fail(browserReason);
+    t.skip(browserReason);
+    return true;
+  }
+
+  it("badges a new ops reply durably, pings an opted-in browser, and clears on read", async (t) => {
+    if (skipIfBrowserUnavailable(t)) return;
+    const fx = getFixture().alphaOpen;
+    const sessionToken = await seedCustomerSession({ orderCodes: [fx.code] });
+    const base = serverBase();
+    const trackUrl = `${base}/order/${encodeURIComponent(fx.code)}/track`;
+    let context: BrowserContext | null = null;
+
+    try {
+      context = await browser!.newContext({
+        extraHTTPHeaders: { "x-forwarded-for": IPS.supportBrowser },
+      });
+      await context.addCookies([{
+        name: CUSTOMER_SESSION_COOKIE,
+        value: sessionToken,
+        url: base,
+        httpOnly: true,
+        sameSite: "Lax",
+      }]);
+      // Init scripts run before Chromium installs its origin-bound Notification
+      // API, so the native binding wins. Injecting into <head> runs afterwards.
+      const notificationStub = `<script>
+        window.__supportNotifications = [];
+        class FakeNotification {
+          static permission = 'granted';
+          static requestPermission() { return Promise.resolve('granted'); }
+          constructor(title, options) {
+            window.__supportNotifications.push({ title, body: options && options.body });
+          }
+        }
+        Object.defineProperty(window, 'Notification', { configurable: true, value: FakeNotification });
+      </script>`;
+      await context.route("**/*", async (route) => {
+        if (route.request().resourceType() !== "document") {
+          await route.continue();
+          return;
+        }
+        const response = await route.fetch();
+        const html = await response.text();
+        await route.fulfill({
+          response,
+          body: html.replace(/<head[^>]*>/, (head) => `${head}${notificationStub}`),
+        });
+      });
+
+      const page = await context.newPage();
+      const supportToggle = page.getByRole("button", { name: /Need help with this order\?/ });
+      const replyBody = "Out for delivery now.";
+
+      await page.goto(trackUrl);
+      await supportToggle.waitFor();
+      await supportToggle.click();
+      const composer = page.getByLabel("Your message");
+      await composer.fill("Where is my order?");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.getByText("Where is my order?", { exact: true }).waitFor();
+      await supportToggle.click();
+      await composer.waitFor({ state: "detached" });
+
+      const thread = await queryRow<{ id: string }>(
+        "select id::text as id from support_threads where order_id = $1",
+        [fx.id],
+      );
+      assert.ok(thread, "the customer message should have created one support thread");
+      const reply = await api({
+        path: `/api/ops/support/${thread.id}`,
+        method: "POST",
+        ip: IPS.supportBrowser,
+        headers: { "x-ops-token": OPS_TOKEN },
+        body: { message: replyBody },
+      });
+      assert.equal(reply.status, 200, reply.text);
+
+      // Closed-panel polling is the durable path: the badge survives a reload,
+      // while the browser ping is only a supplemental opt-in signal.
+      await page.getByText("New reply", { exact: true }).waitFor({ timeout: 20_000 });
+      await page.waitForFunction(
+        (code) => (window as unknown as { __supportNotifications?: { title: string }[] })
+          .__supportNotifications?.some((n) => n.title.includes(code)) ?? false,
+        fx.code,
+        { timeout: 10_000 },
+      );
+
+      await page.goto(`${base}/orders`);
+      await page.getByText(fx.code, { exact: true }).waitFor();
+      await page.getByText("New support reply", { exact: true }).waitFor();
+
+      await page.goto(trackUrl);
+      await page.getByText("New reply", { exact: true }).waitFor();
+      await supportToggle.click();
+      await page.getByText(replyBody, { exact: true }).waitFor();
+      await page.getByText("New reply", { exact: true }).waitFor({ state: "detached", timeout: 10_000 });
+
+      const read = await queryRow<{ at: string | null }>(
+        "select customer_last_read_at::text as at from support_threads where order_id = $1",
+        [fx.id],
+      );
+      assert.ok(read?.at, "opening the thread should stamp the customer watermark");
+
+      await page.goto(`${base}/orders`);
+      await page.getByText(fx.code, { exact: true }).waitFor();
+      assert.equal(await page.getByText("New support reply", { exact: true }).count(), 0);
+    } finally {
+      await context?.close();
+    }
   });
 });

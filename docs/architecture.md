@@ -293,9 +293,10 @@ ids are `bigint` (epoch-ms can overflow int4).
 - **Host:** Vercel. `vercel.json` declares the two cron drains.
 - **CI:** `.github/workflows/ci.yml` sets `REQUIRE_SECURITY_TESTS=1`
   (fail-closed), runs typecheck, lint, unit tests, the security E2E suite against
-  a real Postgres, an advisory `npm audit`, and a build.
-- **Tests:** `npm test` = 26 unit suites + 8-suite security E2E harness
-  (`tests/security/harness.ts`, boots Postgres + `next start`).
+  a real Postgres and Playwright Chromium, an advisory `npm audit`, and a build.
+- **Tests:** `npm test` = 26 unit suites + 9-suite security E2E harness
+  (`tests/security/harness.ts`, boots Postgres + `next start`; the support-reply
+  suite adds one Playwright browser check for the durable badge and ping).
 - **Observability:** structured security events to stderr
   (`lib/security/security-events.ts`); POS transport failures as structured JSON
   (`lib/pos-bridge.ts`); queue health via `/api/ops/queue-health`.
