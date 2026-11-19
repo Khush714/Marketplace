@@ -50,6 +50,7 @@ import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { feedbackDto } from "@/lib/order-feedback";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
+import { closedReason, isRestaurantClosed } from "@/lib/restaurant-closure";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "@/lib/security/security-events";
 import { MAX_ITEM_QUANTITY } from "@/lib/order-input-core";
@@ -1198,6 +1199,9 @@ function toRestaurantManageDto(r: typeof restaurants.$inferSelect): RestaurantMa
     merchantClosesAt: r.merchantClosesAt,
     merchantPickupEnabled: r.merchantPickupEnabled,
     merchantDeliveryEnabled: r.merchantDeliveryEnabled,
+    closureReason: r.closureReason,
+    closureUntil: r.closureUntil ? r.closureUntil.toISOString() : null,
+    scheduledLeaves: r.scheduledLeaves ?? [],
   };
 }
 
@@ -2976,7 +2980,8 @@ export async function computeBill(
     .where(eq(restaurants.slug, restaurantSlug))
     .limit(1);
   if (!r) return { ok: false, error: "Restaurant not found" };
-  if (!r.isActive || !withinMerchantHours(r)) return { ok: false, error: `${r.name} is temporarily closed` };
+  if (!r.isActive || isRestaurantClosed(r)) return { ok: false, error: `${r.name} is ${closedReason(r).toLowerCase()}` };
+  if (!withinMerchantHours(r)) return { ok: false, error: `${r.name} is outside its operating hours` };
   if (!items.length) return { ok: false, error: "Cart is empty" };
 
   // Ordering gate. Enforced before any line is priced so the bill preview and

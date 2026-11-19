@@ -5,6 +5,7 @@ import { restaurants } from "@/db/schema";
 import { getRestaurantManageById, setRestaurantActiveById } from "@/db/queries";
 import { guardBudget, readJsonBody } from "@/lib/abuse";
 import { authenticateMerchantApp, unauthenticatedMerchantApp } from "@/lib/merchant-app-auth";
+import { cleanClosureReason, parseClosureUntil, parseScheduledLeaves } from "@/lib/restaurant-closure";
 
 export const dynamic = "force-dynamic";
 
@@ -62,6 +63,20 @@ export async function PATCH(req: NextRequest) {
       changes[field] = body[field];
     }
   }
+  if (body.closureReason !== undefined) {
+    try { changes.closureReason = cleanClosureReason(body.closureReason); }
+    catch (error) { return closureError(error); }
+  }
+  if (body.closureUntil !== undefined) {
+    try {
+      const until = parseClosureUntil(body.closureUntil);
+      changes.closureUntil = until ? new Date(until) : null;
+    } catch (error) { return closureError(error); }
+  }
+  if (body.scheduledLeaves !== undefined) {
+    try { changes.scheduledLeaves = parseScheduledLeaves(body.scheduledLeaves); }
+    catch (error) { return closureError(error); }
+  }
   if (body.merchantPickupEnabled === false && body.merchantDeliveryEnabled === false) {
     return Response.json({ ok: false, error: "At least one fulfilment option must remain enabled." }, { status: 400 });
   }
@@ -71,6 +86,13 @@ export async function PATCH(req: NextRequest) {
   const restaurant = await getRestaurantManageById(auth.restaurantId);
   if (!restaurant) return Response.json({ ok: false, error: "Marketplace listing not found" }, { status: 404 });
   return Response.json({ ok: true, restaurant }, { headers: { "Cache-Control": "no-store" } });
+}
+
+function closureError(error: unknown): Response {
+  return Response.json(
+    { ok: false, error: error instanceof Error ? error.message : "Invalid closure details." },
+    { status: 400 },
+  );
 }
 
 async function guardWriteSafe(req: NextRequest): Promise<Response | null> {

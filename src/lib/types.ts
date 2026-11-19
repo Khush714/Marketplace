@@ -32,6 +32,9 @@ export interface RestaurantManageDto extends RestaurantDto {
   merchantClosesAt: string;
   merchantPickupEnabled: boolean;
   merchantDeliveryEnabled: boolean;
+  closureReason: string;
+  closureUntil: string | null;
+  scheduledLeaves: { date: string; reason: string }[];
 }
 
 export interface ModifierOptionDto {

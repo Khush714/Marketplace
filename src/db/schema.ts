@@ -108,6 +108,10 @@ export const restaurants = pgTable("restaurants", {
   merchantClosesAt: text("merchant_closes_at").notNull().default("22:00"),
   merchantPickupEnabled: boolean("merchant_pickup_enabled").notNull().default(true),
   merchantDeliveryEnabled: boolean("merchant_delivery_enabled").notNull().default(true),
+  /** Paired Merchant App overlays: a timed closure and IST leave days stop new orders. */
+  closureReason: text("closure_reason").notNull().default(""),
+  closureUntil: timestamp("closure_until", { withTimezone: true }),
+  scheduledLeaves: jsonb("scheduled_leaves").$type<{ date: string; reason: string }[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   // Phase 10 (10.3): `restaurantIdForOwnerKey` resolves identity with
