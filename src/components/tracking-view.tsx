@@ -21,7 +21,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
-import { OrderSupport } from "@/components/order-support";
+import { OrderSupport, OrderSupportFallback } from "@/components/order-support";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatINR } from "@/lib/domain";
 import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
@@ -500,7 +500,13 @@ export function TrackingView({
             </div>
           </div>
 
-          {token && <OrderSupport code={order.code} token={token} />}
+          {/* A shared tracking link has no HMAC token, so chat cannot be offered.
+              Show the contact route with the code prefilled instead of nothing. */}
+          {token ? (
+            <OrderSupport code={order.code} token={token} />
+          ) : (
+            <OrderSupportFallback code={order.code} />
+          )}
         </div>
       </div>
 

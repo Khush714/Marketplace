@@ -117,7 +117,18 @@ export const LEGAL_ROUTES = {
   contact: "/contact",
 } as const;
 
-/** Support address rendered as a single mailto line. */
-export function supportMailto(): string {
-  return `mailto:${LEGAL.supportEmail}`;
+/**
+ * Support address rendered as a single mailto line.
+ *
+ * With an order code it prefills the subject and body so a customer arriving
+ * from a tracking page does not have to retype the one identifier we need to
+ * find their order — and cannot accidentally leave it out. The code is already
+ * filtered by `contactOrderCode` before it arrives here.
+ */
+export function supportMailto(orderCode?: string): string {
+  const to = `mailto:${LEGAL.supportEmail}`;
+  if (!orderCode) return to;
+  const subject = `Order support: ${orderCode}`;
+  const body = `Order code: ${orderCode}\n\nWhat happened:\n`;
+  return `${to}?subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(body)}`;
 }

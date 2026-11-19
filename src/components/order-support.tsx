@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ChevronDown, LoaderCircle, MessageCircle, Send } from "lucide-react";
+import { ArrowRight, ChevronDown, LoaderCircle, MessageCircle, Send } from "lucide-react";
 import { cn } from "@/lib/domain";
 import { useDocumentVisible } from "@/lib/order-access";
 import { MAX_SUPPORT_MESSAGE_CHARS, type SupportThreadDto } from "@/lib/support-core";
@@ -215,6 +216,44 @@ export function OrderSupport({ code, token }: { code: string; token: string }) {
           )}
         </div>
       )}
+    </section>
+  );
+}
+
+/**
+ * Read-only counterpart for a shared `/order/track/<token>` link. That token
+ * grants tracking, not the HMAC order token the thread API requires, so chat
+ * cannot work on another device. Hand the customer to /contact with the order
+ * code instead — a plain identifier, and the only thing support needs to find
+ * the order — and let that page prefill the support mail.
+ */
+export function OrderSupportFallback({ code }: { code: string }) {
+  return (
+    <section className="glass rounded-3xl p-5 md:p-6">
+      <div className="flex items-start gap-3">
+        <span className="grid size-9 shrink-0 place-items-center rounded-xl bg-ember-400/15 text-ember-300 ring-1 ring-ember-400/25">
+          <MessageCircle className="size-4.5" />
+        </span>
+        <div className="min-w-0">
+          <h2 className="font-display text-base font-bold text-cream-50">
+            Need help with this order?
+          </h2>
+          <p className="mt-1.5 text-xs leading-relaxed text-cream-400">
+            You&rsquo;re viewing a shared tracking link, so the in-app chat isn&rsquo;t
+            available here. Contact our support team with this order code and
+            we&rsquo;ll help.
+          </p>
+          <p className="mt-2 font-mono text-sm font-bold uppercase tracking-wide text-cream-200">
+            {code}
+          </p>
+          <Link
+            href={`/contact?order=${encodeURIComponent(code)}`}
+            className="press mt-3 inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-100 transition-colors hover:bg-white/12"
+          >
+            Contact support <ArrowRight className="size-3.5" />
+          </Link>
+        </div>
+      </div>
     </section>
   );
 }
