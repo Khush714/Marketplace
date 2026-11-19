@@ -22,9 +22,13 @@ export async function POST(req: Request) {
   const url = (process.env.MIGRATIONS_DATABASE_URL ?? process.env.DATABASE_URL ?? "").trim();
   if (!url) return Response.json({ ok: false, error: "No migrations database" }, { status: 503 });
 
-  const client = new Client({ connectionString: url });
-  await client.connect();
+  const client = new Client({
+    connectionString: url,
+    ssl: { rejectUnauthorized: false },
+    connectionTimeoutMillis: 15_000,
+  });
   try {
+    await client.connect();
     await client.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
         name text PRIMARY KEY,
@@ -78,7 +82,12 @@ export async function POST(req: Request) {
     return Response.json(
       { ok: true, status: "applied", checksum: CHECKSUM, columns: columns.rows.map((r) => r.column_name) },
     );
+  } catch (error) {
+    return Response.json(
+      { ok: false, error: error instanceof Error ? error.message : String(error) },
+      { status: 500 },
+    );
   } finally {
-    await client.end();
+    await client.end().catch(() => undefined);
   }
 }
