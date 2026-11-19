@@ -136,11 +136,10 @@ integration-session-core.ts`): a 60-minute **absolute** ceiling and a 30-minute
 idle window fails closed. Revocation is per-session (`/logout`) or all-sessions
 (`/revoke`, and on passkey rotation).
 
-> Note: `lib/security/integration-auth.ts` contains an **older in-memory**
-> session store (`Map`, `issueIntegrationSession`) that is **not wired to any
-> route**. The live path is the DB-backed `db/queries.ts` implementation used by
-> `app/api/integration/_auth.ts`. The in-memory file is dead code and is listed
-> in §12. (The Phase 0 inventory's §6 table conflates the two.)
+> The earlier in-memory session store was removed in Phase 0. The live path is
+> the DB-backed `db/queries.ts` implementation used by
+> `app/api/integration/_auth.ts`. (The Phase 0 inventory's §6 table describes
+> the older draft.)
 
 ### 3.3 Customer (anonymous) sessions and per-order tokens
 Historically the whole customer profile — including every order's signed token
@@ -297,6 +296,7 @@ ids are `bigint` (epoch-ms can overflow int4).
 - **Tests:** `npm test` = 26 unit suites + 9-suite security E2E harness
   (`tests/security/harness.ts`, boots Postgres + `next start`; the support-reply
   suite adds one Playwright browser check for the durable badge and ping).
+  `npm run verify:legal` is a separate release gate for the legal placeholders.
 - **Observability:** structured security events to stderr
   (`lib/security/security-events.ts`); POS transport failures as structured JSON
   (`lib/pos-bridge.ts`); queue health via `/api/ops/queue-health`.
@@ -309,14 +309,13 @@ ids are `bigint` (epoch-ms can overflow int4).
 These are **existing** conditions, recorded here so the architecture doc does not
 overstate completeness. They are not introduced by this document.
 
-1. **Dead integration session store.** `lib/security/integration-auth.ts`
-   (in-memory `Map`) is referenced only by the Phase 0 inventory doc; the live
-   POS session path is `db/queries.ts`. Safe to delete, but deleting source is out
-   of scope for Phase 1.
-2. **Per-instance state.** Rate-limit buckets (and the dead store) are in-process;
-   a multi-instance deployment needs a shared store for these to be authoritative.
-3. **Dependency advisories.** 9 high, notably `next@16.3.6` (fix `16.4.0`) and
-   `sharp@0.35.4` (fix `>=0.35.5`).
-4. **Least-privilege DB role unused; `.env` credential rotation pending.**
-6. **10 non-fatal build warnings** (Edge-Runtime Node-builtin traces, Turbopack
-   lockfile location).
+1. **Per-instance state.** Rate-limit buckets are in-process; a multi-instance
+   deployment needs a shared store for these to be authoritative.
+2. **Dependency advisories.** CI runs `npm audit` as an advisory check; keep the
+   framework and transitive dependencies patched before each release.
+3. **Least-privilege DB role unused; `.env` credential rotation pending.**
+4. **Non-fatal build warnings** from Edge-Runtime Node-builtin traces and
+   Turbopack instrumentation.
+5. **Legal placeholders.** Seven published contact/entity fields in
+   `lib/site-legal.ts` still need real values; `npm run verify:legal` fails until
+   they are filled.

@@ -93,8 +93,6 @@ of the bearer one.**
 
 ## Notes for future work
 
-- `src/lib/security/integration-auth.ts` is an **unused** in-memory session store
-  (an earlier draft). The live path is the DB-backed implementation in
-  `db/queries.ts`. Deleting the dead file is recommended but out of scope for
-  Phase 1.
+- The earlier in-memory session store was removed in Phase 0. The live path is
+  the DB-backed implementation in `db/queries.ts`.
 - `integration_sessions_idle_expires_at_idx` supports a future idle sweep.
