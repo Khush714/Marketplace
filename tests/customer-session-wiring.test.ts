@@ -23,6 +23,7 @@ const PER_ORDER_ROUTES = [
   "src/app/api/orders/[code]/cancel/route.ts",
   "src/app/api/orders/[code]/review/route.ts",
   "src/app/api/orders/[code]/support/route.ts",
+  "src/app/api/orders/[code]/support/read/route.ts",
   "src/app/api/orders/[code]/pay/start/route.ts",
   "src/app/api/orders/[code]/pay/verify/route.ts",
 ];

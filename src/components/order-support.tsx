@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
-import { ArrowRight, ChevronDown, LoaderCircle, MessageCircle, Send } from "lucide-react";
+import { ArrowRight, Bell, ChevronDown, LoaderCircle, MessageCircle, Send } from "lucide-react";
 import { cn } from "@/lib/domain";
 import { orderAuthHeaders, useDocumentVisible } from "@/lib/order-access";
-import { MAX_SUPPORT_MESSAGE_CHARS, type SupportThreadDto } from "@/lib/support-core";
+import { MAX_SUPPORT_MESSAGE_CHARS, type CustomerSupportThreadDto } from "@/lib/support-core";
 
 /**
  * Order-aware customer support. Rendering is gated by `supportAccess` in the
@@ -15,14 +15,35 @@ import { MAX_SUPPORT_MESSAGE_CHARS, type SupportThreadDto } from "@/lib/support-
  */
 export function OrderSupport({ code, token }: { code: string; token?: string }) {
   const [open, setOpen] = useState(false);
-  const [thread, setThread] = useState<SupportThreadDto | null>(null);
+  const [thread, setThread] = useState<CustomerSupportThreadDto | null>(null);
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState("");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [notify, setNotify] = useState<NotificationPermission | "unsupported">("unsupported");
   const visible = useDocumentVisible();
   const historyRef = useRef<HTMLDivElement>(null);
+  const notifiedRef = useRef<string | null>(null);
   const loading = open && !loaded;
+
+  // Permission is a browser fact, so it can only be read after mount — and a
+  // permission request must come from a click, never from an effect. The read is
+  // deferred to a macrotask so React never sees setState in the effect body.
+  useEffect(() => {
+    const t = window.setTimeout(() => {
+      if ("Notification" in window) setNotify(Notification.permission);
+    }, 0);
+    return () => window.clearTimeout(t);
+  }, []);
+
+  async function requestNotify() {
+    if (!("Notification" in window)) return;
+    try {
+      setNotify(await Notification.requestPermission());
+    } catch {
+      setNotify("denied");
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -31,8 +52,25 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
         cache: "no-store",
       });
       if (!res.ok) throw new Error("We couldn't load your conversation. Please try again.");
-      const data = (await res.json()) as { ok: boolean; thread: SupportThreadDto | null };
-      setThread(data.thread);
+      const data = (await res.json()) as { ok: boolean; thread: CustomerSupportThreadDto | null };
+      let next = data.thread;
+      // The panel is open, so the customer is looking at the thread. Advance
+      // the watermark for any reply that arrived since the last poll rather
+      // than leaving a badge that would survive closing the panel.
+      if (next?.unreadOpsReply) {
+        const readRes = await fetch(`/api/orders/${encodeURIComponent(code)}/support/read`, {
+          method: "POST",
+          headers: orderAuthHeaders(token),
+          cache: "no-store",
+        });
+        if (readRes.ok) {
+          const readData = (await readRes.json()) as {
+            ok?: boolean; thread?: CustomerSupportThreadDto | null;
+          };
+          if (readData.ok && readData.thread) next = readData.thread;
+        }
+      }
+      setThread(next);
       setError("");
     } catch (err) {
       setError(err instanceof Error ? err.message : "We couldn't load your conversation.");
@@ -40,6 +78,38 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
       setLoaded(true);
     }
   }, [code, token]);
+
+  /**
+   * Cheap check while the panel is closed. The unread bit comes from the same
+   * DTO the open panel reads, so a badge cannot disagree with the conversation.
+   * A browser notification is supplemental — the durable signal is the badge,
+   * which survives a reload and a cleared localStorage.
+   */
+  const checkUnread = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/orders/${encodeURIComponent(code)}/support`, {
+        headers: orderAuthHeaders(token),
+        cache: "no-store",
+      });
+      if (!res.ok) return;
+      const data = (await res.json()) as { ok: boolean; thread: CustomerSupportThreadDto | null };
+      setThread(data.thread);
+      if (!data.thread?.unreadOpsReply || notify !== "granted") return;
+      const stamp = data.thread.messages.at(-1)?.createdAt;
+      if (!stamp || notifiedRef.current === stamp) return;
+      notifiedRef.current = stamp;
+      try {
+        new Notification(`New reply about order ${code}`, {
+          body: "Support has replied. Open your order to read it.",
+          tag: `crave-support-${code}`,
+        });
+      } catch {
+        /* some browsers refuse notifications outside a service worker */
+      }
+    } catch {
+      /* a background badge check must stay silent */
+    }
+  }, [code, token, notify]);
 
   // Deferred to a macrotask so load()'s setState runs in a callback, not
   // synchronously in the effect body (react-hooks/set-state-in-effect).
@@ -56,6 +126,18 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
     const id = setInterval(() => { void load(); }, 6000);
     return () => clearInterval(id);
   }, [open, visible, load]);
+
+  // While collapsed, one small authenticated read every 15s is enough to show
+  // a badge without keeping a conversation rendered. It stops with the tab.
+  useEffect(() => {
+    if (open || !visible) return;
+    const t = window.setTimeout(() => { void checkUnread(); }, 0);
+    const id = window.setInterval(() => { void checkUnread(); }, 15000);
+    return () => {
+      window.clearTimeout(t);
+      window.clearInterval(id);
+    };
+  }, [open, visible, checkUnread]);
 
   useEffect(() => {
     const node = historyRef.current;
@@ -84,7 +166,7 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
         body: JSON.stringify({ message }),
       });
       const data = (await res.json().catch(() => null)) as {
-        ok?: boolean; thread?: SupportThreadDto; error?: string;
+        ok?: boolean; thread?: CustomerSupportThreadDto; error?: string;
       } | null;
       if (!res.ok || !data?.ok || !data.thread) {
         throw new Error(data?.error ?? "We couldn't send your message. Please try again.");
@@ -120,6 +202,11 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
           </span>
         </span>
         <span className="flex shrink-0 items-center gap-2">
+          {thread?.unreadOpsReply && (
+            <span className="flex items-center gap-1.5 rounded-full bg-ember-400/20 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wider text-ember-200">
+              <span className="size-1.5 rounded-full bg-ember-300" /> New reply
+            </span>
+          )}
           {thread && (
             <span
               className={cn(
@@ -135,6 +222,16 @@ export function OrderSupport({ code, token }: { code: string; token?: string }) 
           <ChevronDown className={cn("size-4 text-cream-500 transition-transform", open && "rotate-180")} />
         </span>
       </button>
+
+      {!open && notify === "default" && (
+        <button
+          type="button"
+          onClick={() => { void requestNotify(); }}
+          className="press mt-3 flex items-center gap-1.5 text-[11px] font-semibold text-cream-400 transition-colors hover:text-cream-200"
+        >
+          <Bell className="size-3.5" /> Alert me when support replies
+        </button>
+      )}
 
       {open && (
         <div className="animate-pop-in mt-4 border-t border-white/10 pt-4">

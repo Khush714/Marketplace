@@ -283,6 +283,14 @@ export const ABUSE_BUDGETS = {
   supportWrite: { limit: 20, windowMs: 10 * MINUTE_MS },
 
   /**
+   * Mark a support thread read. A tiny idempotent write fired once when the
+   * customer opens the conversation, so it is well below the read tier — but it
+   * still changes durable state and rides the same cookie as the thread read,
+   * hence its own origin-check-and-budget tier.
+   */
+  supportMarkRead: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
    * Ops support inbox. The console refreshes the list while open and reads one
    * thread at a time; charged before `requireOpsToken` so a wrong token is
    * counted instead of answered for free. Generous because the operator works

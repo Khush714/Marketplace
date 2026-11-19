@@ -1168,6 +1168,8 @@ export const supportThreads = pgTable(
     lastMessage: text("last_message").notNull().default(""),
     lastAuthorRole: text("last_author_role").notNull().default("CUSTOMER"),
     lastMessageAt: timestamp("last_message_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Watermark for "support replied" badges; NULL means never acknowledged. */
+    customerLastReadAt: timestamp("customer_last_read_at", { withTimezone: true }),
     resolvedAt: timestamp("resolved_at", { withTimezone: true }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),

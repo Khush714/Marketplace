@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, ChevronRight, Clock3, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
+import { ArrowRight, ChevronRight, Clock3, MessageCircle, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
 import { fetchSessionOrders, useOrderPoll } from "@/lib/order-access";
@@ -153,6 +153,11 @@ export default function OrdersPage() {
                         <span className="flex items-center gap-1 text-xs text-cream-500">
                           <Clock3 className="size-3" /> {formatDateTime(o.createdAt)}
                         </span>
+                        {o.unreadOpsReply && (
+                          <span className="flex items-center gap-1 rounded-full bg-ember-400/15 px-2 py-0.5 text-[11px] font-bold text-ember-300">
+                            <MessageCircle className="size-3" /> New support reply
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>

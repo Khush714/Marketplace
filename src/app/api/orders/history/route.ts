@@ -1,4 +1,5 @@
 import { listOrders } from "@/db/queries";
+import { unreadSupportCodes } from "@/db/support";
 import { guardRead } from "@/lib/abuse";
 import { sessionHistoryCodes } from "@/lib/customer-session-core";
 import { resolveCustomerSession } from "@/lib/customer-session";
@@ -26,6 +27,11 @@ export async function GET(req: Request) {
   const session = await resolveCustomerSession(req);
   if (!session) return Response.json({ orders: [] });
 
-  const orders: PublicOrder[] = (await listOrders(sessionHistoryCodes(session.orderCodes))).map(toPublicOrder);
+  const codes = sessionHistoryCodes(session.orderCodes);
+  const [rows, unread] = await Promise.all([listOrders(codes), unreadSupportCodes(codes)]);
+  const orders: PublicOrder[] = rows.map((row) => ({
+    ...toPublicOrder(row),
+    unreadOpsReply: unread.has(row.code),
+  }));
   return Response.json({ orders });
 }

@@ -8,6 +8,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   MAX_SUPPORT_MESSAGE_CHARS,
+  customerSupportThreadDto,
+  hasUnreadOpsReply,
   isSupportThreadId,
   opsSupportThreadDto,
   parseSupportMessage,
@@ -96,6 +98,40 @@ test("the customer DTO exposes the conversation, not internal order data", () =>
   ]);
   assert.equal(dto.status, "resolved");
   assert.deepEqual(dto.messages.map((m) => m.author), ["customer", "ops"]);
+});
+
+test("only a trailing ops reply after the watermark is unread", () => {
+  const reply = new Date("2026-11-22T10:00:00.000Z");
+  const older = new Date("2026-11-22T09:00:00.000Z");
+  const newer = new Date("2026-11-22T11:00:00.000Z");
+  assert.equal(hasUnreadOpsReply({ lastAuthorRole: "OPS", lastMessageAt: reply, customerLastReadAt: null }), true);
+  assert.equal(hasUnreadOpsReply({ lastAuthorRole: "OPS", lastMessageAt: reply, customerLastReadAt: older }), true);
+  assert.equal(hasUnreadOpsReply({ lastAuthorRole: "OPS", lastMessageAt: reply, customerLastReadAt: reply }), false);
+  assert.equal(hasUnreadOpsReply({ lastAuthorRole: "OPS", lastMessageAt: reply, customerLastReadAt: newer }), false);
+  // A customer reply closes the loop even for threads that predate the column.
+  assert.equal(hasUnreadOpsReply({ lastAuthorRole: "CUSTOMER", lastMessageAt: reply, customerLastReadAt: null }), false);
+});
+
+test("the customer thread DTO adds the unread bit, not the watermark", () => {
+  const dto = customerSupportThreadDto(
+    {
+      id: "t1",
+      status: "OPEN",
+      messageCount: 1,
+      createdAt: new Date("2026-11-22T09:00:00.000Z"),
+      updatedAt: new Date("2026-11-22T10:00:00.000Z"),
+      resolvedAt: null,
+      lastAuthorRole: "OPS",
+      lastMessageAt: new Date("2026-11-22T10:00:00.000Z"),
+      customerLastReadAt: null,
+    },
+    [{ id: "m1", authorRole: "OPS", body: "On it", createdAt: new Date("2026-11-22T10:00:00.000Z") }],
+  );
+  assert.deepEqual(Object.keys(dto).sort(), [
+    "createdAt", "id", "messageCount", "messages", "resolvedAt", "status", "updatedAt", "unreadOpsReply",
+  ].sort());
+  assert.equal(dto.unreadOpsReply, true);
+  assert.doesNotMatch(JSON.stringify(dto), /customerLastReadAt|lastMessageAt|lastAuthorRole/);
 });
 
 test("the ops list preview comes from the denormalised thread fields", () => {

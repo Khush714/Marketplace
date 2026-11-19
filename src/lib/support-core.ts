@@ -96,6 +96,39 @@ export function supportThreadDto(row: SupportThreadRow, messages: readonly Suppo
 
 export type SupportThreadDto = ReturnType<typeof supportThreadDto>;
 
+/** The three denormalised fields the unread decision is made from. */
+export type UnreadThreadFields = {
+  lastAuthorRole: string;
+  lastMessageAt: Date;
+  customerLastReadAt: Date | null;
+};
+
+/**
+ * Whether an ops reply has arrived since the customer last read the thread.
+ *
+ * Only a trailing OPS message counts: a customer cannot have replied without
+ * seeing the answer they are replying to, so a CUSTOMER last author closes the
+ * loop even when the watermark is still NULL (a thread that predates it). The
+ * timestamp comparison rather than message counts keeps this correct when two
+ * replies land between two reads.
+ */
+export function hasUnreadOpsReply(row: UnreadThreadFields): boolean {
+  if (row.lastAuthorRole !== "OPS") return false;
+  return !row.customerLastReadAt || row.lastMessageAt > row.customerLastReadAt;
+}
+
+export type CustomerThreadRow = SupportThreadRow & UnreadThreadFields;
+
+/** Customer thread plus the one bit the UI needs for a "new reply" badge. */
+export function customerSupportThreadDto(row: CustomerThreadRow, messages: readonly SupportMessageRow[]) {
+  return {
+    ...supportThreadDto(row, messages),
+    unreadOpsReply: hasUnreadOpsReply(row),
+  };
+}
+
+export type CustomerSupportThreadDto = ReturnType<typeof customerSupportThreadDto>;
+
 export type OpsSupportThreadRow = SupportThreadRow & {
   lastMessage: string;
   lastAuthorRole: string;

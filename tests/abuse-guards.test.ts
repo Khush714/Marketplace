@@ -277,7 +277,7 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
     scope: "opsCodeRevoke",
     db: "revokeConnectionCode",
   },
-  // Support chat has four dedicated tiers. Customers are charged before the
+  // Support chat has five dedicated tiers. Customers are charged before the
   // HMAC order-token check, ops before `requireOpsToken`.
   {
     path: "src/app/api/orders/[code]/support/route.ts",
@@ -290,6 +290,12 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
     guard: "guardWrite",
     scope: "supportWrite",
     db: "customerSendSupportMessage",
+  },
+  {
+    path: "src/app/api/orders/[code]/support/read/route.ts",
+    guard: "guardWrite",
+    scope: "supportMarkRead",
+    db: "markSupportThreadRead",
   },
   {
     path: "src/app/api/ops/support/route.ts",
@@ -373,6 +379,7 @@ test("the budget is charged before the credential check", () => {
     "src/app/api/orders/[code]/cancel/route.ts",
     "src/app/api/orders/[code]/review/route.ts",
     "src/app/api/orders/[code]/support/route.ts",
+    "src/app/api/orders/[code]/support/read/route.ts",
     "src/app/api/orders/[code]/pay/start/route.ts",
     "src/app/api/orders/[code]/pay/verify/route.ts",
     "src/app/api/ops/support/route.ts",

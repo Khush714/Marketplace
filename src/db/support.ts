@@ -1,15 +1,17 @@
 import "server-only";
-import { asc, desc, eq, sql } from "drizzle-orm";
+import { asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/db";
 import { orders, supportMessages, supportThreads } from "@/db/schema";
 import {
+  customerSupportThreadDto,
+  hasUnreadOpsReply,
   MAX_SUPPORT_MESSAGES,
   opsSupportThreadDto,
   supportThreadDto,
+  type CustomerSupportThreadDto,
   type OpsSupportThreadDetail,
   type OpsSupportThreadDto,
   type SupportStatus,
-  type SupportThreadDto,
 } from "@/lib/support-core";
 
 /**
@@ -24,7 +26,7 @@ import {
 
 export type CustomerThreadResult = {
   orderFound: boolean;
-  thread: SupportThreadDto | null;
+  thread: CustomerSupportThreadDto | null;
 };
 
 /** The thread a customer sees, or `null` before they have written anything. */
@@ -41,11 +43,11 @@ export async function customerSupportThread(code: string): Promise<CustomerThrea
     .where(eq(supportMessages.threadId, thread.id))
     .orderBy(asc(supportMessages.createdAt))
     .limit(MAX_SUPPORT_MESSAGES);
-  return { orderFound: true, thread: supportThreadDto(thread, messages) };
+  return { orderFound: true, thread: customerSupportThreadDto(thread, messages) };
 }
 
 export type CustomerSendResult =
-  | { kind: "OK"; thread: SupportThreadDto }
+  | { kind: "OK"; thread: CustomerSupportThreadDto }
   | { kind: "NOT_FOUND" }
   | { kind: "CONFLICT" };
 
@@ -83,6 +85,9 @@ export async function customerSendSupportMessage(code: string, body: string): Pr
       lastMessage: body,
       lastAuthorRole: "CUSTOMER",
       lastMessageAt: message.createdAt,
+      // Replying means they have read the thread, including any earlier ops
+      // answer — otherwise the badge would survive their own response.
+      customerLastReadAt: message.createdAt,
       messageCount: sql`${supportThreads.messageCount} + 1`,
       resolvedAt: null,
       updatedAt: new Date(),
@@ -94,9 +99,62 @@ export async function customerSendSupportMessage(code: string, body: string): Pr
       .where(eq(supportMessages.threadId, thread.id))
       .orderBy(asc(supportMessages.createdAt))
       .limit(MAX_SUPPORT_MESSAGES);
-    return { kind: "OK" as const, thread: supportThreadDto(fresh, messages) };
+    return { kind: "OK" as const, thread: customerSupportThreadDto(fresh, messages) };
   });
   return result;
+}
+
+/**
+ * Advance the read watermark for one order's thread.
+ *
+ * Idempotent: a repeated mark (two tabs, a double tap) lands on the same reply
+ * and never touches message history or the ops-visible fields. An order without
+ * a thread has nothing to mark, which is success rather than an error — the
+ * customer has no way to know a thread does not exist yet.
+ */
+export async function markSupportThreadRead(code: string): Promise<boolean> {
+  const result = await db.transaction(async (tx) => {
+    const [order] = await tx.select({ id: orders.id }).from(orders)
+      .where(eq(orders.code, code)).limit(1);
+    if (!order) return false;
+    const [thread] = await tx.select({
+      id: supportThreads.id,
+      lastMessageAt: supportThreads.lastMessageAt,
+    }).from(supportThreads)
+      .where(eq(supportThreads.orderId, order.id)).limit(1).for("update");
+    if (!thread) return false;
+    // Stamp the reply that was just read, not `now()`: an ops reply arriving
+    // after this lock has to stay unread instead of being swallowed by the mark.
+    await tx.update(supportThreads).set({
+      customerLastReadAt: thread.lastMessageAt,
+      updatedAt: new Date(),
+    }).where(eq(supportThreads.id, thread.id));
+    return true;
+  });
+  return result;
+}
+
+/**
+ * Which of these orders have an unread ops reply, in one bounded query.
+ *
+ * The predicate is the pure `hasUnreadOpsReply` rule applied to the same
+ * denormalised fields the thread DTO uses, so a badge in a list and a badge on
+ * the conversation cannot disagree. Callers pass already-authorised codes:
+ * this is a projection over them, never a way to discover a thread.
+ */
+export async function unreadSupportCodes(codes: readonly string[]): Promise<Set<string>> {
+  const upper = codes.slice(0, 30).map((code) => code.toUpperCase());
+  if (!upper.length) return new Set();
+  const rows = await db.select({
+    code: orders.code,
+    lastAuthorRole: supportThreads.lastAuthorRole,
+    lastMessageAt: supportThreads.lastMessageAt,
+    customerLastReadAt: supportThreads.customerLastReadAt,
+  }).from(supportThreads)
+    .innerJoin(orders, eq(orders.id, supportThreads.orderId))
+    .where(inArray(orders.code, upper))
+    .limit(30);
+  return new Set(rows.filter(hasUnreadOpsReply).map((row) => row.code));
 }
 
 /** Ops inbox summaries, newest activity first. One bounded indexed query. */
