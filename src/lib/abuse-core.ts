@@ -221,6 +221,14 @@ export const ABUSE_BUDGETS = {
   merchantServiceRead: { limit: 300, windowMs: MINUTE_MS },
 
   /**
+   * Cheap Merchant App change signal. A connected workspace checks this about
+   * once every 1.5 seconds while open; it is two indexed aggregates and no order
+   * payload. Its own scope keeps the 40/min trickle from consuming the budget of
+   * the much heavier inbox reads, which now happen only when a token moves.
+   */
+  merchantServiceSignal: { limit: 900, windowMs: MINUTE_MS },
+
+  /**
    * Merchant App status transitions. Every accepted call performs a
    * compare-and-set plus an event insert, and a person can only tap a button so
    * often; the generous ceiling covers retries and double-submits without

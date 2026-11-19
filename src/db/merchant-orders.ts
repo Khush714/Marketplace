@@ -4,6 +4,7 @@ import { db } from "@/db";
 import { merchantOrderEvents, orders, restaurants } from "@/db/schema";
 import { recordIntegrationAudit } from "@/db/queries";
 import { feedbackDto } from "@/lib/order-feedback";
+import { merchantSyncVersion, type MerchantSyncSnapshot, type MerchantSyncVersion } from "@/lib/merchant-sync";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
 
 export const MERCHANT_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY", "COMPLETED", "REJECTED", "CANCELLED"] as const;
@@ -276,6 +277,43 @@ export async function updateMerchantOrderFulfilment(input: {
       addressText: updated.addressText,
     },
   };
+}
+
+/**
+ * Cheap authoritative change signal for the paired Merchant App.
+ *
+ * Two small aggregates, both served by existing restaurant-leading indexes.
+ * The event ledger's max id covers edits that leave every order timestamp
+ * untouched (fulfilment switches, address corrections, reviews and replies).
+ */
+export async function getMerchantSyncVersion(restaurantId: number): Promise<MerchantSyncVersion> {
+  const visible = and(
+    eq(orders.restaurantId, restaurantId),
+    eq(orders.merchantManaged, true),
+    or(eq(orders.paymentMethod, "cod"), eq(orders.paymentStatus, "PAID")),
+  );
+  const [[orderRow], [eventRow]] = await Promise.all([
+    db.select({
+      count: sql<number>`count(*)::int`,
+      paidCount: sql<number>`count(*) filter (where ${orders.paymentStatus} = 'PAID')::int`,
+      latestCreated: sql<string | null>`max(${orders.createdAt})::text`,
+      latestStatus: sql<string | null>`max(${orders.merchantStatusUpdatedAt})::text`,
+      latestFeedback: sql<string | null>`max(${orders.feedbackAt})::text`,
+      latestReply: sql<string | null>`max(${orders.merchantRespondedAt})::text`,
+    }).from(orders).where(visible),
+    db.select({ latestEvent: sql<string | null>`max(${merchantOrderEvents.id})::text` })
+      .from(merchantOrderEvents).where(eq(merchantOrderEvents.restaurantId, restaurantId)),
+  ]);
+  const snapshot: MerchantSyncSnapshot = {
+    count: Number(orderRow?.count ?? 0),
+    paidCount: Number(orderRow?.paidCount ?? 0),
+    latestCreated: orderRow?.latestCreated ?? null,
+    latestStatus: orderRow?.latestStatus ?? null,
+    latestEvent: eventRow?.latestEvent ?? null,
+    latestFeedback: orderRow?.latestFeedback ?? null,
+    latestReply: orderRow?.latestReply ?? null,
+  };
+  return merchantSyncVersion(snapshot);
 }
 
 /** Server-derived overview metrics for the connected Merchant App. */
