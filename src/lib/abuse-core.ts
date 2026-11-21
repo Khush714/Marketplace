@@ -66,6 +66,17 @@ export const ABUSE_BUDGETS = {
   orderLookup: { limit: 60, windowMs: MINUTE_MS },
 
   /**
+   * Session-backed order history. One cookie-authenticated read returns up to
+   * 30 public order DTOs — the same payload as the token-based lookup, without
+   * asking the client to replay credentials from storage. It cannot enumerate
+   * orders (the codes come from the bound session row), but it is still the
+   * read a history page runs on every visit and while live orders poll, so it
+   * gets its own tier rather than riding on `orderLookup`'s token-verification
+   * budget.
+   */
+  orderHistory: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Search. Every request runs an ILIKE across restaurants plus a dish scan.
    * A scrape loop is the reason this is budgeted at all; 60/min still lets a
    * person search continuously.
@@ -297,6 +308,46 @@ export const ABUSE_BUDGETS = {
    * budgeted to stop scripted write loops with a leaked session/cookie.
    */
   customerAccountWrite: { limit: 60, windowMs: MINUTE_MS },
+
+  /**
+   * Order support thread read. The customer view polls for an ops reply while
+   * open, so this is a short-window read budget rather than a write tier; the
+   * guard is charged before the HMAC check so a leaked token still costs the
+   * caller something. Two per second per address clears any real chat screen.
+   */
+  supportRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Customer support message. Token-gated and reopening a resolved thread on
+   * every accepted call, so it is graded like `orderReview`: charged ahead of
+   * the token check, with room for a slow customer's retries but far below a
+   * scripted loop appending to one conversation.
+   */
+  supportWrite: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Mark a support thread read. A tiny idempotent write fired once when the
+   * customer opens the conversation, so it is well below the read tier — but it
+   * still changes durable state and rides the same cookie as the thread read,
+   * hence its own origin-check-and-budget tier.
+   */
+  supportMarkRead: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Ops support inbox. The console refreshes the list while open and reads one
+   * thread at a time; charged before `requireOpsToken` so a wrong token is
+   * counted instead of answered for free. Generous because the operator works
+   * several threads in one session, bounded because each read is one query.
+   */
+  opsSupportRead: { limit: 240, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Ops support reply / status change. Each accepted call writes a message or
+   * moves a thread and re-reads it for the response. Charged before the token
+   * check like the other ops credential endpoints; a human replying to tickets
+   * stays far below this ceiling.
+   */
+  opsSupportWrite: { limit: 120, windowMs: 10 * MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

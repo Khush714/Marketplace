@@ -1,8 +1,8 @@
 import { getOrderByCode, recordIntegrationAudit } from "@/db/queries";
 import { bindProviderOrderId, getActivePaymentByOrder, isOnlinePayment } from "@/db/payments";
 import { createProviderOrder, providerMode, razorpayKeyId } from "@/integrations/payments/provider-session";
-import { orderAuthorized } from "@/lib/order-authorized";
 import { guardWrite } from "@/lib/abuse";
+import { orderAuthorized } from "@/lib/order-authorized";
 
 export const dynamic = "force-dynamic";
 
@@ -12,9 +12,9 @@ export const dynamic = "force-dynamic";
  * same session instead of minting a second one, so a double tap, a refresh, or
  * a retry after a provider outage all converge on one payment.
  *
- * Budgeted before the token check: an unauthenticated caller gets the same 404
- * either way, but only one of those outcomes cost a provider call — and the
- * token gating this route is not a licence to grind provider quota (see
+ * Budgeted before the credential check: an unauthenticated caller gets the same
+ * 404 either way, but only one of those outcomes costs a provider call — and a
+ * valid order token or session is not a licence to grind provider quota (see
  * ABUSE_BUDGETS.paymentStart).
  */
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {

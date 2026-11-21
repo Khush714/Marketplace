@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronDown, MapPin, ReceiptText, ShoppingBag, CircleUserRound } from "lucide-react";
+import { ChevronDown, MapPin, ReceiptText, ShoppingBag, CircleUserRound, Store } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
@@ -133,6 +133,13 @@ export function SiteHeader() {
           >
             <ReceiptText className="size-[18px] text-ember-300" />
             Orders
+          </Link>
+          <Link
+            href="/partner/merchant-app"
+            className="press flex items-center gap-1.5 rounded-full glass px-4 py-2 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/10"
+          >
+            <Store className="size-[18px] text-ember-300" />
+            Merchant App
           </Link>
           {itemCount > 0 && <HeaderCart itemCount={itemCount} bump={bump} labelled />}
           <Link

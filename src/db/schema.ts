@@ -1298,3 +1298,55 @@ export const webhookLogs = pgTable("webhook_logs", {
   ipAddress: text("ip_address"),
   createdAt: timestamp("created_at").defaultNow().notNull()
 });
+
+/**
+ * One support conversation per order. Cascade on the order is deliberate and
+ * narrow: a support thread has no meaning without the order it is about, and
+ * `deleteRestaurantById` already removes that restaurant's orders explicitly.
+ *
+ * The last-message fields are a projection of `support_messages`, maintained in
+ * the same transaction as each insert. They exist so the ops inbox is a single
+ * bounded query rather than a per-thread follow-up read; the full history stays
+ * authoritative in `support_messages`.
+ */
+export const supportThreads = pgTable(
+  "support_threads",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    orderId: integer("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    status: text("status").notNull().default("OPEN"),
+    messageCount: integer("message_count").notNull().default(0),
+    lastMessage: text("last_message").notNull().default(""),
+    lastAuthorRole: text("last_author_role").notNull().default("CUSTOMER"),
+    lastMessageAt: timestamp("last_message_at", { withTimezone: true }).notNull().defaultNow(),
+    /** Watermark for "support replied" badges; NULL means never acknowledged. */
+    customerLastReadAt: timestamp("customer_last_read_at", { withTimezone: true }),
+    resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    // One thread per order is the invariant the customer write path relies on:
+    // it upserts on this index instead of racing two tabs into two threads.
+    uniqueIndex("support_threads_order_id_unique").on(t.orderId),
+    index("support_threads_restaurant_status_idx").on(t.restaurantId, t.status, t.lastMessageAt),
+    index("support_threads_status_last_message_idx").on(t.status, t.lastMessageAt),
+  ],
+);
+
+/** Append-only conversation. Author roles are written by routes, never by clients. */
+export const supportMessages = pgTable(
+  "support_messages",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    threadId: uuid("thread_id").notNull().references(() => supportThreads.id, { onDelete: "cascade" }),
+    authorRole: text("author_role").notNull(),
+    body: text("body").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("support_messages_thread_created_idx").on(t.threadId, t.createdAt)],
+);
+
+export type SupportThreadRow = typeof supportThreads.$inferSelect;
+export type SupportMessageRow = typeof supportMessages.$inferSelect;

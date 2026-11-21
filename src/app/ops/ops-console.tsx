@@ -22,6 +22,7 @@ import {
   Wallet,
   X,
 } from "lucide-react";
+import SupportPanel from "@/app/ops/support-panel";
 import { cn } from "@/lib/domain";
 import { useToast } from "@/lib/toast";
 import type { ConnectionCodeDto, ConnectionDto } from "@/lib/types";
@@ -118,6 +119,7 @@ export default function OpsConsole({ open }: { open: boolean }) {
         onSave={setToken}
         onTest={() => testToken(call, toast, open)}
       />
+      <SupportPanel canAct={canAct} call={call} />
         <PosBridgePanel token={token} call={call} />
         <CodesPanel token={token} canAct={canAct} call={call} />
         <ProvisionPanel canAct={canAct} call={call} />

@@ -74,6 +74,14 @@ export const CUSTOMER_SESSION_RENEW_BELOW_MS = CUSTOMER_SESSION_TTL_MS / 2;
 export const CUSTOMER_SESSION_MAX_CODES = 60;
 
 /**
+ * How many bound codes the history read may load. The session remembers 60 so
+ * an old order is not evicted by one busy week, but a history screen shows 30
+ * (matching the legacy lookup and `listOrders` caps) — loading the rest would
+ * spend queries on rows nobody can see.
+ */
+export const CUSTOMER_SESSION_HISTORY_LIMIT = 30;
+
+/**
  * Session token: 32 random bytes, base64url.
  *
  * Never transcribed, never rendered, never placed in a URL — it exists only in
@@ -151,6 +159,20 @@ export function normalizeOrderCodes(codes: Iterable<unknown>): string[] {
     if (out.length >= CUSTOMER_SESSION_MAX_CODES) break;
   }
   return out;
+}
+
+/**
+ * The codes the session-backed history read is allowed to load.
+ *
+ * Bound codes are already normalised on write, but the row is durable state:
+ * re-cleaning here keeps a hand-edited or legacy row from widening the read,
+ * and capping to the history limit stops a session from spending one query per
+ * stored code when the screen only ever renders 30. This is a read of a
+ * capability list, not a filter on orders — the bound list is what the browser
+ * may touch, and everything outside it stays unreachable.
+ */
+export function sessionHistoryCodes(orderCodes: Iterable<unknown>): string[] {
+  return normalizeOrderCodes(orderCodes).slice(0, CUSTOMER_SESSION_HISTORY_LIMIT);
 }
 
 /** Cookie attributes for the session cookie. */

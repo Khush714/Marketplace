@@ -5,10 +5,10 @@ import { useState } from "react";
 import { OrderSuccess } from "@/components/order-success";
 import { PaymentStage } from "@/components/payment-stage";
 import { useProfileOrders, useProfileReady } from "@/lib/profile";
-import { usePublicOrder } from "@/lib/order-access";
+import { orderAuthHeaders, usePublicOrder } from "@/lib/order-access";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 
-/** Client entry for /order/[code]/success — token-gated like tracking. */
+/** Client entry for /order/[code]/success — token- or session-gated like tracking. */
 export function OrderSuccessScreen({ code }: { code: string }) {
   const hydrated = useProfileReady();
   const { orders } = useProfileOrders();
@@ -39,7 +39,8 @@ export function OrderSuccessScreen({ code }: { code: string }) {
       <div className="mx-auto max-w-lg px-4 py-20 text-center">
         <h1 className="font-display text-2xl font-bold text-cream-50">We can&apos;t open this order</h1>
         <p className="mt-2 text-sm leading-relaxed text-cream-400">
-          This order was placed in a different browser, so the key needed to read it isn&apos;t here.
+          This order belongs to another browser or its session has ended. Contact support with the
+          order code if you still need it.
         </p>
         <p className="mt-4 font-mono text-sm text-cream-500">{code}</p>
         <Link
@@ -64,11 +65,9 @@ export function OrderSuccessScreen({ code }: { code: string }) {
     setStarting(true);
     setPayError(null);
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${encodeURIComponent(code)}/pay/start`, {
         method: "POST",
-        headers,
+        headers: { ...orderAuthHeaders(token), "Content-Type": "application/json" },
         cache: "no-store",
         credentials: "same-origin",
       });

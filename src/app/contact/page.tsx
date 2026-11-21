@@ -8,7 +8,8 @@ import {
   LegalPage,
   LegalSection,
 } from "@/components/legal-doc";
-import { LEGAL, isPlaceholder } from "@/lib/site-legal";
+import { contactOrderCode } from "@/lib/contact-order-core";
+import { LEGAL, isPlaceholder, supportMailto } from "@/lib/site-legal";
 
 export const metadata: Metadata = {
   title: "Contact",
@@ -17,22 +18,16 @@ export const metadata: Metadata = {
   alternates: { canonical: "/contact" },
 };
 
-interface ContactSearchParams {
-  order?: string;
-  code?: string;
-}
-
-function readOrderCode(sp: ContactSearchParams): string | null {
-  const raw = (sp.order ?? sp.code ?? "").trim();
-  if (!raw) return null;
-  // Order codes are short (e.g. CRV-XXXXX). Cap length and strip control chars.
-  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32);
-  return cleaned || null;
-}
-
-export default async function ContactPage(props: { searchParams: Promise<ContactSearchParams> }) {
-  const sp = await props.searchParams;
-  const orderCode = readOrderCode(sp);
+export default async function ContactPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ order?: string | string[]; code?: string | string[] }>;
+}) {
+  const params = await searchParams;
+  // A tracking page hands the code over in the query string. It is a plain
+  // identifier, not a credential, but it still gets filtered before it is
+  // echoed into the callout or the prefilled support email.
+  const orderCode = contactOrderCode(params.order) ?? contactOrderCode(params.code);
 
   return (
     <LegalPage>
@@ -66,7 +61,7 @@ export default async function ContactPage(props: { searchParams: Promise<Contact
         <ul className="space-y-3">
           <ContactRow Icon={Mail} label="Email">
             <a
-              href={`mailto:${LEGAL.supportEmail}`}
+              href={supportMailto(orderCode ?? undefined)}
               className="text-ember-400 hover:text-ember-300"
             >
               {LEGAL.supportEmail}

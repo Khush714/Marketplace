@@ -125,9 +125,14 @@ function SiteFooter() {
         crave<span className="text-chili-500">.</span> — a marketplace experience · Crafted with fire in
         Bharuch
       </p>
-      <Link href="/partner" className="press mt-2 inline-flex items-center gap-1 text-xs font-semibold text-ember-400 transition-colors hover:text-ember-300">
-        Partner with us <ArrowRight className="size-3.5" />
-      </Link>
+      <div className="mt-2 flex flex-wrap items-center justify-center gap-x-4 gap-y-1">
+        <Link href="/orders" className="press inline-flex items-center gap-1 text-xs font-semibold text-cream-400 transition-colors hover:text-cream-200">
+          Your orders <ArrowRight className="size-3.5" />
+        </Link>
+        <Link href="/partner" className="press inline-flex items-center gap-1 text-xs font-semibold text-ember-400 transition-colors hover:text-ember-300">
+          Partner with us <ArrowRight className="size-3.5" />
+        </Link>
+      </div>
       {/* Razorpay's Payment Aggregator guidelines require the terms of use,
           privacy policy, refund policy and entity contact details to be reachable
           from every page — so they live in the site footer, not behind a route

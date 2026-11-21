@@ -10,7 +10,6 @@ import {
   ChefHat,
   Copy,
   House,
-  LifeBuoy,
   MapPin,
   PartyPopper,
   Phone,
@@ -24,9 +23,16 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
+import { OrderSupport, OrderSupportFallback } from "@/components/order-support";
 import { orderItemLineTotalCents } from "@/db/schema";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
-import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
+import {
+  fetchOrderByTrackingToken,
+  fetchPublicOrder,
+  orderAuthHeaders,
+  useDocumentVisible,
+  useOrderPoll,
+} from "@/lib/order-access";
 import { MAX_REVIEW_CHARS } from "@/lib/order-feedback";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
 
@@ -59,17 +65,23 @@ export function TrackingView({
   initialOrder,
   token,
   trackingToken,
+  supportAccess = Boolean(token),
 }: {
   initialOrder: PublicOrder;
   /**
    * The browser-held HMAC access token, when this browser placed the order.
-   * Without it (a shared `/order/<tracking-token>` link on another device), the
-   * view is read-only: polling goes through the tracking token and cancellation
-   * is simply not offered.
+   * Absence is fine when `supportAccess` came from a live session instead —
+   * the server accepts either credential on the per-order routes.
    */
   token?: string;
   /** The Phase 6 bearer tracking token, when this screen arrived via it. */
   trackingToken?: string;
+  /**
+   * Whether THIS browser may act on the order — a token, or a server-verified
+   * session. A shared tracking link on another device has neither, so it stays
+   * read-only and is offered the contact fallback rather than chat.
+   */
+  supportAccess?: boolean;
 }) {
   const [order, setOrder] = useState(initialOrder);
   const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
@@ -102,13 +114,12 @@ export function TrackingView({
   useOrderPoll({ load: pollLoad, onData: pollApply, intervalMs: 4000, live: isOrderLive(order) });
 
   async function handleCancel() {
+    if (!supportAccess) return;
     setCancel({ kind: "sending" });
     try {
-      const headers: Record<string, string> = {};
-      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${order.code}/cancel`, {
         method: "POST",
-        headers,
+        headers: orderAuthHeaders(token),
         cache: "no-store",
         credentials: "same-origin",
       });
@@ -143,6 +154,7 @@ export function TrackingView({
 
   async function submitReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!supportAccess) return;
     if (!reviewRating) {
       setReviewError("Choose a star rating first, then send your review.");
       return;
@@ -151,11 +163,9 @@ export function TrackingView({
     setReviewError("");
     setReviewNotice("");
     try {
-      const headers: Record<string, string> = { "Content-Type": "application/json" };
-      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${encodeURIComponent(order.code)}/review`, {
         method: "POST",
-        headers,
+        headers: { ...orderAuthHeaders(token), "Content-Type": "application/json" },
         body: JSON.stringify({ rating: reviewRating, review: reviewText }),
         cache: "no-store",
         credentials: "same-origin",
@@ -406,11 +416,11 @@ export function TrackingView({
             </ol>
           </div>
 
-          {/* cancel order — not offered once the order never reached the kitchen,
+          {/* cancel order - not offered once the order never reached the kitchen,
               where there is nothing to cancel and a refund is already under way.
-              Shared tracking-link views are read-only unless this browser can prove
-              ownership (token/session-backed owner flows can still manage). */}
-          {inFlight && cancel.kind !== "cancelled" && (!trackingToken || token) && (
+              Also not offered on a shared tracking link: cancelling needs this
+              browser's token or session, not the widely-shared tracking URL. */}
+          {inFlight && cancel.kind !== "cancelled" && supportAccess && (
             <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
           )}
           {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (
@@ -487,10 +497,9 @@ export function TrackingView({
                 >
                   <RefreshCcw className="size-4" /> Reorder
                 </Link>
-                {/* Owner actions are available on owner-authorized views (token or
-                    bound session). Shared tracking links stay read-only unless this
-                    browser can prove ownership. */}
-                {(!trackingToken || token) && (
+                {/* A shared tracking link is read-only: only this browser's
+                    token or session authorises a review. */}
+                {supportAccess && (
                   <button
                     type="button"
                     onClick={openReview}
@@ -573,30 +582,14 @@ export function TrackingView({
             </div>
           </div>
 
-          <div className="glass rounded-3xl p-5">
-            <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
-              <LifeBuoy className="size-4.5 text-ember-400" /> Need help with this order?
-            </h2>
-            <p className="mt-1.5 text-sm leading-relaxed text-cream-400">
-              For delivery issues, payment questions, or refunds, contact support and include your order code{" "}
-              <button
-                type="button"
-                onClick={() => void copyOrderCode()}
-                className="inline-flex items-center gap-1 font-mono font-semibold text-cream-200 underline decoration-white/20 underline-offset-2 transition-colors hover:text-cream-50"
-                aria-label={codeCopied ? "Order code copied" : `Copy order code ${order.code}`}
-              >
-                {order.code}
-                {codeCopied ? <Check className="size-3 text-mint-400" /> : <Copy className="size-3 text-cream-500" />}
-              </button>
-              .
-            </p>
-            <Link
-              href={`/contact?order=${encodeURIComponent(order.code)}`}
-              className="press mt-3 inline-flex items-center rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
-            >
-              Contact support
-            </Link>
-          </div>
+          {/* A shared tracking link has neither a token nor a bound session, so
+              chat cannot be offered. Show the contact route with the code
+              prefilled instead; a session-only browser gets the real chat. */}
+          {supportAccess ? (
+            <OrderSupport code={order.code} token={token} />
+          ) : (
+            <OrderSupportFallback code={order.code} />
+          )}
         </div>
       </div>
 

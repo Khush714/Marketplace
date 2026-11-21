@@ -239,6 +239,7 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
   { path: "src/app/api/orders/route.ts", guard: "guardRead", scope: "orderLookup", db: "getOrderByCode" },
   { path: "src/app/api/orders/bill/route.ts", guard: "guardWrite", scope: "billPreview" },
   { path: "src/app/api/orders/lookup/route.ts", guard: "guardWrite", scope: "orderLookup" },
+  { path: "src/app/api/orders/history/route.ts", guard: "guardRead", scope: "orderHistory", db: "listOrders" },
   { path: "src/app/api/partner/session/route.ts", guard: "guardWrite", scope: "ownerVerify" },
   { path: "src/app/api/integration/login/route.ts", guard: "guardWrite", scope: "integrationLogin" },
   { path: "src/app/api/search/route.ts", guard: "guardRead", scope: "search" },
@@ -255,6 +256,15 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
   { path: "src/app/api/orders/[code]/review/route.ts", guard: "guardWrite", scope: "orderReview" },
   { path: "src/app/api/orders/[code]/pay/start/route.ts", guard: "guardWrite", scope: "paymentStart" },
   { path: "src/app/api/orders/[code]/pay/verify/route.ts", guard: "guardWrite", scope: "paymentVerify" },
+  // Cancellation used to be the one unguarded write. The same credential can
+  // now ride an HttpOnly cookie, so it gets the origin check and budget too.
+  {
+    path: "src/app/api/orders/[code]/cancel/route.ts",
+    guard: "guardWrite",
+    scope: "orderCancel",
+    db: "requestCustomerCancellation",
+  },
+  { path: "src/app/api/orders/[code]/review/route.ts", guard: "guardWrite", scope: "orderReview", db: "getOrderByCode" },
   // Credential-gated routes, budgeted ahead of the credential check. Several
   // of these files hold two handlers with their own guard and scope, so each
   // entry names the database call it is responsible for keeping behind the
@@ -278,6 +288,50 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
     guard: "guardBudget",
     scope: "opsCodeRevoke",
     db: "revokeConnectionCode",
+  },
+  // Support chat has five dedicated tiers. Customers are charged before the
+  // HMAC order-token check, ops before `requireOpsToken`.
+  {
+    path: "src/app/api/orders/[code]/support/route.ts",
+    guard: "guardRead",
+    scope: "supportRead",
+    db: "customerSupportThread",
+  },
+  {
+    path: "src/app/api/orders/[code]/support/route.ts",
+    guard: "guardWrite",
+    scope: "supportWrite",
+    db: "customerSendSupportMessage",
+  },
+  {
+    path: "src/app/api/orders/[code]/support/read/route.ts",
+    guard: "guardWrite",
+    scope: "supportMarkRead",
+    db: "markSupportThreadRead",
+  },
+  {
+    path: "src/app/api/ops/support/route.ts",
+    guard: "guardRead",
+    scope: "opsSupportRead",
+    db: "opsListSupportThreads",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardRead",
+    scope: "opsSupportRead",
+    db: "opsSupportThread",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardWrite",
+    scope: "opsSupportWrite",
+    db: "opsReplyToSupportThread",
+  },
+  {
+    path: "src/app/api/ops/support/[threadId]/route.ts",
+    guard: "guardWrite",
+    scope: "opsSupportWrite",
+    db: "opsSetSupportStatus",
   },
 ];
 
@@ -333,12 +387,21 @@ test("the budget is charged before the credential check", () => {
     "src/app/api/integration/passkey/rotate/route.ts",
     "src/app/api/partner/codes/route.ts",
     "src/app/api/partner/codes/[code]/route.ts",
+    "src/app/api/orders/[code]/route.ts",
+    "src/app/api/orders/[code]/cancel/route.ts",
+    "src/app/api/orders/[code]/review/route.ts",
+    "src/app/api/orders/[code]/support/route.ts",
+    "src/app/api/orders/[code]/support/read/route.ts",
+    "src/app/api/orders/[code]/pay/start/route.ts",
+    "src/app/api/orders/[code]/pay/verify/route.ts",
+    "src/app/api/ops/support/route.ts",
+    "src/app/api/ops/support/[threadId]/route.ts",
   ];
   for (const path of paths) {
     const handlers = readSource(path).split(/export async function/).slice(1);
     assert.ok(handlers.length >= 1, `${path} has no handler`);
     for (const handler of handlers) {
-      const authAt = handler.search(/require(?:OpsToken|IntegrationAuth)\(/);
+      const authAt = handler.search(/require(?:OpsToken|IntegrationAuth)\(|verifyOrderToken\(|orderAuthorized\(/);
       if (authAt === -1) continue;
       const guardAt = handler.search(/\b(?:guardWrite|guardRead|guardBudget)\(/);
       assert.ok(guardAt >= 0, `${path} checks a credential with no budget ahead of it`);

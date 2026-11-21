@@ -7,15 +7,15 @@ import { orderAuthorized } from "@/lib/order-authorized";
 export const dynamic = "force-dynamic";
 
 /**
- * Customer review for a delivered order. Requires a signed order token or a
- * live customer session bound to the order code. The rating/comment are parsed
- * here; feedback timestamp, merchant reply and order identity never come from
- * the browser.
+ * Customer review for a delivered order. The order code alone is not a
+ * credential — the signed token minted at checkout, or a live session bound to
+ * it, is — and the rating and comment are parsed again here. The stored
+ * feedback timestamp, merchant reply and order identity never come from the
+ * browser. The budget is charged before either credential is checked.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {
   const blocked = await guardWrite(req, "orderReview");
   if (blocked) return blocked;
-
   const { code } = await ctx.params;
   if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });

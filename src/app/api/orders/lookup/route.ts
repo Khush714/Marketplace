@@ -1,4 +1,5 @@
 import { getOrderByCode } from "@/db/queries";
+import { unreadSupportCodes } from "@/db/support";
 import { toPublicOrder, type PublicOrder } from "@/lib/order-public";
 import { verifyOrderToken } from "@/lib/order-token";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
@@ -41,10 +42,13 @@ export async function POST(req: Request) {
   }
   if (!verified.length) return Response.json({ orders: [] });
 
-  const loaded = await Promise.all(verified.map((v) => getOrderByCode(v.code)));
+  const [loaded, unread] = await Promise.all([
+    Promise.all(verified.map((v) => getOrderByCode(v.code))),
+    unreadSupportCodes(verified.map((v) => v.code)),
+  ]);
   const orders: PublicOrder[] = [];
   for (const order of loaded) {
-    if (order) orders.push(toPublicOrder(order));
+    if (order) orders.push({ ...toPublicOrder(order), unreadOpsReply: unread.has(order.code) });
   }
   orders.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
   return Response.json({ orders });

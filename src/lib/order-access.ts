@@ -8,17 +8,21 @@ import { experiments } from "@/lib/experiments";
 /**
  * Customer-side access to a single order.
  *
- * Access is authorized by a signed per-order token (minted at checkout) or by a
- * live anonymous customer session cookie bound to the order code. When a local
- * token is available we still send it for compatibility, but session-backed
- * reads work without replaying tokens from web storage.
+ * An order code on its own is not a credential: a read needs either the signed
+ * token minted at checkout (see lib/order-token) or a live customer session
+ * bound to that code. The token may be in this browser's profile; the session
+ * rides an HttpOnly cookie that script cannot read. Both are checked by the
+ * server, so a client without either gets the same 404 as a missing order.
  */
 
+/** The per-order header, only when this browser actually holds the token. */
+export function orderAuthHeaders(token?: string | null): Record<string, string> {
+  return token ? { "x-order-token": token } : {};
+}
+
 export async function fetchPublicOrder(code: string, token?: string | null): Promise<PublicOrder | null> {
-  const headers: Record<string, string> = {};
-  if (token) headers["x-order-token"] = token;
   const res = await fetch(`/api/orders/${encodeURIComponent(code)}`, {
-    headers,
+    headers: orderAuthHeaders(token),
     cache: "no-store",
     credentials: "same-origin",
   });
@@ -39,7 +43,32 @@ export async function fetchOrderByTrackingToken(trackingToken: string): Promise<
   return data?.order ?? null;
 }
 
+/**
+ * History from the HttpOnly customer session — no per-order credentials in
+ * web storage and none in the request body. The cookie rides the same-origin
+ * fetch automatically; no session simply means an empty list.
+ */
+export async function fetchSessionOrders(): Promise<PublicOrder[]> {
+  const res = await fetch("/api/orders/history", { cache: "no-store" });
+  if (!res.ok) return [];
+  const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
+  return data?.orders ?? [];
+}
+
 export type OrderAccess = "loading" | "ready" | "denied";
+
+function deriveAccess(input: {
+  hydrated: boolean;
+  resultCode: string | null;
+  order: PublicOrder | null;
+  code: string;
+}): OrderAccess {
+  if (!input.hydrated) return "loading";
+  if (input.resultCode !== input.code) return "loading";
+  // The server already decided whether the token OR the session authorised the
+  // read. A null token with a ready order is the session path, not a failure.
+  return input.order ? "ready" : "denied";
+}
 
 export function usePublicOrder(code: string) {
   const { orders } = useProfileOrders();
@@ -64,13 +93,7 @@ export function usePublicOrder(code: string) {
   }, [code, hydrated, token]);
 
   const order = result && result.code === code ? result.order : null;
-  const access: OrderAccess = !hydrated
-    ? "loading"
-    : result?.code !== code
-      ? "loading"
-      : order
-        ? "ready"
-        : "denied";
+  const access = deriveAccess({ hydrated, resultCode: result?.code ?? null, order, code });
 
   /** Re-read the order (used by pollers). */
   const refresh = useCallback(async () => {

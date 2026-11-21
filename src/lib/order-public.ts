@@ -34,7 +34,14 @@ export type PublicOrder = Pick<
   | "feedback"
   | "createdAt"
   | "status"
->;
+> & {
+  /**
+   * Set only by the two list endpoints (session history and token lookup),
+   * where one bounded query can attach a "support replied" badge per order.
+   * Optional because the single-order projection has no need for it.
+   */
+  unreadOpsReply?: boolean;
+};
 
 /**
  * `posDeliveryStatus` is included deliberately: it is the only signal the

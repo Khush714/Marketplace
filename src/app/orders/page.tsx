@@ -3,31 +3,57 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ArrowRight, ChevronRight, Clock3, LoaderCircle, ReceiptText, RefreshCcw, Star, UtensilsCrossed } from "lucide-react";
+import { ArrowRight, ChevronRight, Clock3, LoaderCircle, MessageCircle, ReceiptText, RefreshCcw, Star, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
 import { useCustomerAccount } from "@/lib/customer-account";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
-import { useOrderPoll } from "@/lib/order-access";
+import { fetchSessionOrders, useOrderPoll } from "@/lib/order-access";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
-import { useProfileReady } from "@/lib/profile";
+import { useProfileOrders, useProfileReady } from "@/lib/profile";
 
 export default function OrdersPage() {
+  const { orders: stored } = useProfileOrders();
   const hydrated = useProfileReady();
   const account = useCustomerAccount();
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
 
   /**
-   * Order history is account-scoped when signed in. We intentionally do not
-   * merge device-local token history or anonymous session orders here to avoid
-   * cross-customer leakage on shared browsers.
+   * Signed in: account-linked orders only, so a shared browser cannot mix a
+   * previous visitor's device/session orders into this customer's history.
+   * Signed out: the session read is the durable one — it survives a cleared
+   * localStorage because the credential is an HttpOnly cookie bound to the
+   * order codes at checkout. The token lookup is kept for older orders that
+   * predate session binding (and for a lapsed session); a code alone still
+   * grants nothing there. Merging by code avoids duplicates while both paths
+   * overlap.
    */
   const loadOrders = useCallback(async (): Promise<PublicOrder[]> => {
-    if (account.status !== "signedIn") return [];
-    const res = await fetch("/api/orders", { cache: "no-store", credentials: "same-origin" })
-      .then(async (r) => ((await r.json().catch(() => null)) as { orders?: PublicOrder[] } | null))
-      .catch(() => null);
-    return Array.isArray(res?.orders) ? res!.orders : [];
-  }, [account.status]);
+    const byCode = new Map<string, PublicOrder>();
+
+    if (account.status === "signedIn") {
+      const res = await fetch("/api/orders", { cache: "no-store", credentials: "same-origin" })
+        .then(async (r) => ((await r.json().catch(() => null)) as { orders?: PublicOrder[] } | null))
+        .catch(() => null);
+      for (const order of res?.orders ?? []) byCode.set(order.code, order);
+    } else if (account.status === "signedOut") {
+      const tokenOrders = stored.length
+        ? await fetch("/api/orders/lookup", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
+            cache: "no-store",
+          })
+            .then((res) => res.json().catch(() => null))
+            .then((data: { orders?: PublicOrder[] } | null) => data?.orders ?? [])
+            .catch(() => [])
+        : [];
+      const sessionOrders = await fetchSessionOrders().catch(() => []);
+      for (const order of tokenOrders) byCode.set(order.code, order);
+      for (const order of sessionOrders) byCode.set(order.code, order);
+    }
+
+    return [...byCode.values()].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  }, [account.status, stored]);
 
   // First paint only. The interval below owns every fetch after this one.
   useEffect(() => {
@@ -55,7 +81,7 @@ export default function OrdersPage() {
     load: loadOrders,
     onData: setOrders,
     intervalMs: 6000,
-    live: account.status === "signedIn" && (orders ?? []).some(isOrderLive),
+    live: account.status !== "loading" && (orders ?? []).some(isOrderLive),
   });
 
   return (
@@ -69,7 +95,7 @@ export default function OrdersPage() {
             <div key={i} className="skeleton h-40 rounded-3xl" />
           ))}
         </div>
-      ) : account.status !== "signedIn" ? (
+      ) : account.status !== "signedIn" && orders?.length === 0 ? (
         <div className="mt-10">
           <EmptyState
             icon={<ReceiptText className="size-6" />}
@@ -170,6 +196,11 @@ export default function OrdersPage() {
                           <span className="flex items-center gap-1 text-xs font-semibold text-ember-300">
                             <Star className="size-3 fill-current" />
                             Rated {o.feedback.rating}/5
+                          </span>
+                        )}
+                        {o.unreadOpsReply && (
+                          <span className="flex items-center gap-1 rounded-full bg-ember-400/15 px-2 py-0.5 text-[11px] font-bold text-ember-300">
+                            <MessageCircle className="size-3" /> New support reply
                           </span>
                         )}
                       </div>

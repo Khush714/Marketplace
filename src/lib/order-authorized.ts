@@ -17,7 +17,9 @@ import "server-only";
  * Accepting either is what keeps the migration honest: old sessions with
  * legacy tokens and new ones with just a cookie both work, and neither path
  * is weaker than the old one — the header is still HMAC-verified, the session
- * still only ever grants codes it was explicitly bound to.
+ * still only ever grants codes it was explicitly bound to. Every per-order
+ * route (read, pay, cancel, review, support) now calls this helper; the
+ * `guardWrite`/`guardRead` budget is charged before the helper runs.
  *
  * Every failure answer is "not authorized", with no distinction between a
  * wrong header, a foreign session and an unknown code: routes turn that into
@@ -49,7 +51,9 @@ export async function orderAuthorized(req: Request, code: unknown): Promise<bool
   if (headerToken && verifyOrderToken(normalized, headerToken)) return true;
 
   const session = await resolveCustomerSession(req);
-  if (session?.orderCodes.includes(normalized)) return true;
+  if (session) {
+    if (session.orderCodes.includes(normalized)) return true;
+  }
 
   // Cross-device access for explicitly/proven linked orders when signed in.
   const account = await resolveAccountSession(req);

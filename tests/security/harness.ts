@@ -52,6 +52,8 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Client } from "pg";
 
+import { CUSTOMER_SESSION_COOKIE } from "../../src/lib/customer-session-core";
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(__dirname, "../..");
 
@@ -70,6 +72,7 @@ export const RAZORPAY_KEY_SECRET = "rzp_test_security_secret";
 export const SESSION_COOKIE = "crave_restaurant_session";
 export const CSRF_COOKIE = "crave_restaurant_csrf";
 export const CSRF_HEADER = "x-csrf-token";
+export { CUSTOMER_SESSION_COOKIE };
 
 /* ------------------------------------------------------------------ crypto */
 
@@ -191,6 +194,11 @@ function serverRef(): { child: ChildProcess; port: number; base: string } {
   return server;
 }
 
+/** The scratch server's origin, for browser contexts that cannot use `api()`. */
+export function serverBase(): string {
+  return serverRef().base;
+}
+
 /* --------------------------------------------------------- db primitives */
 
 export async function queryRows<T>(sql: string, params: unknown[] = []): Promise<T[]> {
@@ -284,6 +292,31 @@ export async function seedSession(o: {
     ],
   );
   return { token, csrf };
+}
+
+/**
+ * Customer-session row for the session-backed order paths. The browser only
+ * ever sees the random token (as an HttpOnly cookie); the row stores its hash
+ * and the bound codes, exactly as checkout would.
+ */
+export async function seedCustomerSession(o: {
+  orderCodes: string[];
+  token?: string;
+  expiresAtMs?: number;
+  revokedAtMs?: number | null;
+}): Promise<string> {
+  const token = o.token ?? makeSecretToken();
+  await runSql(
+    `insert into customer_sessions (token_hash, order_codes, expires_at, revoked_at, last_used_at)
+     values ($1, $2::jsonb, $3, $4, now())`,
+    [
+      sha256hex(token),
+      JSON.stringify(o.orderCodes),
+      ts(o.expiresAtMs ?? Date.now() + 90 * 24 * 60 * 60 * 1000),
+      ts(o.revokedAtMs ?? null),
+    ],
+  );
+  return token;
 }
 
 export async function seedOrder(o: {
@@ -439,7 +472,8 @@ export async function resetAndSeed(): Promise<void> {
     `truncate table
        restaurants, restaurant_sessions, connection_codes, connections,
        integration_sessions, orders, marketplace_payments,
-       marketplace_payment_events
+       marketplace_payment_events, customer_sessions,
+       support_threads, support_messages
      restart identity cascade`,
   );
   const alpha = await seedRestaurant({
