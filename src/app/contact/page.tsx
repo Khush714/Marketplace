@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
-import { Mail, MapPin, Phone, ShieldAlert } from "lucide-react";
+import { Mail, MapPin, Phone, ReceiptText, ShieldAlert } from "lucide-react";
 import {
   LegalEntityBlock,
   LegalHeader,
@@ -17,13 +17,50 @@ export const metadata: Metadata = {
   alternates: { canonical: "/contact" },
 };
 
-export default function ContactPage() {
+interface ContactSearchParams {
+  order?: string;
+  code?: string;
+}
+
+function readOrderCode(sp: ContactSearchParams): string | null {
+  const raw = (sp.order ?? sp.code ?? "").trim();
+  if (!raw) return null;
+  // Order codes are short (e.g. CRV-XXXXX). Cap length and strip control chars.
+  const cleaned = raw.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 32);
+  return cleaned || null;
+}
+
+export default async function ContactPage(props: { searchParams: Promise<ContactSearchParams> }) {
+  const sp = await props.searchParams;
+  const orderCode = readOrderCode(sp);
+
   return (
     <LegalPage>
       <LegalHeader
         title="Contact us"
         summary="Support, refunds, complaints and data requests all come to the same small team. Please include your order code — it is the fastest way for us to find your order."
       />
+
+      {orderCode && (
+        <LegalSection id="order-context" heading="Help with this order">
+          <div className="flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-400/10 p-4">
+            <span className="mt-0.5 grid size-9 shrink-0 place-items-center rounded-xl bg-ember-400/15 text-ember-400">
+              <ReceiptText className="size-4" />
+            </span>
+            <div className="min-w-0">
+              <p className="text-sm text-cream-300">
+                When you contact us, include this order code so we can find your order quickly:
+              </p>
+              <p className="mt-1.5 font-mono text-base font-bold uppercase tracking-wide text-cream-50">
+                {orderCode}
+              </p>
+              <p className="mt-1 text-xs text-cream-500">
+                Share the order code, what happened, and the outcome you&apos;re looking for (refund, update, or help with delivery).
+              </p>
+            </div>
+          </div>
+        </LegalSection>
+      )}
 
       <LegalSection id="reach" heading="How to reach us">
         <ul className="space-y-3">

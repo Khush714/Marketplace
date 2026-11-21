@@ -1,4 +1,5 @@
 import type { OrderItemSnapshot } from "@/db/schema";
+import type { FeedbackDto } from "@/lib/order-feedback";
 
 /* Shared shapes used across server components, API routes and client UI. */
 
@@ -26,6 +27,14 @@ export interface RestaurantDto {
 
 export interface RestaurantManageDto extends RestaurantDto {
   isActive: boolean;
+  merchantHoursEnabled: boolean;
+  merchantOpensAt: string;
+  merchantClosesAt: string;
+  merchantPickupEnabled: boolean;
+  merchantDeliveryEnabled: boolean;
+  closureReason: string;
+  closureUntil: string | null;
+  scheduledLeaves: { date: string; reason: string }[];
 }
 
 export interface ModifierOptionDto {
@@ -69,6 +78,8 @@ export interface PartnerMenuItemDto {
   isVeg: boolean;
   isBestseller: boolean;
   available: boolean;
+  /** Null means stock is not tracked; zero is sold out at checkout. */
+  stockQuantity: number | null;
   sort: number;
   /** Modifier group ids currently attached to this dish. */
   modifierGroupIds: number[];
@@ -138,6 +149,13 @@ export interface OrderDto {
   code: string;
   restaurantSlug: string;
   restaurantName: string;
+  /** Public neighbourhood, shown when a customer collects an order in store. */
+  restaurantLocality: string;
+  /**
+   * How the customer receives this order. Merchant-managed orders can be
+   * switched by the restaurant; every other order keeps the delivery timeline.
+   */
+  fulfilment: "pickup" | "delivery";
   /** Internal ids — never surfaced in the customer tracking payload. */
   restaurantId: number;
   externalOrderId: string | null;
@@ -164,6 +182,10 @@ export interface OrderDto {
   platformFeeCents: number;
   discountCents: number;
   totalCents: number;
+  /** Merchant App promo code used for this discount; null for legacy/no offer. */
+  offerCode: string | null;
+  /** One immutable customer review per delivered order; empty until submitted. */
+  feedback: FeedbackDto;
   createdAt: string;
   status: OrderStatusDto;
 }

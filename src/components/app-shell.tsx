@@ -25,7 +25,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       <ScrollProgress />
       <SiteHeader />
       <EmberField />
-      <main className="flex-1 pb-28 md:pb-12">{children}</main>
+      <main className="flex-1 pb-[calc(9rem+env(safe-area-inset-bottom))] md:pb-12">{children}</main>
       {!hideCartBar && <FloatingCartBar />}
       <BottomNav />
       <CartConflictDialog />

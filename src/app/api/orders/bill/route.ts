@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { computeBill } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { parseOfferCode } from "@/lib/merchant-offer";
 import { sanitizeCart } from "@/lib/order-input-core";
 
 export const dynamic = "force-dynamic";
@@ -15,11 +16,11 @@ export async function POST(req: NextRequest) {
   const blocked = await guardWrite(req, "billPreview");
   if (blocked) return blocked;
 
-  let body: { restaurantSlug?: unknown; items?: unknown };
+  let body: { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown; promoCode?: unknown };
   {
     const parsed = await readJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    body = parsed.body as { restaurantSlug?: unknown; items?: unknown };
+    body = parsed.body as { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown; promoCode?: unknown };
   }
 
   const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
@@ -40,7 +41,26 @@ export async function POST(req: NextRequest) {
     return Response.json({ ok: false, error: cart.error, code: cart.code }, { status: 400 });
   }
 
-  const result = await computeBill(restaurantSlug, cart.items);
+  // Offers are opt-in: a literal `true` selects the legacy listing offer, and a
+  // code selects a Merchant App promotion instead. Both are re-resolved by the
+  // same computeBill path createOrder uses, so the preview and the charge cannot
+  // disagree. A malformed code is refused rather than silently ignored.
+  const promoRequested =
+    body?.promoCode !== undefined && body?.promoCode !== null && String(body.promoCode).trim() !== "";
+  const promoCode = promoRequested ? parseOfferCode(body?.promoCode) : null;
+  if (promoRequested && !promoCode) {
+    return Response.json(
+      { ok: false, error: "Enter a valid offer code", code: "INVALID_PROMO_CODE" },
+      { status: 400 },
+    );
+  }
+
+  const result = await computeBill(
+    restaurantSlug,
+    cart.items,
+    body?.applyOffer === true,
+    promoCode ?? undefined,
+  );
   if (!result.ok) {
     // Same status mapping as POST /api/orders: an integration/outlet refusal is
     // 422 (the client's request named a restaurant that cannot take the order),
@@ -49,5 +69,12 @@ export async function POST(req: NextRequest) {
       result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
     return Response.json({ ok: false, error: result.error, code: result.code }, { status });
   }
-  return Response.json({ ok: true, bill: result.bill });
+  return Response.json({
+    ok: true,
+    bill: result.bill,
+    offer: result.offer,
+    offerAvailable: result.offerAvailable,
+    promo: result.promo ?? null,
+    promoCode: result.promoCode ?? null,
+  });
 }

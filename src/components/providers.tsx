@@ -3,6 +3,7 @@
 import type { ReactNode } from "react";
 import { CartProvider } from "@/lib/cart";
 import { ConsentProvider } from "@/lib/consent";
+import { CustomerAccountProvider } from "@/lib/customer-account";
 import { LocationProvider, useLocationPicker } from "@/lib/location";
 import { ProfileProvider } from "@/lib/profile";
 import { ToastProvider } from "@/lib/toast";
@@ -23,15 +24,17 @@ export function Providers({ children }: { children: ReactNode }) {
           below both — it needs the record to render and the profile to clear. */}
       <ConsentProvider>
         <ProfileProvider>
-          <CartProvider>
-            <ToastProvider>
-              <SearchProvider>
-                {children}
-                <LocationPickerHost />
-                <ConsentSurface />
-              </SearchProvider>
-            </ToastProvider>
-          </CartProvider>
+          <CustomerAccountProvider>
+            <CartProvider>
+              <ToastProvider>
+                <SearchProvider>
+                  {children}
+                  <LocationPickerHost />
+                  <ConsentSurface />
+                </SearchProvider>
+              </ToastProvider>
+            </CartProvider>
+          </CustomerAccountProvider>
         </ProfileProvider>
       </ConsentProvider>
     </LocationProvider>

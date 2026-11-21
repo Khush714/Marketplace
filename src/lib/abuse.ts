@@ -55,7 +55,7 @@ function crossSiteRejected(): Response {
  * where they are rather than as tight as the abuse would suggest.
  */
 export function guardBudget(req: { headers: Headers }, scope: AbuseScope): Response | null {
-  const budget = ABUSE_BUDGETS[scope];
+  const budget = ABUSE_BUDGETS[scope]; if (!budget) return null; if (!budget) return null;
   const result = checkRateLimit(clientKey(req, scope), budget.limit, budget.windowMs);
   return result.allowed ? null : rateLimited(result.retryAfterSeconds);
 }
@@ -190,3 +190,4 @@ export function honeypotRejected(): Response {
 export function bodyTrippedHoneypot(body: unknown): boolean {
   return honeypotTripped(body);
 }
+

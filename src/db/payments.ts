@@ -505,6 +505,83 @@ export async function cancelPendingPayment(order: OrderRow): Promise<void> {
 }
 
 /**
+ * Switch a failed/unpaid online payment to cash-on-delivery. Only allowed when
+ * no money has been captured. Cancels the online payment record, creates a cash
+ * UNPAID record, updates the order, and returns ok so the caller can enqueue POS
+ * delivery. Idempotent for orders already on cash/UNPAID.
+ */
+export async function switchPendingOnlinePaymentToCash(
+  order: Pick<OrderRow, "id" | "externalOrderId" | "restaurantId" | "totalCents" | "paymentMethod" | "paymentStatus">,
+): Promise<{ ok: true; reference: string; switched: boolean } | { ok: false; error: string; code: string }> {
+  const live = await getActivePaymentByOrder(order.id);
+
+  if (!live) {
+    if (!isOnlinePayment(order.paymentMethod) && order.paymentStatus === "UNPAID") {
+      return { ok: true, reference: "", switched: false };
+    }
+    return { ok: false, error: "No switchable payment found", code: "PAYMENT_NOT_SWITCHABLE" };
+  }
+
+  if (!isOnlinePayment(order.paymentMethod) && live.provider === "cash" && live.status === "UNPAID") {
+    return { ok: true, reference: live.reference, switched: false };
+  }
+
+  if (live.status === "PAID" || live.status === "REFUND_PENDING" || live.status === "PARTIALLY_REFUNDED" || live.status === "REFUNDED") {
+    return { ok: false, error: "Payment already captured", code: "PAYMENT_ALREADY_CAPTURED" };
+  }
+
+  if (live.status !== "PAYMENT_PENDING" && live.status !== "FAILED") {
+    return { ok: false, error: "Payment cannot be switched right now", code: "PAYMENT_NOT_SWITCHABLE" };
+  }
+
+  // Cancel the online payment attempt - no money captured.
+  await db
+    .update(marketplacePayments)
+    .set({ status: "PAYMENT_CANCELLED", updatedAt: new Date() })
+    .where(eq(marketplacePayments.paymentReference, live.reference));
+  await recordIntegrationAudit(order.restaurantId, "PAYMENT_CANCELLED", { actor: "system" }, {
+    order_id: order.id,
+    external_order_id: order.externalOrderId ?? externalOrderIdFor(order.id),
+    payment_reference: live.reference,
+    reason: "switched_to_cash",
+  });
+
+  // Create fresh cash UNPAID payment and move order to COD.
+  const reference = externalPaymentReferencefor();
+  await db
+    .insert(marketplacePayments)
+    .values({
+      paymentReference: reference,
+      marketplaceOrderId: order.id,
+      externalOrderId: order.externalOrderId ?? externalOrderIdFor(order.id),
+      restaurantId: order.restaurantId,
+      provider: "cash",
+      amountCents: order.totalCents,
+      amount: round2(order.totalCents / 100),
+      currency: "INR",
+      status: "UNPAID",
+    })
+    .onConflictDoNothing({ target: [marketplacePayments.paymentReference] });
+
+  await db
+    .update(orders)
+    .set({ paymentStatus: "UNPAID", paymentMethod: "cod" })
+    .where(eq(orders.id, order.id));
+
+  await recordIntegrationAudit(order.restaurantId, "PAYMENT_INITIATED", { actor: "system" }, {
+    order_id: order.id,
+    external_order_id: order.externalOrderId ?? externalOrderIdFor(order.id),
+    payment_reference: reference,
+    provider: "cash",
+    amount_cents: order.totalCents,
+    payment_status: "UNPAID",
+    switched_from: live.reference,
+  });
+
+  return { ok: true, reference, switched: true };
+}
+
+/**
  * A captured payment whose order was cancelled/rejected: mark REFUND_PENDING
  * and return the payment (the caller drives the provider refund + POS push).
  * Returns null when there is no capturable/pending refund money.

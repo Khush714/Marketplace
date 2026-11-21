@@ -65,6 +65,12 @@ export default function PartnerPage() {
         >
           <Handshake className="size-3.5" /> POS integration
         </Link>
+        <Link
+          href="/partner/merchant-app"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-4 py-2.5 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <Store className="size-3.5" /> Merchant App
+        </Link>
         {/*
           There is deliberately no link to /ops from this page.
           It used to sit here as "Ops console (mint codes)", which mixed two

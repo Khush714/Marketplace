@@ -48,6 +48,7 @@ const LIMITS = {
   groupName: 60,
   optionName: 60,
   priceCentsMax: 1_000_000,
+  stockMax: 100_000,
   selectMax: 20,
   optionsPerGroup: 30,
 } as const;
@@ -74,6 +75,12 @@ function intInRange(raw: unknown, field: string, min: number, max: number): numb
     throw new Invalid(`${field} must be between ${min} and ${max}`);
   }
   return value;
+}
+
+/** Explicit null (or omission) means "not tracked"; every other value is a count. */
+function nullableQuantity(raw: unknown, field: string): number | null {
+  if (raw === undefined || raw === null || raw === "") return null;
+  return intInRange(raw, field, 0, LIMITS.stockMax);
 }
 
 function flag(raw: unknown): boolean {
@@ -272,6 +279,7 @@ export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuD
     isVeg: m.isVeg,
     isBestseller: m.isBestseller,
     available: m.available,
+    stockQuantity: m.stockQuantity,
     sort: m.sort,
     modifierGroupIds: groupIdsByItem.get(m.id) ?? [],
     posSynced: m.posItemId !== null,
@@ -299,6 +307,7 @@ export interface MenuItemInput {
   isVeg?: unknown;
   isBestseller?: unknown;
   available?: unknown;
+  stockQuantity?: unknown;
   sort?: unknown;
 }
 
@@ -312,6 +321,7 @@ function parseItemInput(input: MenuItemInput) {
     isVeg: flag(input.isVeg),
     isBestseller: flag(input.isBestseller),
     available: input.available === undefined ? true : flag(input.available),
+    stockQuantity: nullableQuantity(input.stockQuantity, "Stock quantity"),
     sort: intInRange(input.sort ?? 0, "Sort order", 0, 10_000),
   };
 }
@@ -342,6 +352,7 @@ export async function createMenuItem(
         isVeg: parsed.isVeg,
         isBestseller: parsed.isBestseller,
         available: parsed.available,
+        stockQuantity: parsed.stockQuantity,
         sort: parsed.sort,
         // POS identity columns stay NULL: this row is partner-owned, so a POS
         // sync can never match or overwrite it.
@@ -363,6 +374,7 @@ export async function createMenuItem(
         isVeg: row.isVeg,
         isBestseller: row.isBestseller,
         available: row.available,
+        stockQuantity: row.stockQuantity,
         sort: row.sort,
         modifierGroupIds: [],
         posSynced: false,
@@ -407,6 +419,7 @@ export async function updateMenuItem(
       isVeg: patch.isVeg ?? existing.isVeg,
       isBestseller: patch.isBestseller ?? existing.isBestseller,
       available: patch.available ?? existing.available,
+      stockQuantity: patch.stockQuantity === undefined ? existing.stockQuantity : patch.stockQuantity,
       sort: patch.sort ?? existing.sort,
     });
   } catch (e) {
@@ -435,6 +448,7 @@ export async function updateMenuItem(
         isVeg: row.isVeg,
         isBestseller: row.isBestseller,
         available: row.available,
+        stockQuantity: row.stockQuantity,
         sort: row.sort,
         modifierGroupIds: links.map((l) => l.groupId),
         posSynced: row.posItemId !== null,
@@ -507,6 +521,61 @@ export async function unlinkModifierGroup(
       ),
     );
   return { ok: true };
+}
+
+/**
+ * Replace the modifier groups attached to one dish. The caller has already
+ * verified the item is not POS-owned; this function still scopes every lookup
+ * and write to the resolved restaurant so a guessed id cannot cross tenants.
+ */
+export async function setItemModifierGroups(
+  restaurantId: number,
+  itemId: number,
+  groupIds: unknown,
+): Promise<{ ok: true; item: PartnerMenuItemDto } | PartnerMenuFailure> {
+  const owner = await resolveOwner(restaurantId);
+  if (!owner) return SESSION_REQUIRED;
+  const item = await ownedItem(owner.id, itemId);
+  if (!item) return { ok: false, error: "Dish not found" };
+  if (item.posItemId !== null) {
+    return { ok: false, error: "This item is managed by the connected POS." };
+  }
+  if (!Array.isArray(groupIds) || groupIds.length > 50) {
+    return { ok: false, error: "Invalid modifier groups" };
+  }
+  const parsed: number[] = [];
+  for (const raw of groupIds) {
+    const id = typeof raw === "number" ? raw : Number(String(raw ?? "").trim());
+    if (!Number.isSafeInteger(id) || id <= 0) return { ok: false, error: "Invalid modifier group id" };
+    parsed.push(id);
+  }
+  const uniqueIds = [...new Set(parsed)];
+  try {
+    if (uniqueIds.length) {
+      const found = await db
+        .select({ id: modifierGroups.id })
+        .from(modifierGroups)
+        .where(and(eq(modifierGroups.restaurantId, owner.id), inArray(modifierGroups.id, uniqueIds)));
+      if (found.length !== uniqueIds.length) return { ok: false, error: "Modifier group not found" };
+    }
+    await db.transaction(async (tx) => {
+      await tx
+        .delete(menuItemModifierGroups)
+        .where(and(eq(menuItemModifierGroups.menuItemId, item.id), eq(menuItemModifierGroups.restaurantId, owner.id)));
+      for (const groupId of uniqueIds) {
+        await tx
+          .insert(menuItemModifierGroups)
+          .values({ menuItemId: item.id, modifierGroupId: groupId, restaurantId: owner.id })
+          .onConflictDoNothing();
+      }
+    });
+    const menu = await getPartnerMenu(owner.id);
+    const updated = menu?.items.find((row) => row.id === item.id);
+    if (!updated) return { ok: false, error: "Dish not found" };
+    return { ok: true, item: updated };
+  } catch {
+    return { ok: false, error: "Could not update modifier groups" };
+  }
 }
 
 /* ----------------------------- modifier groups ---------------------------- */

@@ -2,12 +2,14 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { ChevronDown, MapPin, ShoppingBag, CircleUserRound } from "lucide-react";
+import { ChevronDown, MapPin, ReceiptText, ShoppingBag, CircleUserRound } from "lucide-react";
 import { Logo } from "@/components/logo";
 import { useSearch } from "@/components/search-overlay";
 import { useCart } from "@/lib/cart";
+import { useCustomerAccountOptional } from "@/lib/customer-account";
 import { useLocation } from "@/lib/location";
 import { useProfileIdentity } from "@/lib/profile";
+import { avatarEmojiFor } from "@/lib/customer-avatar";
 import { cn } from "@/lib/domain";
 
 function SearchTrigger({ className }: { className?: string }) {
@@ -40,6 +42,9 @@ export function SiteHeader() {
   const [scrolled, setScrolled] = useState(false);
   const { itemCount, bump } = useCart();
   const { name } = useProfileIdentity();
+  const account = useCustomerAccountOptional();
+  const signedIn = account?.status === "signedIn";
+  const avatarEmoji = signedIn ? avatarEmojiFor(account?.account?.avatar) : null;
   const { locality, detecting, notServed, openPicker } = useLocation();
   const place = detecting ? "Detecting…" : notServed ? "Select an area" : locality.name;
 
@@ -59,7 +64,7 @@ export function SiteHeader() {
           : "border-b border-transparent bg-transparent",
       )}
     >
-      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 pt-3 md:h-16 md:gap-5 md:pt-0 lg:px-6">
+      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 pt-2.5 md:h-16 md:gap-5 md:pt-0 lg:px-6">
         {/* Mobile row-1: location + profile */}
         <div className="flex flex-1 items-center justify-between md:hidden">
           <button type="button" onClick={openPicker} className="flex items-center gap-1.5 press" aria-label="Change delivery location">
@@ -74,13 +79,26 @@ export function SiteHeader() {
             </span>
           </button>
           <div className="flex items-center gap-2">
-            <HeaderCart itemCount={itemCount} bump={bump} />
+            <Link
+              href="/orders"
+              aria-label="Your orders"
+              className="grid size-10 place-items-center rounded-full glass text-cream-300 press"
+            >
+              <ReceiptText className="size-5" />
+            </Link>
+            {itemCount > 0 && <HeaderCart itemCount={itemCount} bump={bump} />}
             <Link
               href="/profile"
               aria-label="Profile"
               className="grid size-10 place-items-center rounded-full glass text-sm font-bold text-ember-300 press"
             >
-              {name ? name.slice(0, 1).toUpperCase() : <CircleUserRound className="size-5 text-cream-300" />}
+              {signedIn ? (
+                <span className="text-xl leading-none" style={{ fontFamily: '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif' }} aria-hidden>{avatarEmoji}</span>
+              ) : name ? (
+                name.slice(0, 1).toUpperCase()
+              ) : (
+                <CircleUserRound className="size-5 text-cream-300" />
+              )}
             </Link>
           </div>
         </div>
@@ -109,19 +127,32 @@ export function SiteHeader() {
         <SearchTrigger className="hidden md:flex md:min-w-0 md:flex-1 md:max-w-md md:mx-auto" />
 
         <div className="hidden items-center gap-2.5 md:flex">
-          <HeaderCart itemCount={itemCount} bump={bump} labelled />
+          <Link
+            href="/orders"
+            className="press flex items-center gap-1.5 rounded-full glass px-4 py-2 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/10"
+          >
+            <ReceiptText className="size-[18px] text-ember-300" />
+            Orders
+          </Link>
+          {itemCount > 0 && <HeaderCart itemCount={itemCount} bump={bump} labelled />}
           <Link
             href="/profile"
             className="press grid size-10 place-items-center rounded-full glass text-sm font-bold text-ember-300 transition-colors hover:bg-white/10"
             aria-label="Profile"
           >
-            {name ? name.slice(0, 1).toUpperCase() : <CircleUserRound className="size-5 text-cream-300" />}
+            {signedIn ? (
+              <span className="text-xl leading-none" style={{ fontFamily: '"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji",sans-serif' }} aria-hidden>{avatarEmoji}</span>
+            ) : name ? (
+              name.slice(0, 1).toUpperCase()
+            ) : (
+              <CircleUserRound className="size-5 text-cream-300" />
+            )}
           </Link>
         </div>
       </div>
 
       {/* Mobile search row */}
-      <div className="px-4 pb-3 pt-2.5 md:hidden">
+      <div className="px-4 pb-2.5 pt-2 md:hidden">
         <SearchTrigger className="w-full" />
       </div>
     </header>

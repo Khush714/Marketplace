@@ -382,12 +382,23 @@ export async function applyOrderStatusTransition(opts: {
       return { outcome: "skipped", reason: "INVALID_TRANSITION", current, next: mapped } as const;
     }
 
+    const merchantMap: Record<string, string> = {
+      ACCEPTED: "ACCEPTED",
+      PREPARING: "PREPARING",
+      READY: "READY",
+      OUT_FOR_DELIVERY: "OUT_FOR_DELIVERY",
+      DELIVERED: "COMPLETED",
+      COMPLETED: "COMPLETED",
+      CANCELLED: "CANCELLED",
+      REJECTED: "REJECTED",
+    };
     await tx
       .update(orders)
       .set({
         integrationStatus: mapped,
         statusUpdatedAt: now,
         ...(opts.posOrderId != null && order.posOrderId == null ? { posOrderId: opts.posOrderId } : {}),
+        ...(order.merchantManaged && merchantMap[mapped] ? { merchantStatus: merchantMap[mapped] as any, merchantStatusUpdatedAt: now } : {}),
       })
       .where(eq(orders.id, order.id));
     return { outcome: "applied" } as const;

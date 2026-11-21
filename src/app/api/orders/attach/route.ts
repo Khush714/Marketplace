@@ -3,6 +3,7 @@ import { appendCustomerSessionCookie, ensureCustomerSession } from "@/lib/custom
 import { CUSTOMER_SESSION_MAX_CODES, normalizeOrderCode } from "@/lib/customer-session-core";
 import { bindOrderCodesToSession } from "@/db/queries";
 import { verifyOrderToken } from "@/lib/order-token";
+import { resolveAccountSession } from "@/lib/security/customer-account-session";
 
 export const dynamic = "force-dynamic";
 
@@ -64,8 +65,17 @@ export async function POST(req: Request) {
     return Response.json({ ok: true, bound: [] });
   }
 
+  // When an account is signed in, do not bind to the anonymous session. Account
+  // order history is account-scoped; binding to anonymous session can leak on
+  // shared browsers after sign-out.
+  const account = await resolveAccountSession(req);
+  if (account) {
+    return Response.json({ ok: true, bound: verified });
+  }
+
   const ensured = await ensureCustomerSession(req);
   await bindOrderCodesToSession(ensured.session.id, verified);
+
   const res = Response.json({ ok: true, bound: verified });
   if (ensured.expiresAt) appendCustomerSessionCookie(req, res, ensured.token, ensured.expiresAt);
   return res;

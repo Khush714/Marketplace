@@ -1,6 +1,9 @@
 import "server-only";
-import { and, asc, desc, eq, gt, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { randomBytes } from "node:crypto";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
 import { db } from "@/db";
+import { findRedeemableMerchantOffer } from "@/db/merchant-offers";
+import { publicRatingSql, publicRestaurantColumns } from "@/db/public-rating";
 import { externalOrderIdFor } from "@/db/pos-delivery";
 import {
   connectionCodes,
@@ -12,6 +15,8 @@ import {
   integrationTransferRequests,
   menuItemModifierGroups,
   menuItems,
+  merchantAppLinks,
+  merchantAuthorizationCodes,
   modifierGroups,
   modifierOptions,
   orders,
@@ -43,11 +48,21 @@ import {
 import { makeCsrfToken, makeSessionToken, RESTAURANT_SESSION_TTL_MS, DELETE_CONFIRM_TTL_MS } from "@/lib/restaurant-session-core";
 import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes } from "@/lib/customer-session-core";
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
+import { feedbackDto } from "@/lib/order-feedback";
+import { publicRating } from "@/lib/public-rating-core";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 import { discoverableRestaurant } from "@/lib/discoverability";
+import { closedReason, isRestaurantClosed } from "@/lib/restaurant-closure";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "@/lib/security/security-events";
 import { MAX_ITEM_QUANTITY } from "@/lib/order-input-core";
+import {
+  billWithMerchantOffer,
+  evaluateMerchantOffer,
+  parseOfferCode,
+  publicMerchantOfferDto,
+  type PublicMerchantOffer,
+} from "@/lib/merchant-offer";
 import {
   blocksRedemption,
   normalizeConnectionCode,
@@ -90,15 +105,24 @@ import type {
  * rendered catalogue and the fetch surface in agreement.
  */
 
-function toRestaurantDto(r: typeof restaurants.$inferSelect): RestaurantDto {
+type RestaurantRow = typeof restaurants.$inferSelect & {
+  publicRating?: number | null;
+  publicRatingCount?: number;
+};
+
+function toRestaurantDto(r: RestaurantRow): RestaurantDto {
+  const rating = publicRating(
+    { rating: r.rating, ratingsCount: r.ratingsCount },
+    r.publicRating == null ? null : { averageRating: r.publicRating, reviewCount: r.publicRatingCount ?? 0 },
+  );
   return {
     id: r.id,
     slug: r.slug,
     name: r.name,
     tagline: r.tagline,
     cuisines: r.cuisines,
-    rating: r.rating,
-    ratingsCount: r.ratingsCount,
+    rating: rating.rating,
+    ratingsCount: rating.ratingsCount,
     priceLevel: r.priceLevel,
     deliveryMinutes: r.deliveryMinutes,
     distanceKm: r.distanceKm,
@@ -220,6 +244,82 @@ const MAINLINE_STAGE_KEYS = [
 ];
 
 /**
+ * Pickup lifecycle. Collection never has a courier step, so it gets its own
+ * stage vocabulary rather than borrowing the delivery timeline and hiding the
+ * last two steps: `collected` is a distinct terminal outcome, and `ready` means
+ * "come and get it" instead of "packed for dispatch".
+ */
+const PICKUP_TRACKING_STAGES: Record<string, OrderLifecycleStage> = {
+  PLACED: {
+    stageIndex: 0,
+    stageKey: "placed",
+    stageLabel: "Order placed",
+    stageSub: "Waiting for the restaurant to accept",
+    delivered: false,
+    riderProgress: 0,
+  },
+  ACCEPTED: {
+    stageIndex: 1,
+    stageKey: "accepted",
+    stageLabel: "Order accepted",
+    stageSub: "The restaurant confirmed your order",
+    delivered: false,
+    riderProgress: 0,
+  },
+  PREPARING: {
+    stageIndex: 2,
+    stageKey: "preparing",
+    stageLabel: "Being prepared",
+    stageSub: "Chefs are on it",
+    delivered: false,
+    riderProgress: 0,
+  },
+  READY: {
+    stageIndex: 3,
+    stageKey: "ready",
+    stageLabel: "Ready for pickup",
+    stageSub: "Show your order code at the counter",
+    delivered: false,
+    riderProgress: 0,
+  },
+  COMPLETED: {
+    stageIndex: 4,
+    stageKey: "collected",
+    stageLabel: "Collected",
+    stageSub: "Thanks for picking up your order",
+    delivered: true,
+    riderProgress: 0,
+  },
+  CANCELLED: {
+    stageIndex: 5,
+    stageKey: "cancelled",
+    stageLabel: "Order cancelled",
+    stageSub: "This order was cancelled",
+    delivered: false,
+    riderProgress: 0,
+  },
+  REJECTED: {
+    stageIndex: 6,
+    stageKey: "rejected",
+    stageLabel: "Order rejected",
+    stageSub: "The restaurant couldn't take this order",
+    delivered: false,
+    riderProgress: 0,
+  },
+};
+
+const PICKUP_MAINLINE_STAGE_KEYS = ["PLACED", "ACCEPTED", "PREPARING", "READY", "COMPLETED"];
+
+function pickupStagesFor(current: string): OrderLifecycleStage[] {
+  const reachedIndex =
+    current === "CANCELLED" ? 2 : current === "REJECTED" ? 0 : Math.min(4, Math.max(0, statusRank(current)));
+  return PICKUP_MAINLINE_STAGE_KEYS.map((key) => {
+    const s = PICKUP_TRACKING_STAGES[key];
+    return { ...s, delivered: s.stageIndex <= reachedIndex };
+  });
+}
+
+/**
  * Full canonical step list for the tracking UI, derived solely from the current
  * order status (spec: no mapping lives in components). Terminals show the
  * mainline reached so far plus their own settlement step.
@@ -237,6 +337,29 @@ function integrationStagesFor(current: string): OrderLifecycleStage[] {
   });
 }
 
+/** Customer tracking projection for orders managed by the Savour Merchant App. */
+function merchantOrderStatus(o: typeof orders.$inferSelect): OrderStatusDto {
+  const current = o.merchantStatus || "PLACED";
+  const pickup = o.merchantFulfilment === "pickup";
+  const stagesByStatus = pickup ? PICKUP_TRACKING_STAGES : INTEGRATION_TRACKING_STAGES;
+  const stage = stagesByStatus[current] ?? stagesByStatus.PLACED;
+  const etaSeconds = pickup
+    ? current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0
+    : current === "OUT_FOR_DELIVERY" ? 1200 : current === "READY" ? 900 : current === "PREPARING" ? 1500 : current === "PLACED" || current === "ACCEPTED" ? 1800 : 0;
+  const cancellable = current === "PLACED" || current === "ACCEPTED";
+  const stages = pickup ? pickupStagesFor(current) : integrationStagesFor(current);
+  return {
+    ...stage,
+    stageSub: current === "READY" && !pickup ? "Your order is ready for pickup or dispatch" : stage.stageSub,
+    etaIso: new Date(Date.now() + etaSeconds * 1000).toISOString(),
+    etaSeconds,
+    statusUpdatedAt: o.merchantStatusUpdatedAt ? new Date(o.merchantStatusUpdatedAt).toISOString() : null,
+    cancellable,
+    cancelReason: cancellable ? null : "This order can no longer be cancelled at this stage",
+    stages,
+  };
+}
+
 // Elapsed-time estimate for POS-tracked orders that are still travelling.
 const INTEGRATION_ETA_SECONDS: Record<string, number> = {
   PLACED: 1800,
@@ -250,19 +373,25 @@ const INTEGRATION_ETA_SECONDS: Record<string, number> = {
   REJECTED: 0,
 };
 
-function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
+function toOrderDto(o: typeof orders.$inferSelect, restaurantLocality = ""): OrderDto {
   // `posConnected`, not `externalOrderId` — see the column comment. Only an
   // order admitted through a live POS integration is driven by POS events; a
   // seeded/demo order keeps the elapsed-time timeline it was always meant to
   // have, instead of sitting at "waiting for the restaurant to accept" forever
   // behind an ETA that resets on every poll.
   const integrated = o.posConnected;
-  const status = integrated ? integrationOrderStatus(o) : demoOrderStatus(o);
+  const status = o.merchantManaged
+    ? merchantOrderStatus(o)
+    : integrated
+      ? integrationOrderStatus(o)
+      : demoOrderStatus(o);
   return {
     id: o.id,
     code: o.code,
     restaurantSlug: o.restaurantSlug,
     restaurantName: o.restaurantName,
+    restaurantLocality,
+    fulfilment: o.merchantManaged && o.merchantFulfilment === "pickup" ? "pickup" : "delivery",
     restaurantId: o.restaurantId,
     externalOrderId: o.externalOrderId,
     // Snapshots freeze the item at order time; re-sanitising on the way out
@@ -287,6 +416,8 @@ function toOrderDto(o: typeof orders.$inferSelect): OrderDto {
     platformFeeCents: o.platformFeeCents,
     discountCents: o.discountCents,
     totalCents: o.totalCents,
+    offerCode: o.offerCode,
+    feedback: feedbackDto(o),
     createdAt: new Date(o.createdAt).toISOString(),
     status,
   };
@@ -414,12 +545,12 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
   }
   if (filters.locality) conditions.push(eq(restaurants.locality, filters.locality));
   if (filters.offers) conditions.push(sql`${restaurants.offer} is not null`);
-  if (filters.minRating) conditions.push(gt(restaurants.rating, 4.5));
+  if (filters.minRating) conditions.push(gt(publicRatingSql, 4.5));
   if (filters.veg) conditions.push(eq(restaurants.pureVeg, true));
 
   const orderBy =
     filters.sort === "rating"
-      ? [desc(restaurants.rating)]
+      ? [desc(publicRatingSql)]
       : filters.sort === "fast"
         ? [asc(restaurants.deliveryMinutes)]
         : filters.sort === "price-low"
@@ -431,10 +562,10 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
               // place in a "nearest" ranking, and Postgres only guarantees this
               // implicitly for ASC.
               ? [sql`${restaurants.distanceKm} asc nulls last`]
-              : [desc(restaurants.featured), desc(restaurants.rating)];
+              : [desc(restaurants.featured), desc(publicRatingSql)];
 
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(conditions.length ? and(...conditions) : undefined)
     .orderBy(...orderBy);
@@ -445,10 +576,10 @@ export async function featuredRestaurants(locality?: string): Promise<Restaurant
   const conditions = [discoverableRestaurant, eq(restaurants.featured, true)];
   if (locality) conditions.push(eq(restaurants.locality, locality));
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(...conditions))
-    .orderBy(desc(restaurants.rating));
+    .orderBy(desc(publicRatingSql));
   return rows.map(toRestaurantDto);
 }
 
@@ -476,7 +607,7 @@ export async function discoverableRestaurantSlugs(): Promise<{ slug: string; cre
 
 export async function getRestaurant(slug: string) {
   const [r] = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(eq(restaurants.slug, slug), eq(restaurants.isActive, true)))
     .limit(1);
@@ -530,23 +661,29 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     ),
   );
   const restRows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(locality ? and(restaurantCondition, eq(restaurants.locality, locality)) : restaurantCondition)
-    .orderBy(desc(restaurants.rating))
+    .orderBy(desc(publicRatingSql))
     .limit(5);
 
-  const restResults: SearchResult[] = restRows.map((r) => ({
-    type: "restaurant",
-    slug: r.slug,
-    name: r.name,
-    cuisines: r.cuisines,
-    rating: r.rating,
-    ratingsCount: r.ratingsCount,
-    deliveryMinutes: r.deliveryMinutes,
-    imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
-    offer: r.offer,
-  }));
+  const restResults: SearchResult[] = restRows.map((r) => {
+    const rating = publicRating(
+      { rating: r.rating, ratingsCount: r.ratingsCount },
+      r.publicRating == null ? null : { averageRating: r.publicRating, reviewCount: r.publicRatingCount ?? 0 },
+    );
+    return {
+      type: "restaurant",
+      slug: r.slug,
+      name: r.name,
+      cuisines: r.cuisines,
+      rating: rating.rating,
+      ratingsCount: rating.ratingsCount,
+      deliveryMinutes: r.deliveryMinutes,
+      imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
+      offer: r.offer,
+    };
+  });
 
   const dishLike = await db
     .select({
@@ -598,7 +735,7 @@ export async function restaurantsBySlugs(slugs: string[]): Promise<RestaurantDto
   const bounded = slugs.slice(0, MAX_SLUGS);
   if (!bounded.length) return [];
   const rows = await db
-    .select()
+    .select(publicRestaurantColumns)
     .from(restaurants)
     .where(and(eq(restaurants.isActive, true), inArray(restaurants.slug, bounded)));
   return rows.map(toRestaurantDto);
@@ -1071,7 +1208,18 @@ async function restaurantIdForOwnerKey(ownerKey: string): Promise<number | null>
 }
 
 function toRestaurantManageDto(r: typeof restaurants.$inferSelect): RestaurantManageDto {
-  return { ...toRestaurantDto(r), isActive: r.isActive };
+  return {
+    ...toRestaurantDto(r),
+    isActive: r.isActive,
+    merchantHoursEnabled: r.merchantHoursEnabled,
+    merchantOpensAt: r.merchantOpensAt,
+    merchantClosesAt: r.merchantClosesAt,
+    merchantPickupEnabled: r.merchantPickupEnabled,
+    merchantDeliveryEnabled: r.merchantDeliveryEnabled,
+    closureReason: r.closureReason,
+    closureUntil: r.closureUntil ? r.closureUntil.toISOString() : null,
+    scheduledLeaves: r.scheduledLeaves ?? [],
+  };
 }
 
 /**
@@ -1726,7 +1874,7 @@ export async function listIntegrationOrders(restaurantId: number, limit = 30): P
     .where(eq(orders.restaurantId, restaurantId))
     .orderBy(desc(orders.createdAt))
     .limit(limit);
-  return rows.map(toOrderDto);
+  return rows.map((row) => toOrderDto(row));
 }
 
 /* ------------------------------- identity -------------------------------- */
@@ -2758,6 +2906,10 @@ export interface DroppedCartItem {
 export interface CreateOrderInput {
   restaurantSlug: string;
   items: CartLineSubmit[];
+  /** Customer opt-in for the restaurant offer. Never inferred from the cart. */
+  applyOffer?: boolean;
+  /** Selected Merchant App promo code. Re-resolved and repriced here, never trusted as a discount. */
+  promoCode?: string;
   /** Absent → the row's "Home" default applies. */
   addressLabel?: string;
   addressText: string;
@@ -2778,6 +2930,11 @@ export interface CreateOrderInput {
    * store-level routing; the record's branch/outlet are persisted at delivery.
    */
   outletId?: string;
+  /**
+   * Explicit/proven account link for an authenticated checkout. Set only by the
+   * server after resolving a live account session; never trusted from the client.
+   */
+  customerAccountId?: number | null;
 }
 
 /** Linked modifier group + its available options, resolved per menu item. */
@@ -2796,13 +2953,38 @@ interface ItemModifierScope {
  * validated against their linked groups (min/max + DB prices), and a supplied
  * client price snapshot that differs from the DB price is flagged stale.
  */
+/** Whether the listing has a paired Savour Merchant App; this is independent of POS readiness. */
+export async function hasActiveMerchantAppLink(restaurantId: number): Promise<boolean> {
+  const [link] = await db.select({ id: merchantAppLinks.id }).from(merchantAppLinks)
+    .where(eq(merchantAppLinks.restaurantId, restaurantId)).limit(1);
+  return Boolean(link);
+}
+
+function withinMerchantHours(restaurant: typeof restaurants.$inferSelect, now = new Date()): boolean {
+  if (!restaurant.merchantHoursEnabled) return true;
+  const current = new Intl.DateTimeFormat("en-GB", {
+    timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).format(now);
+  const open = restaurant.merchantOpensAt;
+  const close = restaurant.merchantClosesAt;
+  if (open === close) return false;
+  return open < close ? current >= open && current < close : current >= open || current < close;
+}
+
 export async function computeBill(
   restaurantSlug: string,
   items: CartLineSubmit[],
+  applyOffer = false,
+  promoCode?: string,
 ): Promise<
   | {
       ok: true;
       restaurant: typeof restaurants.$inferSelect;
+      offer: string | null;
+      offerAvailable: boolean;
+      /** The resolved Merchant App promotion, when a code was selected. */
+      promo?: PublicMerchantOffer | null;
+      promoCode?: string | null;
       lines: {
         menuItem: typeof menuItems.$inferSelect;
         quantity: number;
@@ -2820,13 +3002,14 @@ export async function computeBill(
     .where(eq(restaurants.slug, restaurantSlug))
     .limit(1);
   if (!r) return { ok: false, error: "Restaurant not found" };
-  if (!r.isActive) return { ok: false, error: `${r.name} is temporarily closed` };
+  if (!r.isActive || isRestaurantClosed(r)) return { ok: false, error: `${r.name} is ${closedReason(r).toLowerCase()}` };
+  if (!withinMerchantHours(r)) return { ok: false, error: `${r.name} is outside its operating hours` };
   if (!items.length) return { ok: false, error: "Cart is empty" };
 
   // Ordering gate. Enforced before any line is priced so the bill preview and
   // the order itself agree — the customer is told at the estimate, not after
   // entering payment details.
-  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id))) {
+  if (orderingGateEnforced() && !(await hasActiveIntegration(r.id)) && !(await hasActiveMerchantAppLink(r.id))) {
     return {
       ok: false,
       error: ORDERING_CLOSED_MESSAGE,
@@ -2860,9 +3043,16 @@ export async function computeBill(
     // silently rewritten here.
     const qty = Math.min(MAX_ITEM_QUANTITY, Math.max(1, Math.floor(item.quantity) || 1));
 
-    if (!m.available) {
+    if (!m.available || (m.stockQuantity !== null && m.stockQuantity <= 0)) {
       dropped.push({ menuItemId: m.id, name: m.name, reason: "sold_out" });
       continue;
+    }
+    if (m.stockQuantity !== null && m.stockQuantity < qty) {
+      return {
+        ok: false,
+        error: `Only ${m.stockQuantity} ${m.name} left in stock`,
+        code: "INSUFFICIENT_STOCK",
+      };
     }
 
     const selected = (item.modifiers ?? []).map((mod) => ({
@@ -2911,8 +3101,47 @@ export async function computeBill(
     lines.push({ menuItem: m, quantity: qty, stalePrice, modifiers: priced });
   }
 
-  const bill = billFor(subtotal, r.offerPercent, r.offerMaxCents);
-  return { ok: true, restaurant: r, lines, bill, dropped };
+  const normalizedPromo = promoCode ? parseOfferCode(promoCode) : null;
+  if (promoCode && !normalizedPromo) {
+    return { ok: false, error: "Enter a valid offer code", code: "INVALID_PROMO_CODE" };
+  }
+
+  const bill = billFor(subtotal, r.offerPercent, r.offerMaxCents, applyOffer);
+  if (!normalizedPromo) {
+    return {
+      ok: true,
+      restaurant: r,
+      offer: r.offer,
+      offerAvailable: r.offerPercent > 0 || r.offerMaxCents > 0,
+      lines,
+      bill,
+      dropped,
+    };
+  }
+
+  // A Merchant App code is an explicit alternative to the legacy listing offer,
+  // never a second discount stacked on top of it. Re-resolve the row by the
+  // restaurant AND the canonical code, then re-price from that row's rules; a
+  // client can no more name the percentage than it can name the total.
+  const found = await findRedeemableMerchantOffer(r.id, normalizedPromo);
+  if (!found) {
+    return { ok: false, error: "That offer is not available for this restaurant", code: "PROMO_NOT_FOUND" };
+  }
+  const evaluated = evaluateMerchantOffer(found.offer, found.redemptions, subtotal);
+  if (!evaluated.ok) return { ok: false, error: evaluated.error, code: evaluated.code };
+
+  const promo = publicMerchantOfferDto(found.offer, found.redemptions);
+  return {
+    ok: true,
+    restaurant: r,
+    offer: promo.title,
+    offerAvailable: true,
+    promo,
+    promoCode: normalizedPromo,
+    lines,
+    bill: billWithMerchantOffer(bill, evaluated.discountCents),
+    dropped,
+  };
 }
 
 /** Load active modifier scopes (group + available options) for menu items. */
@@ -3016,6 +3245,13 @@ export async function getMenuModifierGroups(
   return result;
 }
 
+/** Raised inside the order transaction when concurrent buyers exhaust a tracked item. */
+class StockUnavailable extends Error {
+  constructor(readonly itemName: string) {
+    super(`${itemName} is sold out`);
+  }
+}
+
 export async function createOrder(
   input: CreateOrderInput,
 ): Promise<{ ok: true; order: OrderDto; trackingToken?: string } | { ok: false; error: string; code?: string }> {
@@ -3039,7 +3275,12 @@ export async function createOrder(
   // single time it is ever available.
   const trackingToken = makeTrackingToken();
 
-  const computed = await computeBill(input.restaurantSlug, input.items);
+  const computed = await computeBill(
+    input.restaurantSlug,
+    input.items,
+    input.applyOffer === true,
+    input.promoCode,
+  );
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
 
@@ -3047,6 +3288,14 @@ export async function createOrder(
   // tracking shows the POS lifecycle this order was actually admitted into even
   // if the restaurant's integration is disabled while the order is in flight.
   const posConnected = await hasActiveIntegration(r.id);
+  // Merchant-managed orders are routed directly through the Marketplace's
+  // canonical order record. This is independent of the POS delivery journal.
+  const [merchantLink] = await db
+    .select({ id: merchantAppLinks.id })
+    .from(merchantAppLinks)
+    .where(eq(merchantAppLinks.restaurantId, r.id))
+    .limit(1);
+  const merchantManaged = Boolean(merchantLink);
 
   // Phase 7 — validate the optional outlet claim against the integration
   // record BEFORE the order is created (fail-closed; no silent fallback).
@@ -3077,10 +3326,28 @@ export async function createOrder(
   }));
 
   try {
-    const [created] = await db
-      .insert(orders)
-      .values({
-        code: makeOrderCode(),
+    const created = await db.transaction(async (tx) => {
+      // Reserve tracked stock and create the order in one transaction. The
+      // conditional decrement is the lock: if another buyer took the last unit
+      // between bill preview and insert, no row updates and the order aborts.
+      for (const { menuItem: m, quantity } of lines) {
+        if (m.stockQuantity === null) continue;
+        const [reserved] = await tx
+          .update(menuItems)
+          .set({ stockQuantity: sql`${menuItems.stockQuantity} - ${quantity}` })
+          .where(and(
+            eq(menuItems.id, m.id),
+            isNotNull(menuItems.stockQuantity),
+            gte(menuItems.stockQuantity, quantity),
+          ))
+          .returning({ id: menuItems.id });
+        if (!reserved) throw new StockUnavailable(m.name);
+      }
+
+      const [row] = await tx
+        .insert(orders)
+        .values({
+          code: makeOrderCode(),
         trackingTokenHash: hashTrackingToken(trackingToken),
         restaurantId: r.id,
         restaurantName: r.name,
@@ -3098,24 +3365,34 @@ export async function createOrder(
         platformFeeCents: bill.platformFeeCents,
         discountCents: bill.discountCents,
         totalCents: bill.totalCents,
+        // Only a server-resolved code is ever stamped. This is what makes the
+        // offer's usage limit and the Merchant App's redemption count real.
+        offerCode: computed.promoCode ?? null,
         clientRequestId,
         posConnected,
+        merchantManaged,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
-      })
-      .returning();
+        ...(input.customerAccountId ? { customerAccountId: input.customerAccountId } : {}),
+        })
+        .returning();
 
-    // Phase 4 — persist the stable external order id (mkt_ord_<id>) so the
-    // POS status webhook resolver can find this order by (restaurant, external
-    // order id). Derived from id but stored explicitly for unique lookup.
-    if (created.externalOrderId == null) {
-      await db
-        .update(orders)
-        .set({ externalOrderId: externalOrderIdFor(created.id) })
-        .where(eq(orders.id, created.id));
-    }
+      // Phase 4 — persist the stable external order id (mkt_ord_<id>) so the
+      // POS status webhook resolver can find this order by (restaurant, external
+      // order id). Derived from id but stored explicitly for unique lookup.
+      if (row.externalOrderId == null) {
+        await tx
+          .update(orders)
+          .set({ externalOrderId: externalOrderIdFor(row.id) })
+          .where(eq(orders.id, row.id));
+      }
+      return row;
+    });
 
     return { ok: true, order: toOrderDto(created), trackingToken };
   } catch (e) {
+    if (e instanceof StockUnavailable) {
+      return { ok: false, error: e.message, code: "INSUFFICIENT_STOCK" };
+    }
     // Concurrent retry with the same key: the unique constraint let one win;
     // return the surviving order so the caller sees a single result.
     if (clientRequestId && isUniqueViolation(e)) {
@@ -3135,17 +3412,23 @@ export async function getIntegrationOrderByCodeForRestaurant(
   code: string,
   restaurantId: number,
 ): Promise<OrderDto | null> {
-  const [o] = await db
-    .select()
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(and(eq(orders.code, code.toUpperCase()), eq(orders.restaurantId, restaurantId)))
     .limit(1);
-  return o ? toOrderDto(o) : null;
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 export async function getOrderByCode(code: string): Promise<OrderDto | null> {
-  const [o] = await db.select().from(orders).where(eq(orders.code, code.toUpperCase())).limit(1);
-  return o ? toOrderDto(o) : null;
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
+    .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
+    .where(eq(orders.code, code.toUpperCase()))
+    .limit(1);
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 /**
@@ -3155,12 +3438,13 @@ export async function getOrderByCode(code: string): Promise<OrderDto | null> {
  * so a leaked query log cannot be used as a working tracking URL either.
  */
 export async function getOrderByTrackingToken(token: string): Promise<OrderDto | null> {
-  const [o] = await db
-    .select()
+  const [row] = await db
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(eq(orders.trackingTokenHash, hashTrackingToken(token)))
     .limit(1);
-  return o ? toOrderDto(o) : null;
+  return row ? toOrderDto(row.order, row.locality) : null;
 }
 
 export interface OrderCancelContext {
@@ -3213,10 +3497,62 @@ export async function listOrders(codes: string[]): Promise<OrderDto[]> {
   if (!codes.length) return [];
   const upper = codes.map((c) => c.toUpperCase());
   const rows = await db
-    .select()
+    .select({ order: orders, locality: restaurants.locality })
     .from(orders)
+    .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(inArray(orders.code, upper))
     .orderBy(desc(orders.createdAt))
     .limit(30);
-  return rows.map(toOrderDto);
+  return rows.map((row) => toOrderDto(row.order, row.locality));
+}
+
+/**
+ * Merchant App link flow — the authorization half.
+ *
+ * The partner session mints a 32-byte code, hands it to the Merchant App in a
+ * redirect, and the App posts it back with the PKCE verifier. Only the hash of
+ * the code is stored, so the redirect is the one and only place the plaintext
+ * ever exists. Ten minutes is short enough that a leaked redirect URL is a
+ * narrow window and long enough to survive a slow app switch.
+ */
+const MERCHANT_AUTHORIZATION_TTL_MS = 10 * 60 * 1000;
+
+/** Mint a single-use authorization code bound to a restaurant and PKCE challenge. */
+export async function createMerchantAuthorizationCode(
+  restaurantId: number,
+  codeChallenge: string,
+): Promise<string> {
+  const code = randomBytes(32).toString("base64url");
+  await db.insert(merchantAuthorizationCodes).values({
+    codeHash: hashToken(code),
+    restaurantId,
+    codeChallenge,
+    expiresAt: new Date(Date.now() + MERCHANT_AUTHORIZATION_TTL_MS),
+  });
+  return code;
+}
+
+/**
+ * Redeem an authorization code. Returns the restaurant id on success.
+ *
+ * The conditions live in the UPDATE itself rather than in a read-then-write, so
+ * two concurrent exchanges of the same code cannot both win: the first sets
+ * `consumed_at`, and the second matches no row and returns null. Expiry is
+ * checked in the same statement for the same reason.
+ */
+export async function consumeMerchantAuthorizationCode(
+  code: string,
+  codeChallenge: string,
+): Promise<number | null> {
+  const [row] = await db
+    .update(merchantAuthorizationCodes)
+    .set({ consumedAt: new Date() })
+    .where(and(
+      eq(merchantAuthorizationCodes.codeHash, hashToken(code)),
+      eq(merchantAuthorizationCodes.codeChallenge, codeChallenge),
+      isNull(merchantAuthorizationCodes.consumedAt),
+      gt(merchantAuthorizationCodes.expiresAt, new Date()),
+    ))
+    .returning({ restaurantId: merchantAuthorizationCodes.restaurantId });
+  return row?.restaurantId ?? null;
 }

@@ -152,7 +152,8 @@ export default function RefundsPage() {
 
       <LegalSection id="promotions" heading="5. Offers, discounts and free delivery">
         <p>
-          A discount offered by a restaurant is applied at checkout against the food subtotal.
+          A restaurant discount is applied at checkout only when you select that offer. Once
+          selected, it reduces the food subtotal.
           Where an order is cancelled and refunded in full, the discount falls away with it. Where
           a partial refund is agreed, any discount already consumed is accounted for at that
           point, and this may mean the refunded amount is lower than the proportional share of

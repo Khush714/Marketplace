@@ -68,7 +68,7 @@ const ALL_SRC = globSync("src/**/*.ts").map((file) => ({ file, src: readSource(f
 
 /* ------------------------------ vocabulary ------------------------------ */
 
-test("the vocabulary is exactly the eleven Phase 12 events", () => {
+test("the vocabulary is exactly the fixed security events", () => {
   assert.deepEqual([...SECURITY_EVENTS], [
     "admin_login",
     "connection_code_created",
@@ -81,6 +81,9 @@ test("the vocabulary is exactly the eleven Phase 12 events", () => {
     "payment_webhook_failure",
     "order_tracking_suspicious",
     "rate_limit_violation",
+    "customer_auth_verified",
+    "customer_account_session_revoked",
+    "customer_orders_claimed",
   ]);
 });
 
@@ -234,6 +237,9 @@ const SITES: Array<{ event: string; files: string[] }> = [
       "src/app/api/integrations/payments/webhook/route.ts",
     ],
   },
+  { event: "customer_auth_verified", files: ["src/app/api/customer/auth/verify/route.ts"] },
+  { event: "customer_account_session_revoked", files: ["src/app/api/customer/logout/route.ts"] },
+  { event: "customer_orders_claimed", files: ["src/app/api/customer/orders/claim/route.ts"] },
 ];
 
 for (const site of SITES) {
@@ -298,6 +304,8 @@ const SAFE_EMITTED_KEYS = new Set([
   "windowMs",
   "retryAfterSeconds",
   "ip",
+  "accountId",
+  "linkedCount",
 ]);
 
 test("every emission passes only allowlisted identifier fields", () => {

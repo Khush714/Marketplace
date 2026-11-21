@@ -70,9 +70,9 @@ export function SectionHeader({
   className?: string;
 }) {
   return (
-    <div className={cn("mb-5 flex items-end justify-between gap-4", className)}>
+    <div className={cn("mb-4 flex items-end justify-between gap-3 md:mb-5 md:gap-4", className)}>
       <div>
-        <h2 className="font-display text-xl font-bold tracking-tight text-cream-50 md:text-2xl">{title}</h2>
+        <h2 className="font-display text-[19px] font-bold tracking-tight text-cream-50 md:text-2xl">{title}</h2>
         {sub && <p className="mt-1 text-sm text-cream-500">{sub}</p>}
       </div>
       {href ? (

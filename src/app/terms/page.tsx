@@ -117,8 +117,8 @@ export default function TermsPage() {
       <LegalSection id="pricing" heading="5. Prices and fees">
         <p>
           Prices shown on a restaurant&rsquo;s listing are the restaurant&rsquo;s own prices. The
-          total you pay is made up of the food subtotal, any discount the restaurant offers, plus
-          the platform fee and the delivery fee. At the date of these terms the delivery fee is{" "}
+          total you pay is made up of the food subtotal, any restaurant offer you choose to apply
+          at checkout, plus the platform fee and the delivery fee. At the date of these terms the delivery fee is{" "}
           {formatINR(DELIVERY_FEE_CENTS)}, waived on orders of{" "}
           {formatINR(DELIVERY_FREE_ABOVE_CENTS)} and above, and the platform fee is{" "}
           {formatINR(PLATFORM_FEE_CENTS)} per order.

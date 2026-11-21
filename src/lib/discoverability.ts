@@ -29,6 +29,13 @@ import { menuItems, restaurants } from "@/db/schema";
  */
 export const discoverableRestaurant = sql`
   ${restaurants.isActive} = true
+  -- Temporary closures expire from their stamp; leave days use the same IST
+  -- calendar the merchant sees. Both are enforced again at checkout.
+  AND (${restaurants.closureUntil} IS NULL OR ${restaurants.closureUntil} > now())
+  AND NOT EXISTS (
+    SELECT 1 FROM jsonb_array_elements(${restaurants.scheduledLeaves}) AS leave(value)
+    WHERE leave.value->>'date' = to_char(now() AT TIME ZONE 'Asia/Kolkata', 'YYYY-MM-DD')
+  )
   AND EXISTS (
     SELECT 1 FROM ${menuItems} mi
     WHERE mi.restaurant_id = ${restaurants.id}

@@ -2,42 +2,37 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useState } from "react";
-import { ArrowRight, ChevronRight, Clock3, ReceiptText, RefreshCcw, UtensilsCrossed } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ArrowRight, ChevronRight, Clock3, LoaderCircle, ReceiptText, RefreshCcw, Star, UtensilsCrossed } from "lucide-react";
 import { BLUR_DATA, EmptyState } from "@/components/atoms";
+import { useCustomerAccount } from "@/lib/customer-account";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
 import { useOrderPoll } from "@/lib/order-access";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
-import { useProfileOrders, useProfileReady } from "@/lib/profile";
+import { useProfileReady } from "@/lib/profile";
 
 export default function OrdersPage() {
-  const { orders: stored } = useProfileOrders();
   const hydrated = useProfileReady();
+  const account = useCustomerAccount();
   const [orders, setOrders] = useState<PublicOrder[] | null>(null);
 
   /**
-   * Order history is read through the token-authenticated bulk lookup — a code
-   * on its own grants nothing, so this is also what stops the list from ever
-   * showing somebody else's order.
+   * Order history is account-scoped when signed in. We intentionally do not
+   * merge device-local token history or anonymous session orders here to avoid
+   * cross-customer leakage on shared browsers.
    */
   const loadOrders = useCallback(async (): Promise<PublicOrder[]> => {
-    const res = await fetch("/api/orders/lookup", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ orders: stored.slice(0, 30).map((o) => ({ code: o.code, token: o.token })) }),
-      cache: "no-store",
-    });
-    const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
-    return data?.orders ?? [];
-  }, [stored]);
+    if (account.status !== "signedIn") return [];
+    const res = await fetch("/api/orders", { cache: "no-store", credentials: "same-origin" })
+      .then(async (r) => ((await r.json().catch(() => null)) as { orders?: PublicOrder[] } | null))
+      .catch(() => null);
+    return Array.isArray(res?.orders) ? res!.orders : [];
+  }, [account.status]);
 
   // First paint only. The interval below owns every fetch after this one.
   useEffect(() => {
     if (!hydrated) return;
-    if (!stored.length) {
-      setOrders([]);
-      return;
-    }
+    if (account.status === "loading") return;
     let cancelled = false;
     loadOrders()
       .then((rows) => {
@@ -49,7 +44,7 @@ export default function OrdersPage() {
     return () => {
       cancelled = true;
     };
-  }, [hydrated, stored, loadOrders]);
+  }, [hydrated, account.status, loadOrders]);
 
   /**
    * Refreshes only while something on this page can still change. A history
@@ -60,7 +55,7 @@ export default function OrdersPage() {
     load: loadOrders,
     onData: setOrders,
     intervalMs: 6000,
-    live: (orders ?? []).some(isOrderLive),
+    live: account.status === "signedIn" && (orders ?? []).some(isOrderLive),
   });
 
   return (
@@ -68,7 +63,29 @@ export default function OrdersPage() {
       <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">History</p>
       <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-4xl">Your orders</h1>
 
-      {!hydrated || orders === null ? (
+      {!hydrated || account.status === "loading" ? (
+        <div className="mt-8 space-y-4">
+          {[0, 1].map((i) => (
+            <div key={i} className="skeleton h-40 rounded-3xl" />
+          ))}
+        </div>
+      ) : account.status !== "signedIn" ? (
+        <div className="mt-10">
+          <EmptyState
+            icon={<ReceiptText className="size-6" />}
+            title="Sign in to view your orders"
+            sub="Your order history is linked to your account so it stays private and available across devices."
+            action={
+              <Link
+                href="/profile"
+                className="press mt-2 flex items-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-6 py-3 text-sm font-bold text-white shadow-glow"
+              >
+                Sign in <ArrowRight className="size-4" />
+              </Link>
+            }
+          />
+        </div>
+      ) : orders === null ? (
         <div className="mt-8 space-y-4">
           {[0, 1].map((i) => (
             <div key={i} className="skeleton h-40 rounded-3xl" />
@@ -94,10 +111,7 @@ export default function OrdersPage() {
         <ul className="mt-7 space-y-4">
           {orders.map((o, idx) => {
             const live = isOrderLive(o);
-            // Prefer the shareable Phase 6 tracking URL when this browser has
-            // the token on file; pre-existing orders fall back to code+token.
-            const storedToken = stored.find((s) => s.code === o.code)?.trackingToken;
-            const trackingHref = storedToken ? `/order/track/${storedToken}` : `/order/${o.code}/track`;
+            const trackingHref = `/order/${o.code}/track`;
             return (
               <li key={o.code} style={{ animationDelay: `${idx * 60}ms` }} className="animate-rise">
                 <div className="glass lift rounded-3xl p-4 hover:shadow-lift md:p-5">
@@ -138,12 +152,26 @@ export default function OrdersPage() {
                           </span>
                           {o.status.stageLabel}
                         </span>
+                        <span className="rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-semibold text-cream-400">
+                          {o.fulfilment === "pickup" ? "Pickup" : "Delivery"}
+                        </span>
                         <span className="text-xs text-cream-500">
                           {o.items.reduce((n, i) => n + i.quantity, 0)} items · {formatINR(o.totalCents)}
                         </span>
                         <span className="flex items-center gap-1 text-xs text-cream-500">
                           <Clock3 className="size-3" /> {formatDateTime(o.createdAt)}
                         </span>
+                        {o.status.statusUpdatedAt && (
+                          <span className="text-xs text-cream-500">
+                            {live ? "Updated" : "Last update"} {formatDateTime(o.status.statusUpdatedAt)}
+                          </span>
+                        )}
+                        {!live && o.feedback.feedbackAt && o.feedback.rating && (
+                          <span className="flex items-center gap-1 text-xs font-semibold text-ember-300">
+                            <Star className="size-3 fill-current" />
+                            Rated {o.feedback.rating}/5
+                          </span>
+                        )}
                       </div>
                     </div>
                   </div>
@@ -170,8 +198,13 @@ export default function OrdersPage() {
         </ul>
       )}
 
-      <div className="mt-10 flex items-center justify-center gap-2 text-xs text-cream-600">
-        <UtensilsCrossed className="size-3.5" /> Orders refresh automatically while they&apos;re live
+      <div className="mt-10 flex flex-col items-center justify-center gap-2 text-center text-xs text-cream-600">
+        <span className="flex items-center gap-2">
+          <UtensilsCrossed className="size-3.5" /> Orders refresh automatically while they&apos;re live
+        </span>
+        <Link href="/contact" className="font-semibold text-ember-400 transition-colors hover:text-ember-300">
+          Need help with an order? Contact support
+        </Link>
       </div>
     </div>
   );

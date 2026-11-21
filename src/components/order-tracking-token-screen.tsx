@@ -66,12 +66,20 @@ export function OrderTrackingTokenScreen({ trackingToken }: { trackingToken: str
           This tracking link doesn&apos;t match an order on file. Links include a secret
           access token, so a copied or mistyped URL goes nowhere.
         </p>
-        <Link
-          href="/"
-          className="press mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-6 py-3 text-sm font-bold text-white shadow-glow"
-        >
-          Back to discovery
-        </Link>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <Link
+            href="/contact"
+            className="press inline-flex items-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-6 py-3 text-sm font-bold text-white shadow-glow"
+          >
+            Contact support
+          </Link>
+          <Link
+            href="/"
+            className="press inline-flex items-center gap-2 rounded-full bg-white/8 px-6 py-3 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+          >
+            Back to discovery
+          </Link>
+        </div>
       </div>
     );
   }

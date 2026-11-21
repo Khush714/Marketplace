@@ -28,6 +28,8 @@ import "server-only";
 import { normalizeOrderCode } from "@/lib/customer-session-core";
 import { resolveCustomerSession } from "@/lib/customer-session";
 import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { resolveAccountSession } from "@/lib/security/customer-account-session";
+import { isOrderLinkedToAccount } from "@/db/customer-accounts";
 
 /**
  * Whether `req` may act on `code` — read it, pay for it, or cancel it.
@@ -47,6 +49,10 @@ export async function orderAuthorized(req: Request, code: unknown): Promise<bool
   if (headerToken && verifyOrderToken(normalized, headerToken)) return true;
 
   const session = await resolveCustomerSession(req);
-  if (!session) return false;
-  return session.orderCodes.includes(normalized);
+  if (session?.orderCodes.includes(normalized)) return true;
+
+  // Cross-device access for explicitly/proven linked orders when signed in.
+  const account = await resolveAccountSession(req);
+  if (!account) return false;
+  return isOrderLinkedToAccount(account.account.id, normalized);
 }

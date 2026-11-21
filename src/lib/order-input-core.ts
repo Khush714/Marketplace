@@ -34,6 +34,8 @@
  * bound the routes enforce.
  */
 
+import { parseOfferCode } from "./merchant-offer";
+
 /** Largest quantity one cart line may request. */
 export const MAX_ITEM_QUANTITY = 99;
 
@@ -70,7 +72,8 @@ export type OrderInputErrorCode =
   | "QUANTITY_OUT_OF_RANGE"
   | "CART_TOO_LARGE"
   | "PAYMENT_METHOD_NOT_ALLOWED"
-  | "TERMS_NOT_ACCEPTED";
+  | "TERMS_NOT_ACCEPTED"
+  | "INVALID_PROMO_CODE";
 
 /**
  * A cart line after validation: every field read here was checked, every other
@@ -96,6 +99,14 @@ export type CartResult =
 export interface CheckoutRequest {
   restaurantSlug: string;
   items: SanitizedCartLine[];
+  /** True only when the customer explicitly selected the restaurant offer. */
+  applyOffer?: boolean;
+  /**
+   * Canonical Merchant App offer code the customer selected. A code is an
+   * explicit opt-in like `applyOffer`; no discount amount is ever accepted from
+   * the client. If both are present the code wins and the legacy flag is ignored.
+   */
+  promoCode?: string;
   /** Absent when the client sent no usable label — the row keeps its "Home" default. */
   addressLabel?: string;
   addressText: string;
@@ -269,11 +280,29 @@ export function validateCheckout(raw: unknown): CheckoutResult {
       ? body.outletId.trim().slice(0, 64)
       : undefined;
 
+  // A code is a *selection*, not a price assertion. Reject malformed input here
+  // so no half-formed string ever reaches the database lookup; existence,
+  // schedule, minimum order and usage are checked on the authoritative bill.
+  const promoRequested =
+    body.promoCode !== undefined && body.promoCode !== null && String(body.promoCode).trim() !== "";
+  const promoCode = promoRequested ? parseOfferCode(body.promoCode) : null;
+  if (promoRequested && !promoCode) {
+    return {
+      ok: false,
+      error: "Enter a valid offer code",
+      code: "INVALID_PROMO_CODE",
+    };
+  }
+
   return {
     ok: true,
     request: {
       restaurantSlug,
       items: cart.items,
+      // Only a literal true opts in. Any other value (string, number, object)
+      // is treated as no selection — never as a discount the client invented.
+      ...(body.applyOffer === true ? { applyOffer: true } : {}),
+      ...(promoCode ? { promoCode } : {}),
       ...(addressLabel !== undefined ? { addressLabel } : {}),
       addressText,
       customerName,

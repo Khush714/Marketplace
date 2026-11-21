@@ -14,6 +14,8 @@ export type PublicOrder = Pick<
   | "code"
   | "restaurantSlug"
   | "restaurantName"
+  | "restaurantLocality"
+  | "fulfilment"
   | "items"
   | "addressLabel"
   | "addressText"
@@ -28,6 +30,8 @@ export type PublicOrder = Pick<
   | "platformFeeCents"
   | "discountCents"
   | "totalCents"
+  | "offerCode"
+  | "feedback"
   | "createdAt"
   | "status"
 >;
@@ -45,6 +49,8 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
     code: o.code,
     restaurantSlug: o.restaurantSlug,
     restaurantName: o.restaurantName,
+    restaurantLocality: o.restaurantLocality,
+    fulfilment: o.fulfilment,
     items: o.items,
     addressLabel: o.addressLabel,
     addressText: o.addressText,
@@ -59,6 +65,8 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
     platformFeeCents: o.platformFeeCents,
     discountCents: o.discountCents,
     totalCents: o.totalCents,
+    offerCode: o.offerCode,
+    feedback: o.feedback,
     createdAt: o.createdAt,
     status: o.status,
   };
@@ -72,7 +80,7 @@ export function toPublicOrder(o: OrderDto): PublicOrder {
  * how the orders list ended up offering "Track live" with a pulsing dot on a
  * cancelled order, and how the poller would never have known to stop.
  */
-const TERMINAL_STAGE_KEYS: ReadonlySet<string> = new Set(["delivered", "cancelled", "rejected"]);
+const TERMINAL_STAGE_KEYS: ReadonlySet<string> = new Set(["delivered", "collected", "cancelled", "rejected"]);
 
 /**
  * Whether this order can still change, and therefore whether it is worth asking

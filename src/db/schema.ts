@@ -19,6 +19,7 @@ import {
   timestamp,
   unique,
   uniqueIndex,
+  uuid,
 } from "drizzle-orm/pg-core";
 
 export interface ModifierSelectionSnapshot {
@@ -101,6 +102,16 @@ export const restaurants = pgTable("restaurants", {
    * entire point of rotating.
    */
   integrationPasskeyHash: text("integration_passkey_hash"),
+  /** Merchant App store availability and fulfilment settings; independent of POS connection state. */
+  merchantHoursEnabled: boolean("merchant_hours_enabled").notNull().default(false),
+  merchantOpensAt: text("merchant_opens_at").notNull().default("09:00"),
+  merchantClosesAt: text("merchant_closes_at").notNull().default("22:00"),
+  merchantPickupEnabled: boolean("merchant_pickup_enabled").notNull().default(true),
+  merchantDeliveryEnabled: boolean("merchant_delivery_enabled").notNull().default(true),
+  /** Paired Merchant App overlays: a timed closure and IST leave days stop new orders. */
+  closureReason: text("closure_reason").notNull().default(""),
+  closureUntil: timestamp("closure_until", { withTimezone: true }),
+  scheduledLeaves: jsonb("scheduled_leaves").$type<{ date: string; reason: string }[]>().notNull().default([]),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 }, (t) => [
   // Phase 10 (10.3): `restaurantIdForOwnerKey` resolves identity with
@@ -255,6 +266,8 @@ export const menuItems = pgTable(
     isBestseller: boolean("is_bestseller").notNull().default(false),
     sort: integer("sort").notNull().default(0),
     available: boolean("available").notNull().default(true),
+    /** Null = stock is not tracked; checkout treats zero as sold out and decrements on order. */
+    stockQuantity: integer("stock_quantity"),
     posItemId: bigint("pos_item_id", { mode: "number" }),
     posCategoryId: bigint("pos_category_id", { mode: "number" }),
     categoryId: integer("category_id").references(() => menuCategories.id, {
@@ -457,6 +470,124 @@ export const integrationAudit = pgTable(
   (t) => [index("integration_audit_restaurant_idx").on(t.restaurantId)],
 );
 
+/**
+ * Authenticated customer accounts (Phase B MVP: phone identity).
+ *
+ * Separate from anonymous `customer_sessions` (cookie-bound order-code ownership
+ * for guests): account sessions carry identity/profile and explicitly/proven
+ * linked orders across devices. Guest checkout remains supported.
+ */
+export const customerAccounts = pgTable(
+  "customer_accounts",
+  {
+    id: serial("id").primaryKey(),
+    phoneE164: text("phone_e164").notNull(),
+    phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
+    name: text("name").notNull().default(""),
+    /** Optional avatar key: "male" | "female" | "" (unset). */
+    avatar: text("avatar").notNull().default(""),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("customer_accounts_phone_e164_idx").on(t.phoneE164)],
+);
+
+export type CustomerAccountRow = typeof customerAccounts.$inferSelect;
+
+/**
+ * One-time login/verify challenges. Codes are hashed at rest so a database read
+ * never yields a usable OTP; attempts and TTL bound guessing/replay.
+ */
+export const customerAuthChallenges = pgTable(
+  "customer_auth_challenges",
+  {
+    id: serial("id").primaryKey(),
+    phoneE164: text("phone_e164").notNull(),
+    purpose: text("purpose").notNull().default("login"),
+    codeHash: text("code_hash").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("customer_auth_challenges_phone_purpose_expires_idx").on(t.phoneE164, t.purpose, t.expiresAt),
+    index("customer_auth_challenges_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type CustomerAuthChallengeRow = typeof customerAuthChallenges.$inferSelect;
+
+/**
+ * Bounded, revocable authenticated sessions for customer accounts. Token and CSRF
+ * secrets are hashed at rest (partner-session pattern) so a read yields no usable
+ * credential.
+ */
+export const customerAccountSessions = pgTable(
+  "customer_account_sessions",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    csrfHash: text("csrf_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_account_sessions_token_hash_idx").on(t.tokenHash),
+    index("customer_account_sessions_account_id_idx").on(t.accountId),
+    index("customer_account_sessions_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type CustomerAccountSessionRow = typeof customerAccountSessions.$inferSelect;
+
+/** Saved delivery addresses for an authenticated account (MVP profile data). */
+export const customerAddresses = pgTable(
+  "customer_addresses",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    label: text("label").notNull().default("Other"),
+    text: text("text").notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("customer_addresses_account_id_idx").on(t.accountId)],
+);
+
+export type CustomerAddressRow = typeof customerAddresses.$inferSelect;
+
+/** Account-scoped restaurant favourites. */
+export const customerFavorites = pgTable(
+  "customer_favorites",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_favorites_account_restaurant_idx").on(t.accountId, t.restaurantId),
+    index("customer_favorites_account_id_idx").on(t.accountId),
+  ],
+);
+
+export type CustomerFavoriteRow = typeof customerFavorites.$inferSelect;
+
 export const orders = pgTable(
   "orders",
   {
@@ -499,6 +630,13 @@ export const orders = pgTable(
     platformFeeCents: integer("platform_fee_cents").notNull(),
     discountCents: integer("discount_cents").notNull().default(0),
     totalCents: integer("total_cents").notNull(),
+    /**
+     * Canonical merchant-offer code applied at checkout, when one was used.
+     * Stamped from the server-evaluated promotion — never from a client-supplied
+     * discount — so usage limits and the Merchant App's redemptions count come
+     * from real orders. NULL for the legacy restaurant offer or no discount.
+     */
+    offerCode: text("offer_code"),
     /**
      * Client-supplied idempotency key: the first order carrying a given key
      * wins; retries return the same order instead of creating a duplicate.
@@ -555,6 +693,32 @@ export const orders = pgTable(
      * for legacy rows until the backfill migration stamps them.
      */
     trackingTokenHash: text("tracking_token_hash"),
+    /** Separate Marketplace ↔ Merchant App lifecycle; never reuse POS integrationStatus. */
+    merchantManaged: boolean("merchant_managed").notNull().default(false),
+    merchantStatus: text("merchant_status").notNull().default("PLACED"),
+    merchantStatusUpdatedAt: timestamp("merchant_status_updated_at", { withTimezone: true }).notNull().defaultNow(),
+    merchantPrepMinutes: integer("merchant_prep_minutes"),
+    merchantRejectionReason: text("merchant_rejection_reason").notNull().default(""),
+    merchantFulfilment: text("merchant_fulfilment").notNull().default("delivery"),
+    /**
+     * Explicit/proven link to an authenticated account (nullable, additive).
+     * Guest and token/session ownership remain valid; orders stay financial
+     * records if the account is later removed.
+     */
+    customerAccountId: integer("customer_account_id").references(() => customerAccounts.id, {
+      onDelete: "set null",
+    }),
+    /**
+     * Customer rating for a delivered order (1–5). One immutable review per
+     * order: the first write wins, and the Merchant App may add a single public
+     * reply. Stored on the order itself so the order token is also the review
+     * capability and there is a second table to keep in sync.
+     */
+    rating: integer("rating"),
+    review: text("review").notNull().default(""),
+    feedbackAt: timestamp("feedback_at", { withTimezone: true }),
+    merchantResponse: text("merchant_response").notNull().default(""),
+    merchantRespondedAt: timestamp("merchant_responded_at", { withTimezone: true }),
   },
   (t) => [
     index("orders_phone_idx").on(t.phone),
@@ -567,6 +731,16 @@ export const orders = pgTable(
     // Phase 10 (10.3): cross-restaurant recency/time-range scans, which the
     // composite cannot serve because created_at is not its leading column.
     index("orders_created_at_idx").on(t.createdAt),
+    // Redemption counts for merchant offers are always restaurant-scoped. The
+    // composite's leading column also serves plain restaurant lookups, and its
+    // suffix serves the per-code COUNT at offer validation time.
+    index("orders_restaurant_offer_code_idx").on(t.restaurantId, t.offerCode),
+    // Merchant feedback inbox and the 30-day feedback summary are both scoped
+    // to one restaurant and ordered/filtered by feedback_at.
+    index("orders_restaurant_feedback_idx").on(t.restaurantId, t.feedbackAt),
+    index("orders_restaurant_merchant_status_created_idx").on(t.restaurantId, t.merchantStatus, t.createdAt),
+    // Explicit/proven account-linked history.
+    index("orders_customer_account_id_idx").on(t.customerAccountId),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
   ],
@@ -945,6 +1119,88 @@ export const menuWebhookEvents = pgTable(
   ],
 );
 
+/** Successful merchant-facing order state transitions, separate from POS webhooks/audit events. */
+export const merchantOrderEvents = pgTable(
+  "merchant_order_events",
+  {
+    id: serial("id").primaryKey(),
+    orderId: integer("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    fromStatus: text("from_status").notNull(),
+    toStatus: text("to_status").notNull(),
+    reason: text("reason").notNull().default(""),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_order_events_order_idx").on(t.orderId),
+    index("merchant_order_events_restaurant_idx").on(t.restaurantId),
+  ],
+);
+
+/** Short-lived one-time codes generated by the signed-in Marketplace partner to pair a Merchant App. */
+export const merchantLinkCodes = pgTable(
+  "merchant_app_link_codes",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    codeHash: text("code_hash").notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_app_link_codes_restaurant_idx").on(t.restaurantId)],
+);
+
+/** A restaurant may be linked to one Merchant App business, with a separate revocable bearer token. */
+export const merchantAppLinks = pgTable(
+  "merchant_app_links",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().unique().references(() => restaurants.id, { onDelete: "cascade" }),
+    businessId: text("business_id").notNull().unique(),
+    accessTokenHash: text("access_token_hash").notNull().unique(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+  },
+  (t) => [index("merchant_app_links_restaurant_idx").on(t.restaurantId)],
+);
+
+export type MerchantOrderEventRow = typeof merchantOrderEvents.$inferSelect;
+export type MerchantLinkCodeRow = typeof merchantLinkCodes.$inferSelect;
+export type MerchantAppLinkRow = typeof merchantAppLinks.$inferSelect;
+
+/**
+ * Promotions owned by the Marketplace for a listed restaurant. A paired Merchant
+ * App proxies its Offers screen here instead of keeping a second copy: the
+ * Marketplace stays the single source of truth for promo codes and their rules.
+ */
+export const merchantOffers = pgTable(
+  "merchant_offers",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    code: text("code").notNull(),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    discountType: text("discount_type").notNull(),
+    value: integer("value").notNull(),
+    minOrder: integer("min_order").notNull().default(0),
+    maxDiscount: integer("max_discount"),
+    startsAt: timestamp("starts_at", { withTimezone: true }),
+    endsAt: timestamp("ends_at", { withTimezone: true }),
+    usageLimit: integer("usage_limit"),
+    active: boolean("active").notNull().default(true),
+    archived: boolean("archived").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_offers_restaurant_code_idx").on(t.restaurantId, t.code),
+    index("merchant_offers_restaurant_active_idx").on(t.restaurantId, t.active, t.archived),
+  ],
+);
+export type MerchantOfferRow = typeof merchantOffers.$inferSelect;
+
 export type MenuCategoryRow = typeof menuCategories.$inferSelect;
 export type ModifierGroupRow = typeof modifierGroups.$inferSelect;
 export type ModifierOptionRow = typeof modifierOptions.$inferSelect;
@@ -981,3 +1237,42 @@ export const adminSessions = pgTable(
 );
 
 export type AdminSessionRow = typeof adminSessions.$inferSelect;
+
+// --- Webhook Audit Logs ---
+/**
+ * Single-use authorization codes for the first-party Merchant App link flow.
+ *
+ * The plaintext code never lands in the database: only its SHA-256 hash is the
+ * primary key, so a read of this table cannot mint a session. `consumed_at` is
+ * set by the atomic exchange update, and `expires_at` bounds the window to ten
+ * minutes — a code that is never redeemed simply ages out.
+ */
+export const merchantAuthorizationCodes = pgTable(
+  "merchant_authorization_codes",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "cascade" }),
+    codeChallenge: text("code_challenge").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_authorization_codes_expires_at_idx").on(t.expiresAt),
+    index("merchant_authorization_codes_restaurant_idx").on(t.restaurantId),
+  ],
+);
+
+export const webhookLogs = pgTable("webhook_logs", {
+  id: serial("id").primaryKey(),
+  provider: text("provider").notNull(),
+  restaurantId: text("restaurant_id"),
+  orderId: text("order_id"),
+  status: text("status").notNull(), // 'SUCCESS' | 'UNAUTHORIZED' | 'INVALID_JSON' | 'ERROR'
+  httpStatusCode: integer("http_status_code").notNull(),
+  rawHeaders: jsonb("raw_headers"),
+  payload: jsonb("payload"),
+  errorMessage: text("error_message"),
+  ipAddress: text("ip_address"),
+  createdAt: timestamp("created_at").defaultNow().notNull()
+});

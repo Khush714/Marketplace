@@ -1,5 +1,6 @@
 import { requestCustomerCancellation } from "@/integrations/pos/order-cancel";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { orderAuthorized } from "@/lib/order-authorized";
+import { guardWrite } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
 
@@ -11,12 +12,15 @@ export const dynamic = "force-dynamic";
  * orders.integration_status is flipped by the POS's order.cancelled status
  * webhook — never here — so the two systems never diverge.
  *
- * Cancelling needs the order's signed token: an order code on its own must not
- * be enough to cancel somebody else's delivery.
+ * Cancelling needs a signed order token or a live customer session bound to
+ * the order code.
  */
 export async function POST(req: Request, ctx: { params: Promise<{ code: string }> }) {
+  const blocked = await guardWrite(req, "orderCancel");
+  if (blocked) return blocked;
+
   const { code } = await ctx.params;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ ok: false, error: "Not found" }, { status: 404 });
   }
   const outcome = await requestCustomerCancellation(code);

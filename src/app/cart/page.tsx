@@ -168,7 +168,7 @@ export default function CartPage() {
               )}
               <div className="flex items-center gap-1.5 rounded-xl bg-chili-500/8 px-3 py-2 text-xs text-chili-300">
                 <BadgePercent className="size-3.5 shrink-0" />
-                Restaurant offers are auto-applied at checkout
+                Restaurant offers are optional — select one at checkout
               </div>
             </dl>
             <div className="mt-4 flex items-center justify-between border-t border-white/10 pt-4">

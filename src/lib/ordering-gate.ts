@@ -1,15 +1,12 @@
 import "server-only";
 
 /**
- * Whether checkout requires a live POS connection.
+ * Whether checkout requires a live order-receiving integration.
  *
- * The Marketplace can only ever fulfil an order by handing it to a
- * restaurant's POS. A restaurant with no ACTIVE integration record can never
- * receive one — the delivery journal deliberately skips those restaurants
- * (`enqueueOrderDelivery` returns null before creating a row), so the order
- * would be accepted, charged, and then sit at PLACED forever with nothing
- * behind it and no failure ever recorded. Admitting that order is strictly
- * worse than refusing it, so production fails CLOSED.
+ * Production checkout is allowed when either the POS integration is ready or
+ * the Savour Merchant App is paired. Merchant-managed orders use the canonical
+ * Marketplace order record and merchant status lifecycle; they do not depend on
+ * the POS delivery journal. The caller enforces the appropriate ready path.
  *
  * Outside production the gate is open by default, because the seeded demo
  * restaurants have no integration record at all (src/db/seed.ts) and blocking

@@ -28,6 +28,17 @@ const globalForDb = globalThis as typeof globalThis & {
  */
 const poolMax = Number(process.env.PGPOOL_MAX) || 5;
 
+function needsSsl(url: string): boolean {
+  if (process.env.DATABASE_SSL === "true") return true;
+  if (process.env.DATABASE_SSL === "false") return false;
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return host.endsWith(".supabase.co") || host.endsWith(".supabase.com");
+  } catch {
+    return false;
+  }
+}
+
 export const pool =
   globalForDb.__arenaNextJsPostgresqlPool ??
   new Pool({
@@ -37,6 +48,7 @@ export const pool =
     // reads as the whole integration being down.
     connectionTimeoutMillis: Number(process.env.PGPOOL_CONNECT_TIMEOUT_MS) || 10_000,
     idleTimeoutMillis: 30_000,
+    ...(needsSsl(databaseUrl) ? { ssl: { rejectUnauthorized: false } } : {}),
   });
 
 if (process.env.NODE_ENV !== "production") {

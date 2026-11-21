@@ -81,6 +81,23 @@ export const ABUSE_BUDGETS = {
   restaurants: { limit: 240, windowMs: MINUTE_MS },
 
   /**
+   * Merchant-created offers for one listing. Fetched on the restaurant page and
+   * again at checkout, so it is a genuine per-customer read — but each call runs
+   * a redemption COUNT and returns only a handful of rows. Generous enough for
+   * back-navigation and cart edits, bounded against a scrape of every listing's
+   * promotion library.
+   */
+  merchantOffers: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Public restaurant reviews. Loaded with the listing and again for each
+   * "show more" page, so it has to survive the same shared-address traffic as
+   * the listing itself. Each call returns one bounded page of already-reviewed
+   * rows; the budget stops a script walking every listing's feedback library.
+   */
+  publicReviews: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Owner-key verification. The key is 18 random bytes, so guessing is not the
    * risk; *submitting* guesses is. This is the credential-check endpoint an
    * attacker scripts against to test a leaked or harvested key, and it returns a
@@ -120,6 +137,13 @@ export const ABUSE_BUDGETS = {
   paymentVerify: { limit: 30, windowMs: 10 * MINUTE_MS },
 
   /**
+   * Switch a failed/pending online payment to cash-on-delivery. Token-gated,
+   * but it mutates payment state and enqueues POS delivery. Bounded to prevent
+   * a leaked order token from churning state; real customers do this rarely.
+   */
+  paymentSwitch: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
    * Attach order codes to this browser's anonymous session
    * (`POST /api/orders/attach`). Cheap per call — a few HMAC verifications and
    * one jsonb merge — but it is the credential-creation endpoint: unverified
@@ -143,6 +167,15 @@ export const ABUSE_BUDGETS = {
    * guard runs before `orderAuthorized` so a wrong credential is charged too.
    */
   orderCancel: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Submit a delivered-order review. Token-gated and single-use per order, but
+   * the guard is charged first so a holder of one leaked token cannot grind a
+   * write that appends an audit event. A customer rates an order once; 20 per
+   * ten minutes clears every retry of a slow submission, stays looser than the
+   * credential-check tier, and still bounds audit-event spam.
+   */
+  orderReview: { limit: 20, windowMs: 10 * MINUTE_MS },
 
   /**
    * POS passkey rotation. Not a guessing endpoint — it is bearer-gated by a
@@ -191,6 +224,79 @@ export const ABUSE_BUDGETS = {
    * mint replacements.
    */
   opsCodeRevoke: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Merchant App order inbox. The Merchant App polls every 30 seconds (backing
+   * off to two minutes after failures) and loads orders + overview together,
+   * so a busy workspace sends a steady trickle from its server, not a browser.
+   * The budget is generous because a deployment's outbound IP is shared across
+   * every connected workspace, then bounded because the route still runs a
+   * tenant-scoped query per request.
+   */
+  merchantServiceRead: { limit: 300, windowMs: MINUTE_MS },
+
+  /**
+   * Cheap Merchant App change signal. A connected workspace checks this about
+   * once every 1.5 seconds while open; it is two indexed aggregates and no order
+   * payload. Its own scope keeps the 40/min trickle from consuming the budget of
+   * the much heavier inbox reads, which now happen only when a token moves.
+   */
+  merchantServiceSignal: { limit: 900, windowMs: MINUTE_MS },
+
+  /**
+   * Merchant App status transitions. Every accepted call performs a
+   * compare-and-set plus an event insert, and a person can only tap a button so
+   * often; the generous ceiling covers retries and double-submits without
+   * letting a leaked bearer token grind the order table.
+   */
+  merchantServiceWrite: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Partner-side order writes (accept, prepare, ready, dispatch, complete,
+   * reject, cancel). Session-gated, but every accepted call performs a
+   * compare-and-set plus an event insert plus the POS mirror, so a leaked
+   * session must not buy an unbounded write loop. A human working one inbox
+   * tops out far below this; the headroom covers retries and double-taps.
+   */
+  partnerOrderWrite: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Merchant App authorization-code exchange. The code is a single-use,
+   * ten-minute capability that mints a full partner session, so this is a
+   * credential endpoint: the budget is charged before the code is consumed,
+   * meaning a wrong guess costs the same as a right one. A real link flow does
+   * this once; 20 per ten minutes leaves room for a few restarts while staying
+   * far below a scripted grind against the code space.
+   */
+  merchantOAuthExchange: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Start a customer account OTP challenge. Credential-adjacent: even with a dev
+   * stub (no external SMS wired), accepting unlimited requests would create
+   * unbounded challenge rows and enable enumeration pressure. Charged before any
+   * work; responses stay generic.
+   */
+  customerAuthStart: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Verify a customer account OTP. A short numeric code is a guessing target, so
+   * this is credential-grade: charged before verification and bounded tightly,
+   * with per-challenge attempt limits enforced separately.
+   */
+  customerAuthVerify: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Authenticated customer account reads (session/whoami, profile, addresses,
+   * favorites, linked order history). Session-gated but bounded per client.
+   */
+  customerAccountRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Authenticated customer account mutations (profile/address/favorite updates,
+   * explicit order claim/link, logout). CSRF/origin-checked and session-gated;
+   * budgeted to stop scripted write loops with a leaked session/cookie.
+   */
+  customerAccountWrite: { limit: 60, windowMs: MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;
