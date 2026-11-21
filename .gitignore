@@ -1,0 +1,66 @@
+# dependencies
+/node_modules
+/.pnp
+.pnp.*
+.yarn/*
+!.yarn/patches
+!.yarn/plugins
+!.yarn/releases
+!.yarn/versions
+
+# testing
+/coverage
+
+# next.js
+/.next/
+/out/
+
+# production
+/build
+
+# misc
+.DS_Store
+*.pem
+
+# debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+
+# env files
+.env
+.env*.local
+
+# comment template (no secrets) should be committed
+!.env.example
+
+# vercel
+.vercel
+
+# typescript
+*.tsbuildinfo
+next-env.d.ts
+
+.vercel
+.env*
+
+# comment template (no secrets) should be committed
+!.env.example
+
+# local dev logs
+server.log
+dev*.log
+
+# throwaway debug scripts (throwaway_pg_checks etc.)
+_*.cjs
+tmp_*.cjs
+
+# profiling scratch output. README.md and measure.mjs stay tracked; the logs,
+# captured console dumps and one-off result files below are local debris and
+# leak absolute machine paths (and error text quoting usernames) if committed.
+scripts/profiling/_*.log
+scripts/profiling/_*.log.err
+scripts/profiling/_*.txt
+scripts/profiling/_debug-*.mjs
+scripts/profiling/results-*.jsonl

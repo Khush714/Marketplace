@@ -1,0 +1,200 @@
+import type { Metadata } from "next";
+import Image from "next/image";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { ChevronLeft, Clock3, MapPin, Percent, PlugZap, Star } from "lucide-react";
+import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
+import { MenuBrowser } from "@/components/menu-browser";
+import { MiniCart } from "@/components/mini-cart";
+import { FavoriteHeroButton } from "@/components/favorite-hero-button";
+import { getRestaurant, hasActiveIntegration } from "@/db/queries";
+import { formatDistance, formatK, isUnrated, priceSymbol } from "@/lib/domain";
+import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
+
+export const dynamic = "force-dynamic";
+
+/**
+ * Built from the listing itself: name, cuisines, rating and delivery window are
+ * all on the page, so a static description would undersell every kitchen
+ * identically. Ratings are rendered through the same `isUnrated` guard the hero
+ * uses — an unrated listing has no number to quote, and inventing one in a meta
+ * tag is worse than omitting it.
+ *
+ * The OG image is the kitchen's own hero, which is what a shared link should
+ * preview. `heroUrl` is already sanitised to an absolute https URL by
+ * `sanitizeImageUrl` when the DTO is built.
+ */
+export async function generateMetadata(props: {
+  params: Promise<{ slug: string }>;
+}): Promise<Metadata> {
+  const { slug } = await props.params;
+  const data = await getRestaurant(slug);
+  if (!data) {
+    return {
+      title: "Restaurant not found",
+      description: "This kitchen is no longer listed on crave.",
+      robots: { index: false, follow: true },
+    };
+  }
+
+  const { restaurant: r, itemCount } = data;
+  const cuisines = r.cuisines.length ? r.cuisines.join(", ") : "Food";
+  const rated = isUnrated(r.ratingsCount) ? "" : ` Rated ${r.rating} out of 5.`;
+
+  // A tagline is free-text authored by a partner and carries no terminal
+  // punctuation, so it cannot simply be interpolated — that produced "Smash
+  // burgers over live fire 8 dishes on the menu". Close it off explicitly
+  // rather than trusting the data.
+  const tagline = r.tagline ? ` ${r.tagline.replace(/[.\s]+$/, "")}.` : "";
+  const description = `${r.name} — ${cuisines} in ${r.locality}.${tagline} ${itemCount} ${itemCount === 1 ? "dish" : "dishes"} on the menu, delivered in ${r.deliveryMinutes}-${r.deliveryMinutes + 10} minutes.${rated}`;
+
+  return {
+    title: r.name,
+    description,
+    alternates: { canonical: `/restaurants/${r.slug}` },
+    openGraph: {
+      type: "website",
+      title: `${r.name} — crave.`,
+      description,
+      url: `/restaurants/${r.slug}`,
+      images: [{ url: r.heroUrl, width: 1200, height: 630, alt: `${r.name} cover` }],
+    },
+  };
+}
+
+export default async function RestaurantPage(props: {
+  params: Promise<{ slug: string }>;
+  searchParams: Promise<{ dish?: string }>;
+}) {
+  const { slug } = await props.params;
+  const { dish } = await props.searchParams;
+  const data = await getRestaurant(slug);
+  if (!data) notFound();
+
+  const { restaurant: r, sections } = data;
+
+  // Same predicate checkout enforces, so the page never advertises an order
+  // button that the checkout is about to reject. `orderingGateEnforced()` is
+  // consulted first so the banner cannot disagree with the gate by appearing
+  // locally on seeded demo listings that are meant to stay orderable.
+  const orderingClosed =
+    orderingGateEnforced() && !(await hasActiveIntegration(r.id));
+
+  return (
+    <div className="pb-10">
+      {/* ------------------------------ hero ------------------------------ */}
+      <section className="relative">
+        <div className="relative h-60 overflow-hidden md:h-[380px]">
+          <Image
+            src={r.heroUrl}
+            alt={`${r.name} cover`}
+            fill
+            priority
+            sizes="100vw"
+            placeholder="blur"
+            blurDataURL={BLUR_DATA}
+            className="object-cover"
+          />
+          <div className="absolute inset-0 bg-gradient-to-b from-black/45 via-transparent to-void" />
+          <div className="absolute inset-0 bg-[radial-gradient(80%_60%_at_50%_100%,rgba(255,110,60,0.12),transparent_70%)]" />
+
+          {/* floating controls */}
+          <div className="absolute inset-x-0 top-0 z-10 mx-auto flex max-w-5xl items-center justify-between px-4 pt-4 md:px-6">
+            <Link
+              href="/restaurants"
+              aria-label="Back to restaurants"
+              className="press glass-strong grid size-10 place-items-center rounded-full transition-colors hover:bg-white/15"
+            >
+              <ChevronLeft className="size-5 text-cream-50" />
+            </Link>
+            <FavoriteHeroButton restaurant={r} />
+          </div>
+        </div>
+
+        {/* info panel — floats over the cover */}
+        <div className="mx-auto max-w-5xl px-4 md:px-6">
+          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-5 md:-mt-24 md:p-7">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  {r.pureVeg && <PureVegTag />}
+                  {r.cuisines.map((c) => (
+                    <span key={c} className="rounded-full bg-white/6 px-2.5 py-0.5 text-[11px] font-semibold text-cream-300">
+                      {c}
+                    </span>
+                  ))}
+                </div>
+                <h1 className="mt-2.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-[40px] md:leading-none">
+                  {r.name}
+                </h1>
+                <p className="mt-1.5 text-sm text-cream-400">{r.tagline}</p>
+              </div>
+              <div className="flex flex-col items-end gap-1 rounded-2xl bg-white/[0.05] px-3.5 py-2.5">
+                <RatingBadge rating={r.rating} ratingsCount={r.ratingsCount} className="text-sm" />
+                <span className="text-[11px] text-cream-500">
+                  {isUnrated(r.ratingsCount) ? "New on crave" : `${formatK(r.ratingsCount)} ratings`}
+                </span>
+              </div>
+            </div>
+
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/8 pt-4 text-sm text-cream-300">
+              <span className="flex items-center gap-1.5">
+                <Clock3 className="size-4 text-ember-400" />
+                <span className="font-semibold text-cream-50">{r.deliveryMinutes}-{r.deliveryMinutes + 10} min</span>
+              </span>
+              <span className="flex items-center gap-1.5">
+                <MapPin className="size-4 text-chili-400" />
+                {formatDistance(r.distanceKm)} · {r.locality}
+              </span>
+              <span className="flex items-center gap-1.5">
+                <Star className="size-4 text-gold-400" />
+                {priceSymbol(r.priceLevel)} for two
+              </span>
+            </div>
+
+            {r.offer && (
+              <div className="mt-4 flex items-center gap-2.5 overflow-hidden rounded-2xl bg-gradient-to-r from-chili-600/25 to-ember-500/10 px-4 py-3 ring-1 ring-chili-500/25">
+                <span className="grid size-8 shrink-0 place-items-center rounded-full bg-gradient-to-b from-ember-400 to-chili-600 shadow-glow">
+                  <Percent className="size-4 text-white" strokeWidth={2.6} />
+                </span>
+                <div>
+                  <p className="text-sm font-bold text-ember-300">{r.offer}</p>
+                  <p className="text-xs text-cream-500">Auto-applied at checkout</p>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </section>
+
+      {/* ------------------------- menu + side cart ------------------------ */}
+      <div className="mx-auto mt-6 max-w-5xl px-4 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-8">
+        <div>
+          {orderingClosed && (
+            <div className="mb-5 flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-500/[0.07] px-4 py-3.5">
+              <PlugZap className="mt-0.5 size-4.5 shrink-0 text-ember-400" />
+              <div>
+                <p className="text-sm font-semibold text-ember-300">
+                  {ORDERING_CLOSED_MESSAGE}
+                </p>
+                <p className="mt-0.5 text-xs leading-relaxed text-cream-500">
+                  You can still browse the menu. This restaurant is not connected to its kitchen
+                  point-of-sale right now, so orders cannot be sent.
+                </p>
+              </div>
+            </div>
+          )}
+          <MenuBrowser
+            sections={sections}
+            restaurantSlug={r.slug}
+            restaurantName={r.name}
+            highlightId={dish ? Number(dish) || null : null}
+          />
+        </div>
+        <aside className="hidden lg:block">
+          <MiniCart restaurantSlug={r.slug} restaurantName={r.name} />
+        </aside>
+      </div>
+    </div>
+  );
+}

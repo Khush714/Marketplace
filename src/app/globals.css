@@ -1,0 +1,744 @@
+@import "tailwindcss";
+
+/* `inline` is required, not stylistic.
+
+   `next/font` defines --font-inter / --font-bricolage on a class that lands on
+   <html>, while Tailwind resolves --font-sans / --font-display where they are
+   declared. Without `inline` the generated `.font-sans` rule would read
+   `var(--font-sans)`, whose value is `var(--font-inter)`; a rule that resolves
+   it against a *descendant* of <html> finds no --font-inter there and silently
+   falls back to `sans-serif`. With `inline`, the utility inlines the reference
+   and the font applies. See the "Referencing other variables" section of the
+   Tailwind v4 theme docs. */
+@theme inline {
+  --font-sans: var(--font-inter), ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-display: var(--font-bricolage), var(--font-inter), ui-sans-serif, system-ui, sans-serif;
+
+  /* Surfaces */
+  --color-void: #07070a;
+  --color-coal: #0c0c11;
+  --color-panel: #121218;
+
+  /* Text */
+  --color-cream-50: #faf7f1;
+  --color-cream-200: #e8e2d8;
+  --color-cream-400: #b7ae9f;
+  --color-cream-500: #8d8578;
+  --color-cream-600: #66605a;
+
+  /* Accent */
+  --color-chili-300: #ffa98e;
+  --color-chili-400: #ff7a59;
+  --color-chili-500: #ff5a3c;
+  --color-chili-600: #ef4527;
+  --color-ember-300: #ffcf99;
+  --color-ember-400: #ffb25e;
+  --color-ember-500: #ff9e43;
+  --color-mint-400: #4fe3ac;
+  --color-mint-500: #2fd598;
+  --color-gold-400: #ffc93c;
+  --color-berry-400: #c4a1ff;
+
+  /* Elevation */
+  --shadow-lift: 0 12px 32px -12px rgb(0 0 0 / 0.55);
+  --shadow-float: 0 24px 64px -16px rgb(0 0 0 / 0.65);
+  --shadow-glow: 0 10px 36px -8px rgb(255 90 60 / 0.5);
+  --shadow-hairline: inset 0 0 0 1px rgb(255 255 255 / 0.08);
+  --shadow-hairline-bright: inset 0 0 0 1px rgb(255 255 255 / 0.14);
+
+  /* Motion */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease-swift: cubic-bezier(0.22, 1, 0.36, 1);
+  --duration-micro: 150ms;
+  --duration-base: 260ms;
+  --duration-emph: 460ms;
+
+  /* ------------------------------ motion library ------------------------------ */
+  --animate-shimmer: shimmer 1.7s linear infinite;
+  --animate-page-in: page-in 0.42s var(--ease-out-expo) both;
+  --animate-page-cinema: page-cinema 0.62s var(--ease-out-expo) both;
+  --animate-pop-in: pop-in 0.38s var(--ease-spring) both;
+  --animate-panel-in: panel-in 0.46s var(--ease-spring) both;
+  --animate-fade-in: fade-in 0.32s ease both;
+  --animate-rise: rise 0.55s var(--ease-out-expo) both;
+  --animate-rise-3d: rise-3d 0.78s var(--ease-out-expo) both;
+  --animate-word-up: word-up 0.8s var(--ease-out-expo) both;
+  --animate-char-in: char-in 0.5s var(--ease-out-expo) both;
+  --animate-scale-bump: scale-bump 0.32s var(--ease-spring);
+  --animate-jelly: jelly 0.62s var(--ease-spring);
+  --animate-ripple: ripple 1.7s var(--ease-out-expo) infinite;
+  --animate-btn-ripple: btn-ripple 0.65s var(--ease-out-expo) forwards;
+  --animate-float-slow: float-y 8s ease-in-out infinite;
+  --animate-dot-ping: dot-ping 1.6s cubic-bezier(0, 0, 0.2, 1) infinite;
+  --animate-check-draw: check-draw 0.55s var(--ease-out-expo) 0.45s both;
+  --animate-circle-draw: circle-draw 0.65s var(--ease-out-expo) 0.05s both;
+  --animate-sheet-up: sheet-up 0.42s var(--ease-out-expo) both;
+  --animate-overlay-in: overlay-in 0.24s ease both;
+  --animate-spin-slow: spin 1s linear infinite;
+  --animate-marquee: marquee 26s linear infinite;
+  --animate-count-pop: count-pop 0.28s var(--ease-spring);
+  --animate-aurora: aurora 26s ease-in-out infinite alternate;
+  --animate-morph: morph 17s ease-in-out infinite;
+  --animate-sheen: sheen 1.15s var(--ease-out-expo);
+  --animate-radar: radar 3.1s var(--ease-out-expo) infinite;
+  --animate-spark: spark 1s var(--ease-out-expo) both;
+  --animate-glow-breathe: glow-breathe 5.5s ease-in-out infinite;
+  --animate-drift: drift 16s ease-in-out infinite alternate;
+  --animate-blink: blink 1.05s steps(2, start) infinite;
+  --animate-gradient-flow: gradient-flow 6.5s linear infinite;
+  --animate-sweep-line: sweep-line 0.75s var(--ease-out-expo) both;
+}
+
+/* ------------------------------- keyframes -------------------------------- */
+
+@keyframes shimmer {
+  from { background-position: -200% 0; }
+  to { background-position: 200% 0; }
+}
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.997); }
+  to { opacity: 1; transform: translateY(0) scale(1); }
+}
+@keyframes page-cinema {
+  0% { opacity: 0; transform: translate3d(0, 16px, 0) scale(0.99); clip-path: inset(8% 5% 10% 5% round 26px); }
+  55% { opacity: 1; }
+  100% { opacity: 1; transform: translate3d(0, 0, 0) scale(1); clip-path: inset(0 0 0 0 round 0); }
+}
+@keyframes pop-in {
+  from { opacity: 0; transform: scale(0.92) translateY(8px); }
+  to { opacity: 1; transform: scale(1) translateY(0); }
+}
+@keyframes panel-in {
+  from { opacity: 0; transform: scale(0.94) translateY(-14px); filter: blur(10px); }
+  to { opacity: 1; transform: scale(1) translateY(0); filter: blur(0); }
+}
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes rise {
+  from { opacity: 0; transform: translateY(18px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes rise-3d {
+  from { opacity: 0; transform: perspective(1400px) translate3d(0, 30px, -80px) rotateX(9deg); }
+  to { opacity: 1; transform: perspective(1400px) translate3d(0, 0, 0) rotateX(0deg); }
+}
+@keyframes word-up {
+  from { transform: translate3d(0, 108%, 0) rotateX(-52deg); opacity: 0; }
+  to { transform: translate3d(0, 0, 0) rotateX(0deg); opacity: 1; }
+}
+@keyframes char-in {
+  from { opacity: 0; transform: translateY(0.38em) scale(0.84); filter: blur(5px); }
+  to { opacity: 1; transform: translateY(0) scale(1); filter: blur(0); }
+}
+@keyframes scale-bump {
+  0% { transform: scale(1); }
+  40% { transform: scale(1.3); }
+  100% { transform: scale(1); }
+}
+@keyframes jelly {
+  0% { transform: scale(1, 1); }
+  28% { transform: scale(1.24, 0.78); }
+  52% { transform: scale(0.88, 1.14); }
+  74% { transform: scale(1.07, 0.95); }
+  100% { transform: scale(1, 1); }
+}
+@keyframes ripple {
+  0% { transform: scale(0.55); opacity: 0.55; }
+  100% { transform: scale(1.9); opacity: 0; }
+}
+@keyframes btn-ripple {
+  from { transform: translate(-50%, -50%) scale(0); opacity: 0.55; }
+  to { transform: translate(-50%, -50%) scale(1); opacity: 0; }
+}
+@keyframes float-y {
+  0%, 100% { transform: translateY(0) rotate(var(--float-rot, 0deg)); }
+  50% { transform: translateY(-12px) rotate(var(--float-rot, 0deg)); }
+}
+@keyframes dot-ping {
+  0% { transform: scale(1); opacity: 0.8; }
+  75%, 100% { transform: scale(2.6); opacity: 0; }
+}
+@keyframes check-draw { to { stroke-dashoffset: 0; } }
+@keyframes circle-draw { to { stroke-dashoffset: 0; } }
+@keyframes sheet-up {
+  from { transform: translateY(100%); }
+  to { transform: translateY(0); }
+}
+@keyframes overlay-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes marquee {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
+}
+@keyframes count-pop {
+  0% { transform: translateY(-60%) scale(0.6); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+@keyframes aurora {
+  0% { transform: translate3d(0, 0, 0) scale(1) rotate(0deg); }
+  50% { transform: translate3d(5%, -4%, 0) scale(1.14) rotate(14deg); }
+  100% { transform: translate3d(-4%, 5%, 0) scale(1.06) rotate(-10deg); }
+}
+@keyframes morph {
+  0%, 100% { border-radius: 42% 58% 63% 37% / 41% 44% 56% 59%; }
+  33% { border-radius: 63% 37% 34% 66% / 57% 62% 38% 43%; }
+  66% { border-radius: 37% 63% 57% 43% / 63% 37% 63% 37%; }
+}
+@keyframes sheen {
+  from { transform: translateX(-135%) skewX(-17deg); }
+  to { transform: translateX(235%) skewX(-17deg); }
+}
+@keyframes radar {
+  0% { transform: scale(0.3); opacity: 0.8; }
+  100% { transform: scale(2.5); opacity: 0; }
+}
+@keyframes spark {
+  0% { transform: translate(-50%, -50%) translate(0, 0) scale(0.15); opacity: 0; }
+  12% { opacity: 1; }
+  100% { transform: translate(-50%, -50%) translate(var(--sx, 0px), var(--sy, 0px)) scale(1); opacity: 0; }
+}
+@keyframes glow-breathe {
+  0%, 100% { opacity: 0.5; transform: scale(1); }
+  50% { opacity: 0.95; transform: scale(1.07); }
+}
+@keyframes drift {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(30px, -24px, 0); }
+}
+@keyframes blink { 50% { opacity: 0; } }
+@keyframes gradient-flow {
+  from { background-position: 0% 50%; }
+  to { background-position: 220% 50%; }
+}
+@keyframes sweep-line {
+  0% { transform: translate3d(0, -100%, 0) scaleY(0.4); opacity: 0; }
+  35% { opacity: 1; }
+  100% { transform: translate3d(0, 40vh, 0) scaleY(1.6); opacity: 0; }
+}
+
+/* ------------------------------ base layer -------------------------------- */
+
+@layer base {
+  /* `overflow-x: clip` on BOTH elements, and the order matters.
+
+     It has to be on `html`, and that is not a stylistic choice. Per CSS
+     Overflow 3, a UA applies the root element's overflow to the viewport; but
+     when `html` is `visible` in both axes, it instead applies `body`'s — and
+     `body`'s own used value then becomes `visible`. So the declaration that
+     used to live on `body` alone was inert on `body` itself: it configured the
+     viewport and clipped nothing. Verified in Chromium at an iPhone 14
+     viewport: computed style read `body=clip/visible` while the document still
+     scrolled 450px wide, and forcing `body` to `clip/clip` changed nothing,
+     because propagation had already taken the value away from it.
+
+     Declaring it on `html` as well means `html` is no longer `visible`, so
+     propagation stops there. `body` keeps its own clip and becomes a real clip
+     container, and no in-flow overflow can widen the document at all.
+
+     `clip` rather than `hidden` is load-bearing in three ways:
+
+       - It is not a scroll container, so `position: sticky` still resolves
+         against the viewport. `hidden` creates a scroll container and the
+         sticky filter bar on /restaurants stops sticking. Measured: sticky top
+         stays 0 at scrollY 1200 either way with `clip`.
+       - No coercion. `visible` and `clip` only compute to `auto`/`hidden` when
+         the *other* axis is neither of the two, so `overflow-x: clip` here
+         leaves `overflow-y` genuinely `visible` and the page still scrolls.
+       - It forbids programmatic scrolling too, so a stray `scrollTo` cannot
+         pan past the edge.
+
+     The viewport ends up `overflow-x: clip; overflow-y: auto` (CSS 2.1 maps a
+     `visible` viewport to `auto`), which is the intended result: vertical
+     scroll, no horizontal pan.
+
+     One consequence to respect when adding UI: a scroll lock must now target
+     `document.documentElement`, not `document.body`. Locking the body sets
+     `body`'s overflow, and `body` no longer feeds the viewport, so the page
+     behind keeps scrolling. That was measured, not assumed — the dish sheet's
+     body-level lock scrolled a locked page 900px once this rule landed.
+
+     Note this is a backstop, not a licence. Clipping hides overflow rather
+     than fixing it, so content pushed outside the viewport becomes unreachable
+     instead of merely pannable. Every actual overflow source is fixed at its
+     source; this only guarantees that a future one degrades to "cut off"
+     rather than "the whole app slides sideways". */
+  html {
+    color-scheme: dark;
+    scroll-behavior: smooth;
+    overflow-x: clip;
+  }
+  body {
+    background-color: var(--color-void);
+    color: var(--color-cream-50);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    overflow-x: clip;
+  }
+  ::selection {
+    background: rgb(255 90 60 / 0.32);
+    color: #fff;
+  }
+  :focus-visible {
+    outline: 2px solid rgb(255 178 94 / 0.85);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-thumb {
+    background: rgb(255 255 255 / 0.12);
+    border-radius: 999px;
+    border: 3px solid var(--color-void);
+  }
+  ::-webkit-scrollbar-track { background: transparent; }
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+}
+
+/* --------------------------- reusable utilities ---------------------------- */
+
+@utility glass {
+  background: color-mix(in oklab, white 5.5%, transparent);
+  box-shadow: var(--shadow-hairline);
+  backdrop-filter: blur(18px) saturate(1.35);
+  -webkit-backdrop-filter: blur(18px) saturate(1.35);
+}
+
+@utility glass-strong {
+  background: color-mix(in oklab, white 9%, transparent);
+  box-shadow: var(--shadow-hairline-bright), var(--shadow-lift);
+  backdrop-filter: blur(26px) saturate(1.5);
+  -webkit-backdrop-filter: blur(26px) saturate(1.5);
+}
+
+@utility text-gradient {
+  background: linear-gradient(94deg, var(--color-ember-400) 0%, var(--color-chili-500) 58%, #ff5f8f 105%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@utility text-gradient-flow {
+  background: linear-gradient(
+    100deg,
+    var(--color-ember-300) 0%,
+    var(--color-chili-500) 26%,
+    #ff5f8f 48%,
+    var(--color-ember-400) 70%,
+    var(--color-chili-500) 100%
+  );
+  background-size: 220% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: var(--animate-gradient-flow);
+
+  /* Category C — see "animation budget". This animates background-position,
+     which cannot be composited, so the headline repaints in full on every frame
+     of a 6.5s loop, forever, for a sweep nobody looks at twice. It is the last
+     continuous repaint left in the app: everything else in this class is
+     transform- or opacity-only and runs on the compositor.
+
+     Stopping it also means fitting the gradient to the box. The sweep is built
+     for a 220%-wide background, so a stopped animation would otherwise freeze
+     on the first ~45% of the ramp and lose the pink. At 100% the full ramp
+     shows, statically. */
+  @media (pointer: coarse) and (max-width: 699.98px) {
+    animation: none;
+    background-size: 100% 100%;
+  }
+}
+
+@utility no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+  &::-webkit-scrollbar { display: none; }
+}
+
+@utility mask-fade-x {
+  mask-image: linear-gradient(90deg, transparent, black 28px, black calc(100% - 28px), transparent);
+}
+
+@utility skeleton {
+  border-radius: 12px;
+  background: linear-gradient(
+    100deg,
+    rgb(255 255 255 / 0.05) 38%,
+    rgb(255 255 255 / 0.11) 50%,
+    rgb(255 255 255 / 0.05) 62%
+  );
+  background-size: 200% 100%;
+  animation: var(--animate-shimmer);
+}
+
+@utility press {
+  transition: transform var(--duration-micro) var(--ease-spring);
+  &:active { transform: scale(0.97); }
+}
+
+@utility lift {
+  transition:
+    transform var(--duration-base) var(--ease-out-expo),
+    box-shadow var(--duration-base) var(--ease-out-expo),
+    background-color var(--duration-base) ease,
+    border-color var(--duration-base) ease;
+  &:hover { transform: translateY(-4px); }
+}
+
+/* 3D pointer tilt — driven entirely by CSS vars set from JS (rAF-lerped) */
+@utility tilt-3d {
+  transform: translateY(var(--ty, 0px)) perspective(1100px) rotateX(var(--rx, 0deg)) rotateY(var(--ry, 0deg))
+    scale(var(--sc, 1));
+  transform-style: preserve-3d;
+}
+
+@utility glare-spot {
+  background: radial-gradient(
+    300px circle at var(--gx, 50%) var(--gy, 50%),
+    rgb(255 255 255 / 0.17),
+    transparent 62%
+  );
+}
+
+@utility sheen-band {
+  background: linear-gradient(105deg, transparent 38%, rgb(255 255 255 / 0.2) 50%, transparent 62%);
+}
+
+@utility magnetic {
+  transform: translate3d(var(--mx, 0px), var(--my, 0px), 0);
+}
+
+@utility mask-word {
+  overflow: hidden;
+  display: inline-block;
+  padding-bottom: 0.08em;
+  vertical-align: bottom;
+}
+
+/* --------------------------- scroll reveal system -------------------------- */
+
+@layer components {
+  html.js [data-reveal] {
+    opacity: 0;
+    transform: translate3d(0, 28px, 0) scale(0.986);
+    transition:
+      opacity 0.72s var(--ease-out-expo),
+      transform 0.82s var(--ease-out-expo);
+    transition-delay: var(--rd, 0ms);
+  }
+  html.js [data-reveal="flip"] {
+    transform: perspective(1400px) translate3d(0, 34px, -70px) rotateX(11deg) scale(0.97);
+  }
+  html.js [data-reveal="left"] {
+    transform: translate3d(-34px, 0, 0) scale(0.99);
+  }
+  html.js [data-reveal="zoom"] {
+    transform: scale(0.9);
+  }
+  html.js [data-reveal].is-in {
+    opacity: 1;
+    transform: none;
+  }
+
+  /* Scroll-linked parallax — progressive enhancement, zero JS */
+  @supports (animation-timeline: scroll()) {
+    .parallax-far {
+      animation: parallax-far linear both;
+      animation-timeline: scroll();
+    }
+    .parallax-near {
+      animation: parallax-near linear both;
+      animation-timeline: scroll();
+    }
+    .zoom-on-scroll {
+      animation: zoom-on-scroll linear both;
+      animation-timeline: scroll();
+      animation-range: 0% 90vh;
+    }
+  }
+}
+
+@keyframes parallax-far {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -90px, 0); }
+}
+@keyframes parallax-near {
+  from { transform: translate3d(0, 0, 0); }
+  to { transform: translate3d(0, -200px, 0); }
+}
+@keyframes zoom-on-scroll {
+  from { transform: scale(1) translate3d(0, 0, 0); }
+  to { transform: scale(1.16) translate3d(0, -4%, 0); }
+}
+
+/* ------------------------------ film grain -------------------------------- */
+
+@layer components {
+  /* Sized to the viewport, not overscanned. This was `inset: -50%` — 200% of
+     the viewport on each axis, so four times the pixels, rasterizing a
+     3-octave feTurbulence over a surface twice as wide and twice as tall as the
+     screen it sits on. The noise tiles, so the overscan bought nothing. */
+  .grain::after {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: 1;
+    pointer-events: none;
+    opacity: 0.042;
+    background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 300 300' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.72' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+}
+
+/* ------------------------------ ambient modes --------------------------------
+
+  The ambient field is the one decoration that sits under every route, so its
+  idle cost is paid on every screen in the app — and it is idle cost: nothing
+  here changes while the customer reads a menu. Three properties carry it:
+
+    filter: blur()   re-runs a 64px Gaussian over the blob every time it
+                     repaints, on a surface up to 720x560
+    mix-blend-mode   forces the compositor to read the backdrop back
+    `morph`          animates border-radius, which no compositor can promote,
+                     so the blob repaints in full every frame and drags the
+                     blur and the blend along with it
+
+  `aurora` animates transform only, so a blob that drops `morph` is promoted to
+  its own layer, rasterized once, and thereafter merely moved on the GPU. That
+  single removal is where most of the idle saving is.
+
+  Modes are picked by media query rather than by a client-side tier read, so the
+  right treatment is applied at first paint instead of a frame later, and
+  nothing has to hydrate before the expensive version is torn down.
+
+  The 700px boundary here is deliberately lower than the 820px one in
+  `detectTier()` (src/components/ember-field.tsx). The two answer different
+  questions: this one has to catch every iPad, including the iPad mini in
+  portrait at 744px, whereas that one sizes a particle budget from viewport
+  area. A wide phone held in landscape therefore lands in medium rather than
+  light, which mildly over-provisions it.
+
+  An input reporting neither `fine` nor `coarse` matches no mode and keeps the
+  unconditioned base — the cheapest treatment, which is the right default for a
+  device we cannot classify.
+------------------------------------------------------------------------------ */
+
+@layer components {
+  /* Light — the base, and all a phone gets. Static gradients: no blur, no
+     blend, nothing moving except the single layer added below. */
+  .ambient-aurora,
+  .ambient-drift {
+    animation: none;
+  }
+
+  /* Per-layer phase. Held in custom properties so a mode can replace the whole
+     `animation` shorthand without restating the delays, and so a mode that runs
+     only one of the two desktop animations still reads a sensible phase. Blob
+     `--a` was undelayed in the original and is left that way. */
+  .ambient-aurora--a { --ambient-delay: 0s, 0s; --ambient-duration: 26s, 17s; }
+  .ambient-aurora--b { --ambient-delay: -6s, -9s; --ambient-duration: 31s, 21s; }
+  .ambient-aurora--c { --ambient-delay: -11s, -4s; --ambient-duration: 37s, 26s; }
+  .ambient-aurora--d { --ambient-delay: -3s, -14s; --ambient-duration: 29s, 24s; }
+  .ambient-drift--a { --ambient-delay: 0s; --ambient-duration: 16s; }
+  .ambient-drift--b { --ambient-delay: -8s; --ambient-duration: 16s; }
+
+  /* Phone — the light base plus one animated layer. `--a` is transform-only
+     with no filter and no blend, so it promotes, rasters once, and costs
+     nothing per frame. The other five decorations stay put as gradients. */
+  @media (pointer: coarse) and (max-width: 699.98px) {
+    .ambient-aurora--a {
+      animation: var(--animate-aurora);
+      animation-delay: var(--ambient-delay, 0s, 0s);
+      animation-duration: var(--ambient-duration, 26s, 17s);
+    }
+  }
+
+  /* Medium — iPad and other large touch screens. `morph` goes, and with it the
+     per-frame repaint; the blur stays, because a transform-only blob is
+     rasterized once and the blur is baked into that layer. The blend is not
+     baked — a moving blended layer re-composites against the backdrop every
+     frame — which is why only half the field is left moving here. */
+  @media (pointer: coarse) and (min-width: 700px) {
+    .ambient-aurora {
+      filter: blur(64px);
+      mix-blend-mode: screen;
+      animation: var(--animate-aurora);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 26s);
+    }
+    .ambient-aurora--c,
+    .ambient-aurora--d {
+      animation: none;
+    }
+    .ambient-drift {
+      filter: blur(24px);
+      animation: var(--animate-drift);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 16s);
+    }
+  }
+
+  /* Full — desktop. The original treatment, unchanged. */
+  @media (pointer: fine) {
+    .ambient-aurora {
+      filter: blur(64px);
+      mix-blend-mode: screen;
+      animation: var(--animate-aurora), var(--animate-morph);
+      animation-delay: var(--ambient-delay, 0s, 0s);
+      animation-duration: var(--ambient-duration, 26s, 17s);
+    }
+    .ambient-drift {
+      filter: blur(24px);
+      animation: var(--animate-drift);
+      animation-delay: var(--ambient-delay, 0s);
+      animation-duration: var(--ambient-duration, 16s);
+    }
+  }
+}
+
+/* -------------------------------- hero glow ---------------------------------
+
+  The hero's focal glow, tiered on the same boundaries as the ambient field
+  above. It is a static gradient with one transform-only animation, so it rasters
+  once and then costs a composited layer — which is why the blur and the blend
+  can stay on anything but the cheapest mode.
+
+  On a phone it goes fully static, so the app has exactly one moving background
+  layer on that device: the ambient `--a` blob. Two slow glowing things drifting
+  in the same 700px of screen is not a look anyone can name, and the phone tier
+  exists to spend as little as possible on the backdrop.
+------------------------------------------------------------------------------ */
+
+@layer components {
+  /* Light — the base, and all a phone gets. */
+  .hero-glow-blob {
+    animation: none;
+  }
+
+  @media (pointer: coarse) and (min-width: 700px) {
+    .hero-glow-blob {
+      filter: blur(24px);
+      mix-blend-mode: screen;
+    }
+    .hero-glow-blob--a {
+      animation: var(--animate-aurora);
+      animation-delay: -7s;
+    }
+  }
+
+  @media (pointer: fine) {
+    .hero-glow-blob {
+      filter: blur(24px);
+      mix-blend-mode: screen;
+    }
+    .hero-glow-blob--a {
+      animation: var(--animate-aurora);
+      animation-delay: -7s;
+    }
+  }
+}
+
+/* ----------------------------- animation budget -----------------------------
+
+  Every animation in the app, sorted by what it costs rather than by where it
+  lives. The distinction that matters is not duration — it is whether the
+  animated property can be composited. `transform` and `opacity` are handed to
+  the compositor and cost a layer. `border-radius` and `background-position`
+  cannot be, so the element is repainted in full, every frame, for as long as
+  the animation runs, whether or not anything on screen has changed.
+
+  A — KEEP. Short, finite, load-bearing feedback. Each runs once, on a user
+     action, and stops. There is nothing to win here and only UI clarity to
+     lose:
+       press, pop-in, panel-in, fade-in, rise, rise-3d, word-up, char-in, jelly,
+       scale-bump, count-pop, overlay-in, sheet-up, page-in, page-cinema,
+       btn-ripple, sweep-line, check-draw, circle-draw, sheen, spin / spin-slow
+       and shimmer (both only render while something is loading)
+
+  B — REDUCE. Decorative, composited, so cheap per frame — but continuous, and
+     a cheap thing left running for ten minutes is not free. Kept where the
+     motion carries information, thinned where it is only atmosphere:
+       dot-ping      live status dots — keep, and it is informational
+       radar         tracking map pings — keep, two instances, transform+opacity
+       ripple        current stage, order success — keep, composited
+       blink         scramble caret — keep, one instance, opacity only
+       marquee       home ticker — keep, transform-only, one instance
+       glow-breathe  bottom nav, hero sparkles, tracking rider — keep, composited
+       aurora+drift  the ambient field — thinned per device by the modes above
+       sheen         card hover sweep — finite, so category A in practice
+
+  C — DISABLE where the device cannot afford it. Each animates a property that
+     forces a repaint, continuously, on a large surface. There is no cheap
+     version of these; the only lever is to stop, and stopping is why they are
+     worth listing separately from B:
+       morph             border-radius       — confined to desktop by the modes above
+       gradient-flow     background-position — the last one standing, gated below
+       ember canvas      full-viewport clear + composite at 30-60fps
+                                             — tiered in ember-field.tsx
+       decorative blur   64px Gaussian behind the backdrop, re-run on every
+                         repaint              — already off on phones above
+
+  Note for whoever adds the next one: `--animate-float-slow` is defined in the
+  motion tokens and referenced by nothing. It was presumably meant for a hover
+  float. Deleting it is free.
+------------------------------------------------------------------------------ */
+
+/* ---------------------------- reduced motion -------------------------------
+
+  Two layers, deliberately.
+
+  The blanket clamp below is what handles category A. It shortens every
+  animation and transition to nothing, so a `pop-in` still completes and the
+  element still lands visible — a user who asks for reduced motion wants the
+  interface to appear, not to be stuck at frame zero. `animation-iteration-count`
+  is what makes it terminate: an infinite animation clamped to a 0.01ms duration
+  still runs, just once.
+
+  The explicit list after it is what handles everything the clamp cannot reach.
+  A 0.01ms duration is enough to neutralise a time-driven animation, but not a
+  scroll-driven one, which stays live against the scroll timeline regardless of
+  how short its duration is — hence `animation-timeline: auto`, plus naming the
+  known cases so a new one is visibly missing from the list rather than silently
+  still moving.
+
+  Note this block is unlayered on purpose. Tailwind emits utilities into
+  `@layer utilities`, and an unlayered rule outranks every layer, which is what
+  lets this override a utility that sets its own animation. */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+    /* Scroll-driven animations ignore duration. Neutralise the timeline too, so
+       an effect added later cannot outlive this block by being scroll-driven. */
+    animation-timeline: auto !important;
+  }
+  html.js [data-reveal] {
+    opacity: 1 !important;
+    transform: none !important;
+  }
+
+  /* Killed outright rather than shortened: a stopped sweep would freeze on the
+     first 45% of its ramp, so the gradient is also refitted to the box. Without
+     this the headline loses its pink under reduced motion. */
+  .text-gradient-flow {
+    animation: none !important;
+    background-size: 100% 100% !important;
+  }
+
+  .parallax-far,
+  .parallax-near,
+  .zoom-on-scroll,
+  .ambient-aurora,
+  .ambient-drift,
+  .hero-glow-blob {
+    animation: none !important;
+  }
+}

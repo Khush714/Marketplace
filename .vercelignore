@@ -1,0 +1,18 @@
+# Never upload local env / secrets or dev debris to Vercel.
+.env
+.env*
+!*.example
+
+# Local dev artifacts
+_tmp_*
+_next
+.pgdata
+*.log
+_e2e_check*.cjs
+tmp_*.cjs
+_probe_*.cjs
+
+# Build caches / local tooling state
+*.tsbuildinfo
+docs
+scripts/profiling
