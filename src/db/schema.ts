@@ -1165,9 +1165,31 @@ export const merchantAppLinks = pgTable(
   (t) => [index("merchant_app_links_restaurant_idx").on(t.restaurantId)],
 );
 
+/**
+ * Payout destination owned by Marketplace for a paired listing. The Merchant App
+ * forwards UPI/bank details here and only ever stores the masked label itself;
+ * the real destination is sealed at rest. One row per restaurant, no KYC state.
+ */
+export const merchantPayoutAccounts = pgTable(
+  "merchant_payout_accounts",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().unique().references(() => restaurants.id, { onDelete: "cascade" }),
+    method: text("method").notNull(),
+    encryptedDestination: text("encrypted_destination").notNull(),
+    maskedLabel: text("masked_label").notNull(),
+    reference: text("reference"),
+    status: text("status").notNull().default("configured"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_payout_accounts_restaurant_idx").on(t.restaurantId)],
+);
+
 export type MerchantOrderEventRow = typeof merchantOrderEvents.$inferSelect;
 export type MerchantLinkCodeRow = typeof merchantLinkCodes.$inferSelect;
 export type MerchantAppLinkRow = typeof merchantAppLinks.$inferSelect;
+export type MerchantPayoutAccountRow = typeof merchantPayoutAccounts.$inferSelect;
 
 /**
  * Promotions owned by the Marketplace for a listed restaurant. A paired Merchant
