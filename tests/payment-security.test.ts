@@ -187,10 +187,12 @@ test("the provider-spending payment endpoints are budgeted", () => {
 test("pay/start and pay/verify are actually guarded", () => {
   assert.match(readSource(START_ROUTE), /guardWrite\(req,\s*"paymentStart"\)/);
   assert.match(readSource(VERIFY_ROUTE), /guardWrite\(req,\s*"paymentVerify"\)/);
-  // Guarded before the token check, so an unauthenticated grind costs no query.
+  // Guarded before authorization, so an unauthenticated grind costs no lookup.
   const start = readSource(START_ROUTE);
+  const authAt = start.search(/orderAuthorized\(|verifyOrderToken\(/);
+  assert.ok(authAt >= 0, "pay/start must authorize the caller");
   assert.ok(
-    start.indexOf('guardWrite(req, "paymentStart")') < start.indexOf("verifyOrderToken("),
+    start.indexOf('guardWrite(req, "paymentStart")') < authAt,
     "paymentStart must be budgeted before any lookup",
   );
 });

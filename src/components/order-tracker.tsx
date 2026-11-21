@@ -14,11 +14,11 @@ export function OrderTracker({ code }: { code: string }) {
   const hydrated = useProfileReady();
   const { order, access, token } = usePublicOrder(code);
 
-  if (!hydrated || access === "loading" || (access === "ready" && order && !token)) {
+  if (!hydrated || access === "loading") {
     return <Skeleton />;
   }
 
-  if (access === "denied" || !order || !token) {
+  if (access === "denied" || !order) {
     return (
       <div className="mx-auto max-w-lg px-4 py-20 text-center">
         <h1 className="font-display text-2xl font-bold text-cream-50">We can&apos;t open this order</h1>
@@ -27,17 +27,25 @@ export function OrderTracker({ code }: { code: string }) {
           there. If you placed this order on another device, contact support with the order code.
         </p>
         <p className="mt-4 font-mono text-sm text-cream-500">{code}</p>
-        <Link
-          href="/orders"
-          className="press mt-6 inline-flex items-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-6 py-3 text-sm font-bold text-white shadow-glow"
-        >
-          See your orders
-        </Link>
+        <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+          <Link
+            href={`/contact?order=${encodeURIComponent(code)}`}
+            className="press inline-flex items-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-6 py-3 text-sm font-bold text-white shadow-glow"
+          >
+            Contact support
+          </Link>
+          <Link
+            href="/orders"
+            className="press inline-flex items-center gap-2 rounded-full bg-white/8 px-6 py-3 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+          >
+            See your orders
+          </Link>
+        </div>
       </div>
     );
   }
 
-  return <TrackingView initialOrder={order} token={token} />;
+  return <TrackingView initialOrder={order} token={token ?? undefined} />;
 }
 
 function Skeleton() {

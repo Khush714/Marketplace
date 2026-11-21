@@ -29,7 +29,7 @@
  * imported by the edge proxy (through rate-limit.ts) and by `node --test`.
  */
 
-/** The fixed Phase 12 event vocabulary. One JSON line per emission. */
+/** The fixed security event vocabulary. One JSON line per emission. */
 export const SECURITY_EVENTS = [
   /** Ops/admin credential check — requireOpsToken, success and failure. */
   "admin_login",
@@ -53,6 +53,12 @@ export const SECURITY_EVENTS = [
   "order_tracking_suspicious",
   /** Any rate limiter in the app refused a request. */
   "rate_limit_violation",
+  /** A customer account sign-in/verification succeeded and a session was minted. */
+  "customer_auth_verified",
+  /** An authenticated customer account session was revoked (logout, single or all). */
+  "customer_account_session_revoked",
+  /** Explicit/proven customer orders were linked to an authenticated account. */
+  "customer_orders_claimed",
 ] as const;
 
 export type SecurityEventName = (typeof SECURITY_EVENTS)[number];

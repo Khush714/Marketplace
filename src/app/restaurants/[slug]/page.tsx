@@ -6,6 +6,7 @@ import { ChevronLeft, Clock3, MapPin, Percent, PlugZap, Star } from "lucide-reac
 import { BLUR_DATA, PureVegTag, RatingBadge } from "@/components/atoms";
 import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
+import { PublicReviews } from "@/components/public-reviews";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
 import { listPublicMerchantOffersForSlug } from "@/db/merchant-offers";
 import { getRestaurant, hasActiveIntegration, hasActiveMerchantAppLink } from "@/db/queries";
@@ -119,7 +120,7 @@ export default async function RestaurantPage(props: {
 
         {/* info panel — floats over the cover */}
         <div className="mx-auto max-w-5xl px-4 md:px-6">
-          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-5 md:-mt-24 md:p-7">
+          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-4 md:-mt-24 md:p-7">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -238,6 +239,9 @@ export default async function RestaurantPage(props: {
         <aside className="hidden lg:block">
           <MiniCart restaurantSlug={r.slug} restaurantName={r.name} />
         </aside>
+      </div>
+      <div className="mx-auto max-w-5xl px-4 md:px-6">
+        <PublicReviews slug={r.slug} />
       </div>
     </div>
   );

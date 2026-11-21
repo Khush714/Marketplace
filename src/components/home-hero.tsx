@@ -62,7 +62,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
   }, []);
 
   return (
-    <section className="relative mx-auto max-w-7xl px-4 pt-10 md:px-6 md:pt-16">
+    <section className="relative mx-auto max-w-7xl px-4 pt-6 md:px-6 md:pt-16">
       {/* Focal glow — a brightness accent, not a second motion source.
           This was a second full-width morphing aurora field, running the same
           `animate-morph`/`animate-aurora` pair as the global ambience with a
@@ -112,7 +112,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </p>
 
       {/* headline — masked word reveal */}
-      <h1 className="mt-3 max-w-3xl font-display text-[42px] font-bold leading-[1.02] tracking-tight text-cream-50 md:text-6xl lg:text-7xl">
+      <h1 className="mt-3 max-w-3xl font-display text-[34px] font-bold leading-[1.05] tracking-tight text-cream-50 sm:text-[42px] md:text-6xl lg:text-7xl">
         <WordReveal text="Craving something" delay={80} step={95} />
         <br />
         <span className="text-gradient-flow">
@@ -133,7 +133,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </p>
 
       {/* magnetic search trigger */}
-      <Magnetic className="animate-rise mt-7 w-full max-w-xl" strength={0.16} max={9}>
+      <Magnetic className="animate-rise mt-5 hidden w-full max-w-xl md:mt-7 md:block" strength={0.16} max={9}>
         <button
           type="button"
           onClick={open}
@@ -179,9 +179,33 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </div>
 
       {/* categories */}
-      <div className="mt-9">
-        <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500">Popular near you</p>
-        <div className="no-scrollbar mask-fade-x -mx-4 flex gap-2.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex-wrap md:px-0">
+      <div className="mt-8 md:mt-9">
+        <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:hidden">What’s on your mind?</p>
+        <p className="mb-3 hidden text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:block">Popular near you</p>
+
+        <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 md:hidden">
+          {CATEGORIES.map(({ label, q, Icon, tint }, i) => (
+            <Link
+              key={label}
+              href={withLoc(`/restaurants?cuisine=${encodeURIComponent(q)}`, locality.key)}
+              data-reveal="zoom"
+              style={cssVars({ "--rd": `${i * 45}ms` })}
+              className="press group flex w-[72px] shrink-0 flex-col items-center gap-2"
+            >
+              <span className="grid size-14 place-items-center rounded-full border border-white/8 bg-white/[0.045] shadow-hairline transition-all duration-300 group-hover:-translate-y-0.5 group-hover:border-white/20 group-hover:bg-white/10">
+                <Icon
+                  className={cn(
+                    "size-6 transition-transform duration-300 group-hover:scale-110 group-hover:-rotate-6",
+                    tint,
+                  )}
+                />
+              </span>
+              <span className="text-center text-[11px] font-medium leading-tight text-cream-300">{label}</span>
+            </Link>
+          ))}
+        </div>
+
+        <div className="no-scrollbar mask-fade-x -mx-4 hidden gap-2.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex md:flex-wrap md:px-0">
           {CATEGORIES.map(({ label, q, Icon, tint }, i) => (
             <Link
               key={label}

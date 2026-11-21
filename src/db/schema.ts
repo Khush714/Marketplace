@@ -470,6 +470,124 @@ export const integrationAudit = pgTable(
   (t) => [index("integration_audit_restaurant_idx").on(t.restaurantId)],
 );
 
+/**
+ * Authenticated customer accounts (Phase B MVP: phone identity).
+ *
+ * Separate from anonymous `customer_sessions` (cookie-bound order-code ownership
+ * for guests): account sessions carry identity/profile and explicitly/proven
+ * linked orders across devices. Guest checkout remains supported.
+ */
+export const customerAccounts = pgTable(
+  "customer_accounts",
+  {
+    id: serial("id").primaryKey(),
+    phoneE164: text("phone_e164").notNull(),
+    phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
+    name: text("name").notNull().default(""),
+    /** Optional avatar key: "male" | "female" | "" (unset). */
+    avatar: text("avatar").notNull().default(""),
+    status: text("status").notNull().default("active"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("customer_accounts_phone_e164_idx").on(t.phoneE164)],
+);
+
+export type CustomerAccountRow = typeof customerAccounts.$inferSelect;
+
+/**
+ * One-time login/verify challenges. Codes are hashed at rest so a database read
+ * never yields a usable OTP; attempts and TTL bound guessing/replay.
+ */
+export const customerAuthChallenges = pgTable(
+  "customer_auth_challenges",
+  {
+    id: serial("id").primaryKey(),
+    phoneE164: text("phone_e164").notNull(),
+    purpose: text("purpose").notNull().default("login"),
+    codeHash: text("code_hash").notNull(),
+    attemptCount: integer("attempt_count").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("customer_auth_challenges_phone_purpose_expires_idx").on(t.phoneE164, t.purpose, t.expiresAt),
+    index("customer_auth_challenges_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type CustomerAuthChallengeRow = typeof customerAuthChallenges.$inferSelect;
+
+/**
+ * Bounded, revocable authenticated sessions for customer accounts. Token and CSRF
+ * secrets are hashed at rest (partner-session pattern) so a read yields no usable
+ * credential.
+ */
+export const customerAccountSessions = pgTable(
+  "customer_account_sessions",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    tokenHash: text("token_hash").notNull(),
+    csrfHash: text("csrf_hash").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }).notNull().defaultNow(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_account_sessions_token_hash_idx").on(t.tokenHash),
+    index("customer_account_sessions_account_id_idx").on(t.accountId),
+    index("customer_account_sessions_expires_at_idx").on(t.expiresAt),
+  ],
+);
+
+export type CustomerAccountSessionRow = typeof customerAccountSessions.$inferSelect;
+
+/** Saved delivery addresses for an authenticated account (MVP profile data). */
+export const customerAddresses = pgTable(
+  "customer_addresses",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    label: text("label").notNull().default("Other"),
+    text: text("text").notNull(),
+    isDefault: boolean("is_default").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("customer_addresses_account_id_idx").on(t.accountId)],
+);
+
+export type CustomerAddressRow = typeof customerAddresses.$inferSelect;
+
+/** Account-scoped restaurant favourites. */
+export const customerFavorites = pgTable(
+  "customer_favorites",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_favorites_account_restaurant_idx").on(t.accountId, t.restaurantId),
+    index("customer_favorites_account_id_idx").on(t.accountId),
+  ],
+);
+
+export type CustomerFavoriteRow = typeof customerFavorites.$inferSelect;
+
 export const orders = pgTable(
   "orders",
   {
@@ -583,6 +701,14 @@ export const orders = pgTable(
     merchantRejectionReason: text("merchant_rejection_reason").notNull().default(""),
     merchantFulfilment: text("merchant_fulfilment").notNull().default("delivery"),
     /**
+     * Explicit/proven link to an authenticated account (nullable, additive).
+     * Guest and token/session ownership remain valid; orders stay financial
+     * records if the account is later removed.
+     */
+    customerAccountId: integer("customer_account_id").references(() => customerAccounts.id, {
+      onDelete: "set null",
+    }),
+    /**
      * Customer rating for a delivered order (1–5). One immutable review per
      * order: the first write wins, and the Merchant App may add a single public
      * reply. Stored on the order itself so the order token is also the review
@@ -613,6 +739,8 @@ export const orders = pgTable(
     // to one restaurant and ordered/filtered by feedback_at.
     index("orders_restaurant_feedback_idx").on(t.restaurantId, t.feedbackAt),
     index("orders_restaurant_merchant_status_created_idx").on(t.restaurantId, t.merchantStatus, t.createdAt),
+    // Explicit/proven account-linked history.
+    index("orders_customer_account_id_idx").on(t.customerAccountId),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
   ],

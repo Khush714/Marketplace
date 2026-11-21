@@ -3,7 +3,7 @@
 import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   ArrowLeft,
   ArrowRight,
@@ -26,10 +26,12 @@ import {
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
+import { CustomerAuthDialog } from "@/components/customer-auth-dialog";
 import { PaymentStage } from "@/components/payment-stage";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { parseOfferCode, type PublicMerchantOffer } from "@/lib/merchant-offer";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
+import { useCustomerAccount } from "@/lib/customer-account";
 import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 import { LEGAL, LEGAL_ROUTES } from "@/lib/site-legal";
@@ -128,17 +130,20 @@ export default function CheckoutPage() {
   const identity = useProfileIdentity();
   const hydrated = useProfileReady();
   const { rememberOrder } = useProfileOrders();
+  const accountAuth = useCustomerAccount();
   const profile = useMemo(
     () => ({ ...identity, hydrated, rememberOrder }),
     [identity, hydrated, rememberOrder],
   );
   const router = useRouter();
   const { toast } = useToast();
+  const [accountAddresses, setAccountAddresses] = useState<Address[]>([]);
 
   const [addressId, setAddressId] = useState<string | null>(null);
   const [label, setLabel] = useState("");
   const [addressText, setAddressText] = useState("");
   const [showAddressForm, setShowAddressForm] = useState(false);
+  const [saveNewAddressToAccount, setSaveNewAddressToAccount] = useState(false);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [payChoice, setPayChoice] = useState<PayChoice>("online");
@@ -151,6 +156,8 @@ export default function CheckoutPage() {
    */
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [openSummary, setOpenSummary] = useState(false);
+  const [authOpen, setAuthOpen] = useState(false);
+  const [pendingCheckout, setPendingCheckout] = useState(false);
   const [placeState, setPlaceState] = useState<PlaceState>("idle");
   const [error, setError] = useState<string | null>(null);
   const [bill, setBill] = useState<BillBreakdown | null>(null);
@@ -178,6 +185,13 @@ export default function CheckoutPage() {
   // Stable per-checkout-session idempotency key: retried place attempts reuse
   // it so a lost-response retry never creates a duplicate order.
   const [placeRequestId] = useState(() => crypto.randomUUID());
+
+  const allAddresses = useMemo(() => {
+    if (!accountAddresses.length) return profile.addresses;
+    const seen = new Set(accountAddresses.map((a) => `${a.label}::${a.text}`.toLowerCase()));
+    const local = profile.addresses.filter((a) => !seen.has(`${a.label}::${a.text}`.toLowerCase()));
+    return [...accountAddresses, ...local];
+  }, [accountAddresses, profile.addresses]);
 
   // Until the authoritative preview lands, the client estimate supplies the
   // same breakdown shape so the final bill never shows a missing delivery fee.
@@ -256,13 +270,65 @@ export default function CheckoutPage() {
     return () => window.clearTimeout(t);
   }, [redirectIn, placed, router]);
 
-  // prefill from profile after hydration
+  // prefill from profile/account after hydration
   useEffect(() => {
     if (!profile.hydrated) return;
-    setName((n) => n || profile.name);
-    setPhone((p) => p || profile.phone);
-    setAddressId((a) => a ?? profile.addresses[0]?.id ?? null);
-  }, [profile.hydrated, profile.name, profile.phone, profile.addresses]);
+    const accountName = accountAuth.account?.name?.trim() ?? "";
+    const accountPhoneDigits = (accountAuth.account?.phoneE164 ?? "").replace(/\D/g, "").slice(-10);
+    setName((n) => n || accountName || profile.name);
+    setPhone((p) => p || accountPhoneDigits || profile.phone);
+    setAddressId((a) => a ?? allAddresses[0]?.id ?? null);
+  }, [
+    profile.hydrated,
+    profile.name,
+    profile.phone,
+    allAddresses,
+    accountAuth.account?.name,
+    accountAuth.account?.phoneE164,
+  ]);
+
+  useEffect(() => {
+    if (accountAuth.status !== "signedIn") {
+      setAccountAddresses([]);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await accountAuth.accountFetch("/api/customer/addresses", { cache: "no-store" });
+        const data = (await res.json().catch(() => null)) as
+          | { ok?: boolean; addresses?: { id: string | number; label: string; text: string }[] }
+          | null;
+        if (cancelled) return;
+        if (res.ok && data?.ok && Array.isArray(data.addresses)) {
+          setAccountAddresses(
+            data.addresses.map((a) => ({
+              id: String(a.id),
+              label: a.label || "Other",
+              text: a.text || "",
+            })),
+          );
+        } else {
+          setAccountAddresses([]);
+        }
+      } catch {
+        if (!cancelled) setAccountAddresses([]);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [accountAuth]);
+
+  const startCheckoutRef = useRef<() => Promise<void>>(async () => {});
+  const signedInDuringAuthRef = useRef(false);
+
+  useEffect(() => {
+    if (!pendingCheckout || authOpen) return;
+    if (accountAuth.status !== "signedIn") return;
+    setPendingCheckout(false);
+    void startCheckoutRef.current();
+  }, [pendingCheckout, authOpen, accountAuth.status]);
 
   if (!cart.hydrated || !profile.hydrated) {
     return (
@@ -301,7 +367,7 @@ export default function CheckoutPage() {
   }
 
   const selectedAddress: Address | null =
-    (showAddressForm ? null : profile.addresses.find((a) => a.id === addressId)) ?? null;
+    (showAddressForm ? null : allAddresses.find((a) => a.id === addressId)) ?? null;
   const effectiveAddressText = showAddressForm ? addressText : selectedAddress?.text ?? "";
   const effectiveLabel = showAddressForm ? label || "Other" : selectedAddress?.label ?? "Home";
   const phoneDigits = phone.replace(/\D/g, "");
@@ -390,6 +456,7 @@ export default function CheckoutPage() {
         orderToken?: string;
         trackingToken?: string;
         error?: string;
+        code?: string;
         payment?: {
           reference?: string;
           providerOrderId?: string | null;
@@ -407,6 +474,13 @@ export default function CheckoutPage() {
           res.ok ? "Unexpected response from server" : `Server error (${res.status})`,
         );
       }
+      if (res.status === 401 && data.code === "ACCOUNT_REQUIRED") {
+        setPlaceState("idle");
+        signedInDuringAuthRef.current = false;
+        setPendingCheckout(true);
+        setAuthOpen(true);
+        return;
+      }
       if (!res.ok || !data.ok || !data.order || !data.orderToken) {
         throw new Error(data.error ?? "Could not place order");
       }
@@ -416,6 +490,43 @@ export default function CheckoutPage() {
       const trackingToken = data.trackingToken ?? null;
       setPlacedTrackingToken(trackingToken);
       profile.rememberOrder(code, token, trackingToken ?? undefined);
+
+      // Explicit, best-effort: optionally persist a newly entered checkout
+      // address to the signed-in account (never blocks or affects the order).
+      if (
+        showAddressForm &&
+        saveNewAddressToAccount &&
+        accountAuth.status === "signedIn" &&
+        newAddress?.text?.trim()
+      ) {
+        const saveLabel = (newAddress.label || "Other").trim() || "Other";
+        const saveText = newAddress.text.trim();
+        const alreadySaved = accountAddresses.some(
+          (a) => a.label.trim().toLowerCase() === saveLabel.toLowerCase() && a.text.trim() === saveText,
+        );
+        if (!alreadySaved) {
+          void accountAuth
+            .accountFetch("/api/customer/addresses", {
+              method: "POST",
+              mutating: true,
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ label: saveLabel, text: saveText }),
+            })
+            .catch(() => {
+              /* best-effort account address save */
+            });
+        }
+      }
+
+      void fetch("/api/orders/attach", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ orders: [{ code, token }] }),
+        credentials: "same-origin",
+        keepalive: true,
+      }).catch(() => {
+        /* best-effort session migration */
+      });
       cart.clear();
       toast("Order placed", { sub: `${data.order.restaurantName} · ${code}` });
 
@@ -448,7 +559,14 @@ export default function CheckoutPage() {
 
   /** Make sure the authoritative total is in hand before we commit to an order. */
   const startCheckout = async () => {
-    if (placeState === "loading") return;
+    if (placeState === "loading" || billLoading) return;
+    if (accountAuth.status === "loading") return;
+    if (accountAuth.status !== "signedIn") {
+      signedInDuringAuthRef.current = false;
+      setPendingCheckout(true);
+      setAuthOpen(true);
+      return;
+    }
     let target = bill;
     if (!target) {
       const preview = await postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer, promoCode);
@@ -459,6 +577,8 @@ export default function CheckoutPage() {
     }
     void placeOrder(payChoice);
   };
+  // eslint-disable-next-line react-hooks/refs -- latest-callback ref for pending checkout resume
+  startCheckoutRef.current = startCheckout;
 
   const markPaid = () => {
     if (!payTarget) return;
@@ -481,6 +601,35 @@ export default function CheckoutPage() {
     setPlaceState("success");
     setPlaced({ code: payTarget.code, restaurantName: payTarget.payeeName, paid: false, method: "online", trackingToken: placedTrackingToken ?? undefined });
     setRedirectIn(10);
+  };
+
+  /** Switch a failed/unpaid online payment to cash-on-delivery. */
+  const switchToCash = async () => {
+    if (!payTarget) return;
+    try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (payTarget.token) headers["x-order-token"] = payTarget.token;
+      const res = await fetch(`/api/orders/${encodeURIComponent(payTarget.code)}/pay/switch-cod`, {
+        method: "POST",
+        headers,
+        credentials: "same-origin",
+      });
+      const data = (await res.json().catch(() => null)) as { ok?: boolean; error?: string } | null;
+      if (!res.ok || !data?.ok) {
+        toast(data?.error ?? "Could not switch to cash on delivery", { kind: "error" });
+        return;
+      }
+      const code = payTarget.code;
+      const name = payTarget.payeeName;
+      const trackingToken = placedTrackingToken ?? undefined;
+      setPayTarget(null);
+      setPlaceState("success");
+      setPlaced({ code, restaurantName: name, paid: false, method: "cod", trackingToken });
+      setRedirectIn(10);
+      toast("Switched to cash on delivery");
+    } catch {
+      toast("Could not switch to cash on delivery", { kind: "error" });
+    }
   };
 
   const goToOrder = () => {
@@ -531,7 +680,12 @@ export default function CheckoutPage() {
           {/* ------------------------------ address ------------------------------ */}
           <Section step={1} title="Delivery address" Icon={MapPin}>
             <div className="space-y-2.5">
-              {profile.addresses.map((a) => (
+              {accountAuth.status === "signedIn" && (
+                <p className="text-xs text-cream-500">
+                  Signed in{accountAuth.account?.phoneE164 ? ` as ${accountAuth.account.phoneE164}` : ""}. Saved account addresses appear here when available.
+                </p>
+              )}
+              {allAddresses.map((a) => (
                 <label
                   key={a.id}
                   className={cn(
@@ -549,6 +703,7 @@ export default function CheckoutPage() {
                     onChange={() => {
                       setAddressId(a.id);
                       setShowAddressForm(false);
+                      setSaveNewAddressToAccount(false);
                     }}
                   />
                   <span
@@ -583,14 +738,35 @@ export default function CheckoutPage() {
                     rows={2}
                     className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
                   />
-                  <button type="button" onClick={() => setShowAddressForm(false)} className="press text-xs font-semibold text-cream-400 hover:text-cream-200">
+                  {accountAuth.status === "signedIn" && (
+                    <label className="flex cursor-pointer items-center gap-2 pt-0.5 text-xs font-semibold text-cream-300">
+                      <input
+                        type="checkbox"
+                        checked={saveNewAddressToAccount}
+                        onChange={(e) => setSaveNewAddressToAccount(e.target.checked)}
+                        className="size-4 rounded border-white/20 bg-black/30 accent-ember-400"
+                      />
+                      Save this address to my account
+                    </label>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setShowAddressForm(false);
+                      setSaveNewAddressToAccount(false);
+                    }}
+                    className="press text-xs font-semibold text-cream-400 hover:text-cream-200"
+                  >
                     Cancel
                   </button>
                 </div>
               ) : (
                 <button
                   type="button"
-                  onClick={() => setShowAddressForm(true)}
+                  onClick={() => {
+                    setShowAddressForm(true);
+                    setSaveNewAddressToAccount(false);
+                  }}
                   className="press flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-white/15 py-3 text-sm font-semibold text-cream-300 transition-colors hover:border-ember-400/40 hover:text-ember-300"
                 >
                   <Plus className="size-4" /> Add new address
@@ -725,11 +901,15 @@ export default function CheckoutPage() {
               </div>
               <button
                 type="button"
-                disabled={!canPlace || billLoading}
+                disabled={!canPlace || billLoading || accountAuth.status === "loading"}
                 onClick={startCheckout}
                 className="press inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-5 py-3 text-sm font-bold text-white shadow-glow transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
               >
-                {payChoice === "online" ? "Pay" : "Place order"}{" "}
+                {accountAuth.status !== "signedIn"
+                  ? "Sign in to place order"
+                  : payChoice === "online"
+                    ? "Pay"
+                    : "Place order"}{" "}
                 {formatINR(totalCents)} <ArrowRight className="size-4" />
               </button>
             </div>
@@ -747,6 +927,11 @@ export default function CheckoutPage() {
             {detailsComplete && !acceptedTerms && (
               <p className="mt-2.5 text-xs text-chili-300">
                 Please accept the Terms &amp; Privacy Policy to continue
+              </p>
+            )}
+            {canPlace && accountAuth.status !== "signedIn" && accountAuth.status !== "loading" && (
+              <p className="mt-2.5 flex items-center gap-1.5 text-xs text-ember-300">
+                <ShieldCheck className="size-3.5" /> You’ll sign in or create an account when you place your order.
               </p>
             )}
           </Section>
@@ -833,9 +1018,10 @@ export default function CheckoutPage() {
           />
           <PlaceOrderButton
             state={placeState}
-            disabled={!canPlace}
+            disabled={!canPlace || accountAuth.status === "loading"}
             busy={billLoading}
             totalCents={totalCents}
+            label={accountAuth.status !== "signedIn" ? "Sign in to place order" : payChoice === "online" ? "Pay" : "Place order"}
             onClick={startCheckout}
             className="mt-4 hidden lg:flex"
           />
@@ -849,6 +1035,11 @@ export default function CheckoutPage() {
               Accept the Terms &amp; Privacy Policy to continue
             </p>
           )}
+          {canPlace && accountAuth.status !== "signedIn" && accountAuth.status !== "loading" && (
+            <p className="mt-2 hidden text-center text-xs text-ember-300/90 lg:block">
+              Sign-in required to place order
+            </p>
+          )}
           {error && <p className="mt-3 text-center text-sm text-chili-300">{error}</p>}
         </aside>
       </div>
@@ -857,10 +1048,10 @@ export default function CheckoutPage() {
       <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
         <PlaceOrderButton
           state={placeState}
-          disabled={!canPlace}
+          disabled={!canPlace || accountAuth.status === "loading"}
           busy={billLoading}
           totalCents={totalCents}
-          label={payChoice === "online" ? "Pay" : "Place order"}
+          label={accountAuth.status !== "signedIn" ? "Sign in to place order" : payChoice === "online" ? "Pay" : "Place order"}
           onClick={startCheckout}
         />
       </div>
@@ -871,9 +1062,28 @@ export default function CheckoutPage() {
           onPaid={markPaid}
           onViewOrder={viewUnconfirmedOrder}
           onAbandon={keepUnpaid}
+          onSwitchToCash={switchToCash}
           onClose={keepUnpaid}
         />
       )}
+
+      <CustomerAuthDialog
+        open={authOpen}
+        onClose={() => {
+          setAuthOpen(false);
+          if (!signedInDuringAuthRef.current) setPendingCheckout(false);
+          // eslint-disable-next-line react-hooks/immutability -- event handler updates dialog-flow ref
+          signedInDuringAuthRef.current = false;
+        }}
+        onSignedIn={() => {
+          // eslint-disable-next-line react-hooks/immutability -- event handler updates dialog-flow ref
+          signedInDuringAuthRef.current = true;
+          setPendingCheckout(true);
+          setAuthOpen(false);
+        }}
+        title="Sign in to place your order"
+        message="Create an account or sign in with your phone number to continue. After verification, we'll pick up right where you left off and place your order."
+      />
     </div>
   );
 }

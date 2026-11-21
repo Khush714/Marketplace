@@ -6,6 +6,7 @@ import { Clock3, Heart, Percent, Sparkles, Star } from "lucide-react";
 import { BLUR_DATA } from "@/components/atoms";
 import { Reveal, TiltCard } from "@/components/motion-primitives";
 import { cn, formatDistance, isUnrated, priceSymbol } from "@/lib/domain";
+import { useCustomerAccountOptional } from "@/lib/customer-account";
 import { useFavorites, useProfileReady } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
@@ -32,6 +33,7 @@ export function RestaurantCard({
   const { isFavorite, toggleFavorite } = useFavorites();
   const hydrated = useProfileReady();
   const { toast } = useToast();
+  const account = useCustomerAccountOptional();
   const fav = hydrated && isFavorite(r.slug);
 
   return (
@@ -83,8 +85,24 @@ export function RestaurantCard({
               aria-pressed={fav}
               onClick={(e) => {
                 e.stopPropagation();
+                const wasFav = fav;
                 toggleFavorite(r.slug);
-                if (!fav) toast("Saved to favorites", { sub: r.name });
+                if (!wasFav) toast("Saved to favorites", { sub: r.name });
+                // Best-effort cross-device sync when signed in (explicit account action).
+                if (account?.status === "signedIn") {
+                  const slug = encodeURIComponent(r.slug);
+                  void (wasFav
+                    ? account.accountFetch(`/api/customer/favorites?slug=${slug}`, { method: "DELETE", mutating: true })
+                    : account.accountFetch("/api/customer/favorites", {
+                        method: "POST",
+                        mutating: true,
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ slug: r.slug }),
+                      })
+                  ).catch(() => {
+                    /* keep local UI responsive; account sync is best-effort */
+                  });
+                }
               }}
               className={cn(
                 "press absolute right-3 top-3 grid size-9 place-items-center rounded-full transition-all duration-300",
@@ -131,15 +149,15 @@ export function RestaurantCard({
           </div>
 
           {/* meta */}
-          <div className="px-1.5 pt-3">
+          <div className="px-1 pt-2.5 md:px-1.5 md:pt-3">
             <div className="flex items-start justify-between gap-2">
-              <h3 className="truncate font-display text-[17px] font-bold tracking-tight text-cream-50 transition-colors duration-300 group-hover:text-ember-300">
+              <h3 className="truncate font-display text-[16px] font-bold tracking-tight text-cream-50 transition-colors duration-300 group-hover:text-ember-300 md:text-[17px]">
                 {r.name}
               </h3>
               <span className="shrink-0 pt-0.5 text-xs font-semibold text-cream-500">{priceSymbol(r.priceLevel)}</span>
             </div>
             <p className="mt-0.5 truncate text-[13px] text-cream-500">{r.cuisines.join(" · ")}</p>
-            <div className="mt-1.5 flex items-center gap-2 text-xs text-cream-400">
+            <div className="mt-1 flex items-center gap-1.5 text-xs text-cream-400 md:mt-1.5 md:gap-2">
               <span className="flex items-center gap-1">
                 <Clock3 className="size-3.5 text-ember-400" />
                 {r.deliveryMinutes} min

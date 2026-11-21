@@ -24,7 +24,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
     ? `/order/track/${stored.trackingToken}`
     : `/order/${code}/track`;
 
-  if (!hydrated || access === "loading" || (access === "ready" && !order)) {
+  if (!hydrated || access === "loading") {
     return (
       <div className="mx-auto max-w-lg px-4 py-20">
         <div className="skeleton mx-auto size-28 rounded-full" />
@@ -34,7 +34,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
     );
   }
 
-  if (access === "denied" || !order || !token) {
+  if (access === "denied" || !order) {
     return (
       <div className="mx-auto max-w-lg px-4 py-20 text-center">
         <h1 className="font-display text-2xl font-bold text-cream-50">We can&apos;t open this order</h1>
@@ -64,10 +64,13 @@ export function OrderSuccessScreen({ code }: { code: string }) {
     setStarting(true);
     setPayError(null);
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${encodeURIComponent(code)}/pay/start`, {
         method: "POST",
-        headers: { "x-order-token": token, "Content-Type": "application/json" },
+        headers,
         cache: "no-store",
+        credentials: "same-origin",
       });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
@@ -85,7 +88,7 @@ export function OrderSuccessScreen({ code }: { code: string }) {
       }
       setPayTarget({
         code,
-        token,
+        token: token ?? undefined,
         reference: data.reference ?? "",
         providerOrderId: data.providerOrderId,
         keyId: data.keyId ?? null,

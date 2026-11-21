@@ -34,7 +34,7 @@ export const DishCard = forwardRef<
       data-reveal="up"
       style={cssVars({ "--rd": `${(index % 6) * 55}ms` })}
       className={cn(
-        "group relative flex gap-4 rounded-2xl p-3 transition-colors duration-300",
+        "group relative flex gap-3 rounded-2xl p-3 transition-colors duration-300 md:gap-4",
         highlighted
           ? "animate-fade-in bg-ember-400/8 ring-1 ring-ember-400/40"
           : "hover:bg-white/[0.035]",
@@ -72,13 +72,13 @@ export const DishCard = forwardRef<
       </div>
 
       {/* image + action */}
-      <div className="relative w-28 shrink-0 md:w-32">
+      <div className="relative w-[104px] shrink-0 md:w-32">
         <div className="relative aspect-square overflow-hidden rounded-2xl shadow-lift">
           <Image
             src={item.imageUrl}
             alt={item.name}
             fill
-            sizes="128px"
+            sizes="(max-width: 768px) 104px, 128px"
             placeholder="blur"
             blurDataURL={BLUR_DATA}
             className="object-cover transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.05]"

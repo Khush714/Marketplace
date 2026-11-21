@@ -195,6 +195,7 @@ test("the customer-facing budgets leave room for a shared mobile address", () =>
   assert.ok(ABUSE_BUDGETS.checkout.limit >= 10, "several people must be able to order from one address");
   assert.ok(ABUSE_BUDGETS.billPreview.limit >= 60, "a cart with many edits must not self-throttle");
   assert.ok(ABUSE_BUDGETS.restaurants.limit >= 120, "browse is refetched on every filter change");
+  assert.ok(ABUSE_BUDGETS.publicReviews.limit >= 120, "reviews are paged on every listing visit");
   assert.ok(ABUSE_BUDGETS.search.limit >= 30, "a person searches continuously");
   assert.ok(ABUSE_BUDGETS.orderLookup.limit >= 20, "history is refetched on every page load");
 });
@@ -215,6 +216,8 @@ test("the owner-key check is the tightest budget in the table", () => {
     "opsCodeMint",
     "opsCodeRead",
     "opsCodeRevoke",
+    "customerAuthStart",
+    "customerAuthVerify",
   ]);
   for (const [scope, budget] of Object.entries(ABUSE_BUDGETS)) {
     const rate = (budget.limit * 60 * 60 * 1000) / budget.windowMs;
@@ -232,7 +235,8 @@ test("the owner-key check is the tightest budget in the table", () => {
 /* ------------------------------ route wiring ------------------------------ */
 
 const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string }[] = [
-  { path: "src/app/api/orders/route.ts", guard: "guardWrite", scope: "checkout" },
+  { path: "src/app/api/orders/route.ts", guard: "guardWrite", scope: "checkout", db: "createOrder" },
+  { path: "src/app/api/orders/route.ts", guard: "guardRead", scope: "orderLookup", db: "getOrderByCode" },
   { path: "src/app/api/orders/bill/route.ts", guard: "guardWrite", scope: "billPreview" },
   { path: "src/app/api/orders/lookup/route.ts", guard: "guardWrite", scope: "orderLookup" },
   { path: "src/app/api/partner/session/route.ts", guard: "guardWrite", scope: "ownerVerify" },
@@ -240,7 +244,15 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
   { path: "src/app/api/search/route.ts", guard: "guardRead", scope: "search" },
   { path: "src/app/api/restaurants/route.ts", guard: "guardRead", scope: "restaurants" },
   { path: "src/app/api/restaurants/[slug]/route.ts", guard: "guardRead", scope: "restaurants" },
+  {
+    path: "src/app/api/restaurants/[slug]/reviews/route.ts",
+    guard: "guardRead",
+    scope: "publicReviews",
+    db: "listPublicRestaurantReviews",
+  },
   { path: "src/app/api/orders/[code]/route.ts", guard: "guardRead", scope: "orderLookup" },
+  { path: "src/app/api/orders/[code]/cancel/route.ts", guard: "guardWrite", scope: "orderCancel" },
+  { path: "src/app/api/orders/[code]/review/route.ts", guard: "guardWrite", scope: "orderReview" },
   { path: "src/app/api/orders/[code]/pay/start/route.ts", guard: "guardWrite", scope: "paymentStart" },
   { path: "src/app/api/orders/[code]/pay/verify/route.ts", guard: "guardWrite", scope: "paymentVerify" },
   // Credential-gated routes, budgeted ahead of the credential check. Several

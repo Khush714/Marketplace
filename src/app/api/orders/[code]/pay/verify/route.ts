@@ -11,7 +11,7 @@ import {
   providerMode,
   verifyCheckoutSignature,
 } from "@/integrations/payments/provider-session";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { orderAuthorized } from "@/lib/order-authorized";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
 import { isAuthorizedAwaitingCapture } from "@/lib/payment-security-core";
 
@@ -43,7 +43,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   if (blocked) return blocked;
 
   const { code } = await ctx.params;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 

@@ -58,7 +58,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       <HomeHero restaurantCount={all.length} />
 
       {/* infinite ticker */}
-      <div className="mt-12 overflow-hidden border-y border-white/6 py-3 md:mt-16">
+      <div className="mt-8 overflow-hidden border-y border-white/6 py-3 md:mt-16">
         <div className="animate-marquee flex w-max items-center gap-10">
           {[0, 1].map((dup) => (
             <div key={dup} aria-hidden={dup === 1} className="flex items-center gap-10">
@@ -75,7 +75,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </div>
 
       {/* Ember Drop — hero promo */}
-      <section className="mx-auto mt-12 max-w-7xl px-4 md:mt-16 md:px-6">
+      <section className="mx-auto mt-8 max-w-7xl px-4 md:mt-16 md:px-6">
         <Link
           href="/restaurants/ember-and-oak"
           className="group relative block overflow-hidden rounded-[28px] shadow-float press"
@@ -119,7 +119,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Featured rail */}
-      <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Featured tonight" sub={`Hand-picked in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
@@ -138,7 +138,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Popular near you */}
-      <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Popular near you" sub={`Within a short ride of ${locality.name}`} href={`/restaurants?sort=near&loc=${locality.key}`} />
         </div>
@@ -150,7 +150,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Dessert promo */}
-      <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <Link
           href="/restaurants/the-velvet-crumb"
           className="group relative block overflow-hidden rounded-[28px] shadow-float press"
@@ -195,7 +195,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Top rated rail */}
-      <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Top rated" sub={`Consistently exceptional in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
@@ -212,7 +212,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Offers */}
-      <section className="mx-auto mt-14 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Offers near you" sub={`Deals worth crossing the street for in ${locality.name}`} href={`/restaurants?offers=1&loc=${locality.key}`} />
         </div>

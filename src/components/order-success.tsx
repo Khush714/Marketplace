@@ -189,6 +189,13 @@ export function OrderSuccess({
       <p className="animate-fade-in mt-6 text-xs text-cream-600" style={cssVars({ animationDelay: "1.2s" })}>
         Live tracking begins in a few seconds
       </p>
+      <Link
+        href={`/contact?order=${encodeURIComponent(order.code)}`}
+        className="animate-fade-in mt-3 text-xs font-semibold text-ember-400 transition-colors hover:text-ember-300"
+        style={cssVars({ animationDelay: "1.28s" })}
+      >
+        Need help with this order? Contact support
+      </Link>
     </div>
   );
 }

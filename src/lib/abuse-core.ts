@@ -90,6 +90,14 @@ export const ABUSE_BUDGETS = {
   merchantOffers: { limit: 120, windowMs: MINUTE_MS },
 
   /**
+   * Public restaurant reviews. Loaded with the listing and again for each
+   * "show more" page, so it has to survive the same shared-address traffic as
+   * the listing itself. Each call returns one bounded page of already-reviewed
+   * rows; the budget stops a script walking every listing's feedback library.
+   */
+  publicReviews: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Owner-key verification. The key is 18 random bytes, so guessing is not the
    * risk; *submitting* guesses is. This is the credential-check endpoint an
    * attacker scripts against to test a leaked or harvested key, and it returns a
@@ -127,6 +135,13 @@ export const ABUSE_BUDGETS = {
    * can realistically make in that window, retries included.
    */
   paymentVerify: { limit: 30, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Switch a failed/pending online payment to cash-on-delivery. Token-gated,
+   * but it mutates payment state and enqueues POS delivery. Bounded to prevent
+   * a leaked order token from churning state; real customers do this rarely.
+   */
+  paymentSwitch: { limit: 20, windowMs: 10 * MINUTE_MS },
 
   /**
    * Attach order codes to this browser's anonymous session
@@ -254,6 +269,34 @@ export const ABUSE_BUDGETS = {
    * far below a scripted grind against the code space.
    */
   merchantOAuthExchange: { limit: 20, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Start a customer account OTP challenge. Credential-adjacent: even with a dev
+   * stub (no external SMS wired), accepting unlimited requests would create
+   * unbounded challenge rows and enable enumeration pressure. Charged before any
+   * work; responses stay generic.
+   */
+  customerAuthStart: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Verify a customer account OTP. A short numeric code is a guessing target, so
+   * this is credential-grade: charged before verification and bounded tightly,
+   * with per-challenge attempt limits enforced separately.
+   */
+  customerAuthVerify: { limit: 10, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Authenticated customer account reads (session/whoami, profile, addresses,
+   * favorites, linked order history). Session-gated but bounded per client.
+   */
+  customerAccountRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Authenticated customer account mutations (profile/address/favorite updates,
+   * explicit order claim/link, logout). CSRF/origin-checked and session-gated;
+   * budgeted to stop scripted write loops with a leaked session/cookie.
+   */
+  customerAccountWrite: { limit: 60, windowMs: MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

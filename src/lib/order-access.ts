@@ -8,17 +8,19 @@ import { experiments } from "@/lib/experiments";
 /**
  * Customer-side access to a single order.
  *
- * An order code on its own is not a credential: every read needs the signed
- * token minted at checkout (see lib/order-token), which lives in this browser's
- * profile. That is also why these pages are client components — the token is in
- * localStorage, not in the request, and the server must not be asked for an
- * order it cannot authenticate.
+ * Access is authorized by a signed per-order token (minted at checkout) or by a
+ * live anonymous customer session cookie bound to the order code. When a local
+ * token is available we still send it for compatibility, but session-backed
+ * reads work without replaying tokens from web storage.
  */
 
-export async function fetchPublicOrder(code: string, token: string): Promise<PublicOrder | null> {
+export async function fetchPublicOrder(code: string, token?: string | null): Promise<PublicOrder | null> {
+  const headers: Record<string, string> = {};
+  if (token) headers["x-order-token"] = token;
   const res = await fetch(`/api/orders/${encodeURIComponent(code)}`, {
-    headers: { "x-order-token": token },
+    headers,
     cache: "no-store",
+    credentials: "same-origin",
   });
   if (!res.ok) return null;
   const data = (await res.json().catch(() => null)) as { order?: PublicOrder } | null;
@@ -39,19 +41,6 @@ export async function fetchOrderByTrackingToken(trackingToken: string): Promise<
 
 export type OrderAccess = "loading" | "ready" | "denied";
 
-function deriveAccess(input: {
-  hydrated: boolean;
-  token: string | null;
-  resultCode: string | null;
-  order: PublicOrder | null;
-  code: string;
-}): OrderAccess {
-  if (!input.hydrated) return "loading";
-  if (!input.token) return "denied";
-  if (input.resultCode !== input.code) return "loading";
-  return input.order ? "ready" : "denied";
-}
-
 export function usePublicOrder(code: string) {
   const { orders } = useProfileOrders();
   const hydrated = useProfileReady();
@@ -60,7 +49,7 @@ export function usePublicOrder(code: string) {
   const token = orders.find((o) => o.code === code)?.token ?? null;
 
   useEffect(() => {
-    if (!hydrated || !token) return;
+    if (!hydrated) return;
     let cancelled = false;
     fetchPublicOrder(code, token)
       .then((found) => {
@@ -74,15 +63,17 @@ export function usePublicOrder(code: string) {
     };
   }, [code, hydrated, token]);
 
-  // Access is derived, not stored: "no token in this browser" and "still
-  // fetching" are both knowable during render, so they need no setState and
-  // cannot cascade an extra pass.
   const order = result && result.code === code ? result.order : null;
-  const access = deriveAccess({ hydrated, token, resultCode: result?.code ?? null, order, code });
+  const access: OrderAccess = !hydrated
+    ? "loading"
+    : result?.code !== code
+      ? "loading"
+      : order
+        ? "ready"
+        : "denied";
 
-  /** Re-read the order (used by the tracking poller). */
+  /** Re-read the order (used by pollers). */
   const refresh = useCallback(async () => {
-    if (!token) return;
     const found = await fetchPublicOrder(code, token);
     if (found) setResult({ code, order: found });
   }, [code, token]);

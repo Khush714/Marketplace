@@ -6,6 +6,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Context,
   type ReactNode,
@@ -81,6 +82,8 @@ interface ProfileIdentityValue {
   setIdentity: (name: string, phone: string) => void;
   addAddress: (label: string, text: string) => Address;
   removeAddress: (id: string) => void;
+  /** Clears device-local identity/address data (used on account sign-out for shared-device privacy). */
+  resetIdentity: () => void;
 }
 
 interface FavoritesValue {
@@ -94,6 +97,8 @@ interface ProfileOrdersValue {
   /** Codes only, for counters and links. Reading an order needs its token. */
   orderCodes: string[];
   rememberOrder: (code: string, token: string, trackingToken?: string) => void;
+  /** Clears device-local order tokens/history (used on account transitions for shared-device privacy). */
+  clearOrders: () => void;
 }
 
 interface SearchHistoryValue {
@@ -179,6 +184,29 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     }
   }, [state, hydrated]);
 
+  // Best-effort boot migration: bind locally held, token-backed orders to the
+  // anonymous customer session so history and order access can be served via the
+  // HttpOnly session cookie without replaying tokens from web storage.
+  const attachedBoot = useRef(false);
+  useEffect(() => {
+    if (!hydrated || attachedBoot.current) return;
+    const pairs = state.orders
+      .filter((o) => o.code && o.token)
+      .slice(0, 30)
+      .map((o) => ({ code: o.code, token: o.token }));
+    if (!pairs.length) return;
+    attachedBoot.current = true;
+    void fetch("/api/orders/attach", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ orders: pairs }),
+      credentials: "same-origin",
+      keepalive: true,
+    }).catch(() => {
+      /* best-effort migration */
+    });
+  }, [hydrated, state.orders]);
+
   const setIdentity = useCallback((name: string, phone: string) => {
     setState((s) => ({ ...s, name, phone }));
   }, []);
@@ -191,6 +219,17 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   const removeAddress = useCallback((id: string) => {
     setState((s) => ({ ...s, addresses: s.addresses.filter((a) => a.id !== id) }));
+  }, []);
+
+  const resetIdentity = useCallback(() => {
+    setState((s) => ({
+      ...s,
+      name: "",
+      phone: "",
+      addresses: EMPTY.addresses,
+      favorites: [],
+      recentSearches: [],
+    }));
   }, []);
 
   const toggleFavorite = useCallback(
@@ -221,6 +260,10 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         ...s.orders.filter((o) => o.code !== clean),
       ].slice(0, 30),
     }));
+  }, []);
+
+  const clearOrders = useCallback(() => {
+    setState((s) => (s.orders.length === 0 ? s : { ...s, orders: [] }));
   }, []);
 
   // Gated on consent, not merely suppressed in the UI: the recent-search list is
@@ -256,8 +299,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const readyValue = useMemo<ProfileReadyValue>(() => ({ hydrated }), [hydrated]);
 
   const identityValue = useMemo<ProfileIdentityValue>(
-    () => ({ name: state.name, phone: state.phone, addresses: state.addresses, setIdentity, addAddress, removeAddress }),
-    [state.name, state.phone, state.addresses, setIdentity, addAddress, removeAddress],
+    () => ({ name: state.name, phone: state.phone, addresses: state.addresses, setIdentity, addAddress, removeAddress, resetIdentity }),
+    [state.name, state.phone, state.addresses, setIdentity, addAddress, removeAddress, resetIdentity],
   );
 
   const favoritesValue = useMemo<FavoritesValue>(
@@ -267,8 +310,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
 
   const orderCodes = useMemo(() => state.orders.map((o) => o.code), [state.orders]);
   const ordersValue = useMemo<ProfileOrdersValue>(
-    () => ({ orders: state.orders, orderCodes, rememberOrder }),
-    [state.orders, orderCodes, rememberOrder],
+    () => ({ orders: state.orders, orderCodes, rememberOrder, clearOrders }),
+    [state.orders, orderCodes, rememberOrder, clearOrders],
   );
 
   const searchValue = useMemo<SearchHistoryValue>(

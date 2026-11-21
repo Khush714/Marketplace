@@ -162,7 +162,7 @@ test("the success and history screens prefer the shareable tracking URL", () => 
   assert.match(success, /`\/order\/\$\{code\}\/track`/, "falling back to the code+token page");
 
   const orders = readSource("src/app/orders/page.tsx");
-  assert.match(orders, /trackingHref = storedToken \? `\/order\/track\/\$\{storedToken\}` : `\/order\/\$\{o\.code\}\/track`/, "history links use the token when on file");
+  assert.match(orders, /trackingHref = `\/order\/\$\{o\.code\}\/track`/, "account-scoped history links use the code track route");
 
   const panel = readSource("src/components/order-success.tsx");
   assert.match(panel, /trackingHref: string;/, "the success panel renders a caller-supplied href");

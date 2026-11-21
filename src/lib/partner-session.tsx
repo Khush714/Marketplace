@@ -29,7 +29,7 @@
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { KeyRound, RefreshCw, Store } from "lucide-react";
 import { cn } from "@/lib/domain";
-import { RESTAURANT_CSRF_COOKIE, RESTAURANT_CSRF_HEADER } from "@/lib/restaurant-session-core";
+import { RESTAURANT_CSRF_COOKIE, RESTAURANT_CSRF_HEADER } from "@/lib/restaurant-session-shared";
 import { useToast } from "@/lib/toast";
 import type { RestaurantDto } from "@/lib/types";
 

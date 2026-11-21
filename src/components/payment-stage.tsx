@@ -1,9 +1,10 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { AnimatePresence, motion } from "framer-motion";
 import {
+  Banknote,
   Check,
   CreditCard,
   LoaderCircle,
@@ -32,6 +33,7 @@ export function PaymentStage({
   onPaid,
   onViewOrder,
   onAbandon,
+  onSwitchToCash,
   onClose,
 }: {
   target: PaymentTarget | null;
@@ -45,9 +47,22 @@ export function PaymentStage({
   onViewOrder: () => void;
   /** Customer chose not to finish; the order stays awaiting payment. */
   onAbandon: () => void;
+  /** Switch this failed/pending online order to cash-on-delivery. */
+  onSwitchToCash?: () => void | Promise<void>;
   onClose: () => void;
 }) {
   const { phase, error, busy, begin, reopen } = useOrderPayment(target);
+  const [switching, setSwitching] = useState(false);
+
+  const handleSwitchToCash = async () => {
+    if (!onSwitchToCash || switching) return;
+    setSwitching(true);
+    try {
+      await onSwitchToCash();
+    } finally {
+      setSwitching(false);
+    }
+  };
 
   // Kick off checkout as soon as an unpaid order is handed to the stage.
   useEffect(() => {
@@ -144,6 +159,17 @@ export function PaymentStage({
                   <StageButton primary onClick={() => { reopen(); void begin(); }}>
                     Resume payment
                   </StageButton>
+                )}
+                {(phase === "failed" || phase === "cancelled") && onSwitchToCash && (
+                  <button
+                    type="button"
+                    onClick={() => void handleSwitchToCash()}
+                    disabled={switching}
+                    className="press flex w-full items-center justify-center gap-2 rounded-2xl border border-mint-400/30 bg-mint-500/10 py-3.5 text-sm font-bold text-mint-300 transition-all duration-200 hover:bg-mint-500/15 disabled:opacity-50"
+                  >
+                    {switching ? <LoaderCircle className="size-4 animate-spin-slow" /> : <Banknote className="size-4" />}
+                    {switching ? "Switching to cash…" : "Switch to cash on delivery"}
+                  </button>
                 )}
                 {(phase === "failed" || phase === "cancelled" || phase === "confirming") && (
                   <StageButton onClick={onAbandon}>Keep order without paying</StageButton>

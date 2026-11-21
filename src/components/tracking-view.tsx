@@ -6,23 +6,26 @@ import {
   BadgeCheck,
   Ban,
   Bike,
+  Check,
   ChefHat,
+  Copy,
   House,
+  LifeBuoy,
   MapPin,
   PartyPopper,
   Phone,
   ReceiptText,
   RefreshCcw,
   Star,
-  TriangleAlert,
   Store,
+  TriangleAlert,
   X,
   XCircle,
   type LucideIcon,
 } from "lucide-react";
 import { RollingNumber } from "@/components/motion-primitives";
 import { orderItemLineTotalCents } from "@/db/schema";
-import { cn, formatINR } from "@/lib/domain";
+import { cn, formatDateTime, formatINR } from "@/lib/domain";
 import { fetchOrderByTrackingToken, fetchPublicOrder, useDocumentVisible, useOrderPoll } from "@/lib/order-access";
 import { MAX_REVIEW_CHARS } from "@/lib/order-feedback";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
@@ -76,25 +79,38 @@ export function TrackingView({
   const [reviewBusy, setReviewBusy] = useState(false);
   const [reviewError, setReviewError] = useState("");
   const [reviewNotice, setReviewNotice] = useState("");
+  const [codeCopied, setCodeCopied] = useState(false);
+
+  const copyOrderCode = useCallback(async () => {
+    try {
+      await navigator.clipboard.writeText(order.code);
+      setCodeCopied(true);
+      window.setTimeout(() => setCodeCopied(false), 1500);
+    } catch {
+      // Clipboard may be unavailable; the code remains visible for manual copy.
+    }
+  }, [order.code]);
 
   /* Live polling — the engine behind status updates.
      Stops on its own once the order reaches a terminal stage, and while the tab
      is hidden; the interval is the only thing that had to keep running before. */
   const pollLoad = useCallback(
-    () => trackingToken ? fetchOrderByTrackingToken(trackingToken) : fetchPublicOrder(order.code, token ?? ""),
+    () => trackingToken ? fetchOrderByTrackingToken(trackingToken) : fetchPublicOrder(order.code, token),
     [order.code, token, trackingToken],
   );
   const pollApply = useCallback((found: PublicOrder) => setOrder(found), []);
   useOrderPoll({ load: pollLoad, onData: pollApply, intervalMs: 4000, live: isOrderLive(order) });
 
   async function handleCancel() {
-    if (!token) return;
     setCancel({ kind: "sending" });
     try {
+      const headers: Record<string, string> = {};
+      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${order.code}/cancel`, {
         method: "POST",
-        headers: { "x-order-token": token },
+        headers,
         cache: "no-store",
+        credentials: "same-origin",
       });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
@@ -127,7 +143,6 @@ export function TrackingView({
 
   async function submitReview(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!token) return;
     if (!reviewRating) {
       setReviewError("Choose a star rating first, then send your review.");
       return;
@@ -136,11 +151,14 @@ export function TrackingView({
     setReviewError("");
     setReviewNotice("");
     try {
+      const headers: Record<string, string> = { "Content-Type": "application/json" };
+      if (token) headers["x-order-token"] = token;
       const res = await fetch(`/api/orders/${encodeURIComponent(order.code)}/review`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", "x-order-token": token },
+        headers,
         body: JSON.stringify({ rating: reviewRating, review: reviewText }),
         cache: "no-store",
+        credentials: "same-origin",
       });
       const data = (await res.json().catch(() => null)) as {
         ok?: boolean;
@@ -166,6 +184,7 @@ export function TrackingView({
   }
 
   const s = order.status;
+  const isPickup = order.fulfilment === "pickup";
   const etaMin = Math.max(1, Math.ceil(s.etaSeconds / 60));
   const settled = s.stageKey === "cancelled" || s.stageKey === "rejected";
   /**
@@ -202,9 +221,15 @@ export function TrackingView({
           </p>
           <h1 className="mt-1.5 font-display text-3xl font-bold tracking-tight text-cream-50 md:text-4xl">
             {s.delivered ? (
-              <>
-                Delivered<span className="text-gradient">.</span> Enjoy
-              </>
+              isPickup ? (
+                <>
+                  Collected<span className="text-gradient">.</span> Enjoy
+                </>
+              ) : (
+                <>
+                  Delivered<span className="text-gradient">.</span> Enjoy
+                </>
+              )
             ) : neverDelivered ? (
               <>
                 We couldn&rsquo;t reach{" "}
@@ -218,6 +243,19 @@ export function TrackingView({
               <>
                 Order rejected<span className="text-gradient">.</span>
               </>
+            ) : isPickup ? (
+              s.etaSeconds > 0 ? (
+                <>
+                  Ready in{" "}
+                  <span className="text-gradient-flow">
+                    <RollingNumber value={etaMin} className="font-display" /> min
+                  </span>
+                </>
+              ) : (
+                <>
+                  Ready for pickup<span className="text-gradient">.</span>
+                </>
+              )
             ) : (
               <>
                 Arriving in{" "}
@@ -227,18 +265,40 @@ export function TrackingView({
               </>
             )}
           </h1>
-          <p className="mt-1 text-sm text-cream-500">
-            <span className="font-mono font-semibold uppercase text-cream-300">{order.code}</span> ·{" "}
-            {order.restaurantName}
+          <p className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-cream-500">
+            <button
+              type="button"
+              onClick={() => void copyOrderCode()}
+              className="inline-flex items-center gap-1.5 rounded-md font-mono font-semibold uppercase text-cream-300 transition-colors hover:text-cream-100"
+              aria-label={codeCopied ? "Order code copied" : `Copy order code ${order.code}`}
+              title={codeCopied ? "Copied" : "Copy order code"}
+            >
+              {order.code}
+              {codeCopied ? <Check className="size-3.5 text-mint-400" /> : <Copy className="size-3.5 text-cream-500" />}
+            </button>
+            <span>· {order.restaurantName}</span>
           </p>
         </div>
 
-        {inFlight && (
+        {(inFlight || s.statusUpdatedAt) && (
           <div className="glass rounded-2xl px-4 py-3">
-            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">Current status</p>
-            <p key={s.stageKey} className="animate-jelly mt-0.5 font-display text-base font-bold text-ember-300">
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">
+              {inFlight ? "Current status" : "Last update"}
+            </p>
+            <p
+              key={s.stageKey}
+              className={cn(
+                "mt-0.5 font-display text-base font-bold",
+                inFlight ? "animate-jelly text-ember-300" : "text-cream-200",
+              )}
+            >
               {s.stageLabel}
             </p>
+            {s.statusUpdatedAt && (
+              <p className="mt-0.5 text-[11px] text-cream-500">
+                Updated {formatDateTime(s.statusUpdatedAt)}
+              </p>
+            )}
           </div>
         )}
       </header>
@@ -278,8 +338,9 @@ export function TrackingView({
 
       <div className="mt-7 grid gap-6 lg:grid-cols-[1.15fr_1fr]">
         {/* courier map — hidden when the order never reached the restaurant, since
-            an animated rider would be a fiction */}
-        {!neverDelivered && <CourierMap order={order} />}
+            an animated rider would be a fiction; pickup orders show collection
+            details instead of a rider-to-home route */}
+        {!neverDelivered && (isPickup ? <PickupPanel order={order} /> : <CourierMap order={order} />)}
 
         {/* timeline + summary */}
         <div className="space-y-6">
@@ -347,9 +408,9 @@ export function TrackingView({
 
           {/* cancel order — not offered once the order never reached the kitchen,
               where there is nothing to cancel and a refund is already under way.
-              Also not offered on a shared tracking link: cancelling needs the
-              per-browser HMAC token, not the more widely-shared tracking URL. */}
-          {inFlight && cancel.kind !== "cancelled" && token && (
+              Shared tracking-link views are read-only unless this browser can prove
+              ownership (token/session-backed owner flows can still manage). */}
+          {inFlight && cancel.kind !== "cancelled" && (!trackingToken || token) && (
             <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
           )}
           {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (
@@ -426,9 +487,10 @@ export function TrackingView({
                 >
                   <RefreshCcw className="size-4" /> Reorder
                 </Link>
-                {/* A shared tracking link is read-only: only the browser that
-                    placed the order holds the token the review API accepts. */}
-                {token && (
+                {/* Owner actions are available on owner-authorized views (token or
+                    bound session). Shared tracking links stay read-only unless this
+                    browser can prove ownership. */}
+                {(!trackingToken || token) && (
                   <button
                     type="button"
                     onClick={openReview}
@@ -492,11 +554,48 @@ export function TrackingView({
               </div>
             </dl>
             <div className="mt-4 flex items-start gap-2 rounded-2xl bg-white/[0.04] px-3.5 py-3 text-xs text-cream-400">
-              <House className="mt-0.5 size-3.5 shrink-0 text-ember-400" />
-              <span>
-                <span className="font-semibold text-cream-200">{order.addressLabel}</span> — {order.addressText}
-              </span>
+              {isPickup ? (
+                <>
+                  <Store className="mt-0.5 size-3.5 shrink-0 text-ember-400" />
+                  <span>
+                    <span className="font-semibold text-cream-200">Collect from {order.restaurantName}</span>
+                    {order.restaurantLocality ? ` — ${order.restaurantLocality}` : ""}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <House className="mt-0.5 size-3.5 shrink-0 text-ember-400" />
+                  <span>
+                    <span className="font-semibold text-cream-200">{order.addressLabel}</span> — {order.addressText}
+                  </span>
+                </>
+              )}
             </div>
+          </div>
+
+          <div className="glass rounded-3xl p-5">
+            <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+              <LifeBuoy className="size-4.5 text-ember-400" /> Need help with this order?
+            </h2>
+            <p className="mt-1.5 text-sm leading-relaxed text-cream-400">
+              For delivery issues, payment questions, or refunds, contact support and include your order code{" "}
+              <button
+                type="button"
+                onClick={() => void copyOrderCode()}
+                className="inline-flex items-center gap-1 font-mono font-semibold text-cream-200 underline decoration-white/20 underline-offset-2 transition-colors hover:text-cream-50"
+                aria-label={codeCopied ? "Order code copied" : `Copy order code ${order.code}`}
+              >
+                {order.code}
+                {codeCopied ? <Check className="size-3 text-mint-400" /> : <Copy className="size-3 text-cream-500" />}
+              </button>
+              .
+            </p>
+            <Link
+              href={`/contact?order=${encodeURIComponent(order.code)}`}
+              className="press mt-3 inline-flex items-center rounded-xl bg-white/8 px-4 py-2.5 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/12"
+            >
+              Contact support
+            </Link>
           </div>
         </div>
       </div>
@@ -693,6 +792,69 @@ function CancelCard({
         </button>
       )}
       {disabled && reason && <p className="mt-3 text-xs text-cream-600">{reason}</p>}
+    </div>
+  );
+}
+
+/* ------------------------------ pickup panel ------------------------------ */
+
+function PickupPanel({ order }: { order: PublicOrder }) {
+  const ready = order.status.stageKey === "ready";
+  const collected = order.status.stageKey === "collected" || order.status.delivered;
+  return (
+    <div className="glass-strong relative overflow-hidden rounded-[28px] p-6 lg:min-h-[560px]">
+      <div className="pointer-events-none absolute inset-0 bg-[radial-gradient(900px_360px_at_0%_0%,rgba(255,122,89,0.14),transparent_60%),radial-gradient(700px_320px_at_100%_100%,rgba(79,227,172,0.10),transparent_55%)]" />
+      <div className="relative flex h-full flex-col">
+        <p className="flex items-center gap-2 text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">
+          <Store className="size-3.5" /> Pickup order
+        </p>
+        <h2 className="mt-3 font-display text-2xl font-bold tracking-tight text-cream-50 md:text-3xl">
+          {collected ? "Order collected" : ready ? "Ready for pickup" : "Collect from the restaurant"}
+        </h2>
+        <p className="mt-2 max-w-md text-sm leading-relaxed text-cream-400">
+          {collected
+            ? "Thanks for picking up your order."
+            : ready
+              ? "Your order is ready. Show your order code at the counter to collect it."
+              : "We’ll let you know here when it’s ready to collect."}
+        </p>
+
+        <div className="mt-6 space-y-3">
+          <div className="glass rounded-2xl p-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">Collect from</p>
+            <p className="mt-1 font-display text-base font-bold text-cream-50">{order.restaurantName}</p>
+            {order.restaurantLocality && (
+              <p className="mt-0.5 flex items-center gap-1.5 text-sm text-cream-400">
+                <MapPin className="size-3.5 text-ember-400" /> {order.restaurantLocality}
+              </p>
+            )}
+          </div>
+          <div className="glass rounded-2xl p-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.16em] text-cream-500">Order code</p>
+            <p className="mt-1 font-mono text-lg font-bold uppercase tracking-wide text-cream-50">{order.code}</p>
+            <p className="mt-1 text-xs text-cream-500">Show this code at the counter when you collect.</p>
+          </div>
+        </div>
+
+        {!collected && (
+          <div className="mt-auto pt-6">
+            <div className="flex items-center justify-between rounded-2xl bg-black/35 px-4 py-3 backdrop-blur-md">
+              <div>
+                <p className="text-sm font-bold text-cream-50">{order.status.stageLabel}</p>
+                <p className="text-[11px] text-cream-500">{order.status.stageSub}</p>
+              </div>
+              {isOrderLive(order) && order.status.etaSeconds > 0 && (
+                <div className="text-right">
+                  <p className="text-[10px] font-bold uppercase tracking-[0.14em] text-cream-500">ETA</p>
+                  <p className="font-display text-lg font-bold leading-none text-ember-300">
+                    {Math.max(1, Math.ceil(order.status.etaSeconds / 60))}m
+                  </p>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

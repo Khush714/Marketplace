@@ -32,31 +32,17 @@
 
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
 
-/** Cookie carrying the session token. HttpOnly, so script cannot read it. */
-export const RESTAURANT_SESSION_COOKIE = "crave_restaurant_session";
+import {
+  RESTAURANT_CSRF_COOKIE,
+  RESTAURANT_CSRF_HEADER,
+  RESTAURANT_SESSION_COOKIE,
+} from "@/lib/restaurant-session-shared";
 
-/**
- * Cookie carrying the paired CSRF token. Deliberately NOT HttpOnly.
- *
- * This is the one place a CSRF token has to be readable by script, and the reason
- * is that the server stores only its hash — a hash cannot be given back, so a
- * token that existed solely in a response body would have to be re-minted on
- * every reload, and rotating it on each load invalidates the token another open
- * tab is still holding.
- *
- * Reading it costs nothing, because reading it is not what makes an attack work.
- * A cross-origin page cannot read this cookie at all, and cannot set the
- * `x-csrf-token` header without passing a preflight. What the readability does buy
- * is that a token captured here cannot be lifted out of the browser by script and
- * replayed later from somewhere else — which is exactly what the HttpOnly session
- * cookie prevents for the credential itself. Two cookies, two jobs: one the page
- * must be able to read to prove intent, one it must never be able to read because
- * reading it *is* the attack.
- */
-export const RESTAURANT_CSRF_COOKIE = "crave_restaurant_csrf";
-
-/** Header carrying the paired CSRF token on state-changing partner requests. */
-export const RESTAURANT_CSRF_HEADER = "x-csrf-token";
+export {
+  RESTAURANT_CSRF_COOKIE,
+  RESTAURANT_CSRF_HEADER,
+  RESTAURANT_SESSION_COOKIE,
+};
 
 /**
  * How long a session lives.

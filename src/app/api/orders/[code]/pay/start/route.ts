@@ -1,7 +1,7 @@
 import { getOrderByCode, recordIntegrationAudit } from "@/db/queries";
 import { bindProviderOrderId, getActivePaymentByOrder, isOnlinePayment } from "@/db/payments";
 import { createProviderOrder, providerMode, razorpayKeyId } from "@/integrations/payments/provider-session";
-import { readOrderToken, verifyOrderToken } from "@/lib/order-token";
+import { orderAuthorized } from "@/lib/order-authorized";
 import { guardWrite } from "@/lib/abuse";
 
 export const dynamic = "force-dynamic";
@@ -22,7 +22,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
   if (blocked) return blocked;
 
   const { code } = await ctx.params;
-  if (!verifyOrderToken(code, readOrderToken(req.headers))) {
+  if (!(await orderAuthorized(req, code))) {
     return Response.json({ error: "Not found" }, { status: 404 });
   }
 

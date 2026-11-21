@@ -319,7 +319,13 @@ test("POST /api/orders validates the body and passes the rebuilt input to create
   const source = readSource("src/app/api/orders/route.ts");
 
   assert.match(source, /validateCheckout\(parsed\.body\)/);
-  assert.match(source, /createOrder\(validated\.request\)/);
+  // The rebuilt request is forwarded, with only server-resolved account
+  // attribution added (never raw/client-supplied identity or pricing).
+  assert.match(source, /createOrder\(\{\s*\.\.\.validated\.request,/);
+  assert.match(source, /customerAccountId:\s*accountSession\.account\.id/);
+  // Order placement requires an authenticated customer account (server-resolved).
+  assert.match(source, /ACCOUNT_REQUIRED/);
+  assert.match(source, /resolveAccountSession\(req\)/);
   assert.doesNotMatch(source, /createOrder\(body/);
   // The old "parse, cast and forward" path — and any read of a client-priced
   // field off the raw body — must be gone.

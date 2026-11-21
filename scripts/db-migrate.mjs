@@ -132,7 +132,19 @@ async function main() {
   }
 
   const migrations = loadMigrations();
-  const client = new Client({ connectionString: url });
+  function needsSsl(u) {
+    try {
+      const host = new URL(u).hostname.toLowerCase();
+      return host.endsWith(".supabase.co") || host.endsWith(".supabase.com");
+    } catch {
+      return false;
+    }
+  }
+
+  const client = new Client({
+    connectionString: url,
+    ...(needsSsl(url) ? { ssl: { rejectUnauthorized: false } } : {}),
+  });
   await client.connect();
 
   try {

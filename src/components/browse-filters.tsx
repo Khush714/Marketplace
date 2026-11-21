@@ -43,7 +43,7 @@ export function BrowseFilters({ sp }: { sp: Sp }) {
   return (
     <>
       {/* sticky filter bar */}
-      <div className="sticky top-[108px] z-30 -mx-4 bg-void/80 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:px-0">
+      <div className="sticky top-[100px] z-30 -mx-4 bg-void/80 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:px-0">
         <div className="no-scrollbar mask-fade-x flex items-center gap-2 overflow-x-auto md:mask-none">
           {/* mobile filter button */}
           <button
@@ -73,7 +73,7 @@ export function BrowseFilters({ sp }: { sp: Sp }) {
             ))}
           </div>
 
-          <div className="hidden md:block">
+          <div className="flex items-center gap-2 md:contents">
             <ToggleChips sp={sp} goto={goto} />
           </div>
 

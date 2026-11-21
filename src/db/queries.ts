@@ -2930,6 +2930,11 @@ export interface CreateOrderInput {
    * store-level routing; the record's branch/outlet are persisted at delivery.
    */
   outletId?: string;
+  /**
+   * Explicit/proven account link for an authenticated checkout. Set only by the
+   * server after resolving a live account session; never trusted from the client.
+   */
+  customerAccountId?: number | null;
 }
 
 /** Linked modifier group + its available options, resolved per menu item. */
@@ -3367,6 +3372,7 @@ export async function createOrder(
         posConnected,
         merchantManaged,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),
+        ...(input.customerAccountId ? { customerAccountId: input.customerAccountId } : {}),
         })
         .returning();
 

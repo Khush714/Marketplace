@@ -35,7 +35,7 @@ export type PayPhase =
 
 export interface PaymentTarget {
   code: string;
-  token: string;
+  token?: string | null;
   reference: string;
   providerOrderId: string | null;
   keyId: string | null;
@@ -120,14 +120,16 @@ interface StartResponse {
 }
 
 async function callOrder<T>(target: PaymentTarget, path: string, init?: RequestInit): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((init?.headers as Record<string, string> | undefined) ?? {}),
+  };
+  if (target.token) headers["x-order-token"] = target.token;
   const res = await fetch(path, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      "x-order-token": target.token,
-      ...(init?.headers ?? {}),
-    },
+    headers,
     cache: "no-store",
+    credentials: "same-origin",
   });
   const data = (await res.json().catch(() => ({}))) as T & { error?: string };
   return data;

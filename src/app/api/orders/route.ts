@@ -1,5 +1,5 @@
 import { NextRequest } from "next/server";
-import { createOrder, recordIntegrationAudit } from "@/db/queries";
+import { createOrder, getOrderByCode, recordIntegrationAudit } from "@/db/queries";
 import { bindProviderOrderId, createPaymentRecord, isOnlinePayment } from "@/db/payments";
 import { validateCheckout, type CheckoutResult } from "@/lib/order-input-core";
 import { enqueuePosDelivery } from "@/integrations/pos/order-bridge";
@@ -10,7 +10,11 @@ import {
   type ProviderOrderResult,
 } from "@/integrations/payments/provider-session";
 import { orderTokensAvailable, signOrderToken } from "@/lib/order-token";
-import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { guardRead, guardWrite, readJsonBody } from "@/lib/abuse";
+import { resolveCustomerSession } from "@/lib/customer-session";
+import { toPublicOrder, type PublicOrder } from "@/lib/order-public";
+import { resolveAccountSession } from "@/lib/security/customer-account-session";
+import { listOrdersByCustomerAccountId } from "@/db/customer-accounts";
 
 export const dynamic = "force-dynamic";
 
@@ -96,7 +100,26 @@ async function checkout(req: NextRequest) {
     );
   }
 
-  const result = await createOrder(validated.request);
+  // Authenticated customer account required for placing orders.
+  // Guest browsing/cart remain available; order placement requires sign-in.
+  const accountSession = await resolveAccountSession(req);
+  if (!accountSession) {
+    return Response.json(
+      {
+        ok: false,
+        error: "Please sign in or create an account to place your order.",
+        code: "ACCOUNT_REQUIRED",
+      },
+      { status: 401 },
+    );
+  }
+
+  // Explicit/proven account link: attribute the new order to the signed-in account
+  // (server-resolved, never client-trusted).
+  const result = await createOrder({
+    ...validated.request,
+    customerAccountId: accountSession.account.id,
+  });
   if (!result.ok) {
     // Phase 7 — deterministic outlet errors surface as 422 (client sent a bad
     // branch/outlet claim), everything else stays a client 400.
@@ -168,4 +191,42 @@ async function checkout(req: NextRequest) {
     },
     { status: 201 },
   );
+}
+
+const MAX_HISTORY_CODES = 30;
+
+/**
+ * Session-backed order history for this browser. Reads the codes bound to the
+ * live anonymous customer session (set via POST /api/orders/attach) and returns
+ * only the public projection. Missing or expired sessions yield an empty list,
+ * never an error signal, and no codes beyond the session's bound set are read.
+ */
+export async function GET(req: Request) {
+  const throttled = guardRead(req, "orderLookup");
+  if (throttled) return throttled;
+
+  const accountSession = await resolveAccountSession(req);
+
+  // Signed-in: account-linked orders only. Device/anonymous session orders are
+  // not mixed in to prevent cross-customer leakage on shared browsers.
+  if (accountSession) {
+    const linked = await listOrdersByCustomerAccountId(accountSession.account.id, MAX_HISTORY_CODES);
+    const loaded = await Promise.all(linked.map((row) => getOrderByCode(row.code)));
+    const orders = loaded
+      .filter((o): o is NonNullable<typeof o> => Boolean(o))
+      .map((o) => toPublicOrder(o))
+      .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    return Response.json({ orders: orders.slice(0, MAX_HISTORY_CODES) });
+  }
+
+  // Guest/legacy: session-backed history for this browser only.
+  const session = await resolveCustomerSession(req);
+  if (!session?.orderCodes.length) return Response.json({ orders: [] });
+  const codes = session.orderCodes.slice(0, MAX_HISTORY_CODES);
+  const loaded = await Promise.all(codes.map((code) => getOrderByCode(code)));
+  const orders = loaded
+    .filter((o): o is NonNullable<typeof o> => Boolean(o))
+    .map((o) => toPublicOrder(o))
+    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+  return Response.json({ orders: orders.slice(0, MAX_HISTORY_CODES) });
 }
