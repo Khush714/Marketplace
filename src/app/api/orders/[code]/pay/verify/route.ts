@@ -12,6 +12,7 @@ import {
   verifyCheckoutSignature,
 } from "@/integrations/payments/provider-session";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { recordOrderNotification } from "@/lib/customer-notifications";
 import { orderAuthorized } from "@/lib/order-authorized";
 import { isAuthorizedAwaitingCapture } from "@/lib/payment-security-core";
 
@@ -205,7 +206,11 @@ async function afterApply(
   applied: Awaited<ReturnType<typeof applyProviderPaymentEvent>>,
   payment: { id: number; orderId: number; reference: string; externalOrderId: string; restaurantId: number; providerPaymentId: string | null; amountCents: number; currency: string; method: string | null },
 ): Promise<void> {
-  if (applied.outcome !== "applied" || !applied.deliverToPos) return;
+  if (applied.outcome !== "applied") return;
+  // Same dedupe key the webhook uses, so a checkout verification followed by a
+  // capture webhook produces one customer-visible payment message.
+  await recordOrderNotification({ orderId: applied.orderId, kind: "payment", detail: applied.payment.status });
+  if (!applied.deliverToPos) return;
   const p = applied.payment;
   await coordinateCaptureDelivery({
     id: p.id,

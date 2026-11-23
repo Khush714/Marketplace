@@ -8,6 +8,7 @@ import {
 import { captureProviderPayment } from "@/integrations/payments/provider-session";
 import { enqueuePaymentDelivery, coordinateCaptureDelivery } from "@/integrations/pos/payment-bridge";
 import { readRawBodyCapped } from "@/lib/abuse";
+import { recordOrderNotification } from "@/lib/customer-notifications";
 import { emitSecurityEvent } from "@/lib/security/security-events";
 
 export const dynamic = "force-dynamic";
@@ -247,6 +248,11 @@ export async function POST(req: NextRequest): Promise<Response> {
       event_id: eventId,
     });
   }
+
+  // Applied — the money event is durable; tell the device inbox before doing
+  // any POS delivery work so a bridge hiccup cannot cost the customer their
+  // payment confirmation. Replays are already filtered above.
+  await recordOrderNotification({ orderId: result.orderId, kind: "payment", detail: result.payment.status });
 
   // Applied — push money events to the POS through the bridge.
   if (result.deliverToPos && applyEventType === "payment.captured") {

@@ -180,6 +180,84 @@ export async function getOrCreateVerifiedAccount(phoneE164: string): Promise<Cus
   return existing;
 }
 
+/* ---------------------------- google accounts ------------------------------- */
+
+/**
+ * Data-layer validation for Google's stable subject id. Deliberately local to
+ * this module so the persistence layer never imports the OAuth integration.
+ */
+function normalizeGoogleSub(raw: unknown): string {
+  const sub = String(raw ?? "").trim();
+  if (!/^[A-Za-z0-9_-]{6,255}$/.test(sub)) throw new Error("INVALID_GOOGLE_SUB");
+  return sub;
+}
+
+function normalizeGoogleEmail(raw: unknown): string {
+  const email = String(raw ?? "").trim().toLowerCase();
+  if (!email || email.length > 254) throw new Error("INVALID_GOOGLE_EMAIL");
+  return email;
+}
+
+export async function getAccountByGoogleSub(googleSub: string): Promise<CustomerAccountRow | null> {
+  const sub = normalizeGoogleSub(googleSub);
+  const [row] = await db
+    .select()
+    .from(customerAccounts)
+    .where(eq(customerAccounts.googleSub, sub))
+    .limit(1);
+  return row ?? null;
+}
+
+/**
+ * Find or create an account for a verified Google identity. Google-only rows
+ * carry no phone and no OTP verification timestamp; phone/OTP rows are never
+ * touched here because the lookup and the guarded update both require a
+ * matching google_sub. Never synthesizes a phone number from an email.
+ */
+export async function getOrCreateGoogleAccount(input: {
+  googleSub: string;
+  email: string;
+  name: string;
+}): Promise<CustomerAccountRow> {
+  const sub = normalizeGoogleSub(input.googleSub);
+  const email = normalizeGoogleEmail(input.email);
+  const name = normalizeAccountName(input.name);
+  const now = new Date();
+
+  const [inserted] = await db
+    .insert(customerAccounts)
+    .values({
+      phoneE164: null,
+      phoneVerifiedAt: null,
+      email,
+      googleSub: sub,
+      name,
+      status: "active",
+      avatar: "",
+      createdAt: now,
+      updatedAt: now,
+    })
+    .onConflictDoNothing({ target: customerAccounts.googleSub })
+    .returning();
+  if (inserted) return inserted;
+
+  const existing = await getAccountByGoogleSub(sub);
+  if (!existing) throw new Error("ACCOUNT_CREATE_RACE");
+  if (existing.email === email && existing.name === name) return existing;
+
+  const [updated] = await db
+    .update(customerAccounts)
+    .set({ email, name, updatedAt: now })
+    .where(and(eq(customerAccounts.id, existing.id), eq(customerAccounts.googleSub, sub)))
+    .returning();
+  if (updated) return updated;
+
+  // Lost an update race: return the row that won rather than a stale snapshot.
+  const fresh = await getAccountByGoogleSub(sub);
+  if (!fresh) throw new Error("ACCOUNT_CREATE_RACE");
+  return fresh;
+}
+
 export async function updateAccountProfile(
   accountId: number,
   patch: { name?: string; avatar?: string },

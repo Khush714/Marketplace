@@ -12,6 +12,15 @@ import {
   type ReactNode,
 } from "react";
 import { useConsent } from "@/lib/consent";
+import {
+  RECENT_ITEMS_LIMIT,
+  normalizeRecentDish,
+  normalizeRecentRestaurant,
+  upsertRecentDish,
+  upsertRecentRestaurant,
+  type RecentDish,
+  type RecentRestaurant,
+} from "@/lib/recent-items";
 
 export interface Address {
   id: string;
@@ -41,6 +50,8 @@ interface ProfileState {
   favorites: string[]; // restaurant slugs
   orders: StoredOrder[]; // most recent first
   recentSearches: string[];
+  recentDishes: RecentDish[];
+  recentRestaurants: RecentRestaurant[];
 }
 
 /* ------------------------------------------------------------------ */
@@ -48,7 +59,7 @@ interface ProfileState {
 /* ------------------------------------------------------------------ */
 
 /*
- * Phase 8 — why this file publishes five contexts instead of one.
+ * Phase 8 — why this file publishes separate contexts instead of one.
  *
  * Everything below is a single `ProfileState` object on purpose: it is one
  * localStorage record, and splitting the *state* would mean several writes that
@@ -107,10 +118,20 @@ interface SearchHistoryValue {
   clearRecentSearches: () => void;
 }
 
+interface RecentItemsValue {
+  recentDishes: RecentDish[];
+  recentRestaurants: RecentRestaurant[];
+  rememberDish: (dish: RecentDish) => void;
+  rememberRestaurant: (restaurant: RecentRestaurant) => void;
+  clearRecentDishes: () => void;
+  clearRecentRestaurants: () => void;
+  clearRecents: () => void;
+}
+
 interface ProfilePersonalisationValue {
   /**
-   * Drops everything the "favourites and recent searches" consent category
-   * covers. Called when a visitor switches that category off — see
+   * Drops everything the "favourites and recents" consent category covers.
+   * Called when a visitor switches that category off — see
    * `src/lib/consent.tsx`. Identity, addresses and order codes are deliberately
    * untouched: they are in the essential category.
    */
@@ -122,6 +143,7 @@ type ProfileContextValue = ProfileReadyValue &
   FavoritesValue &
   ProfileOrdersValue &
   SearchHistoryValue &
+  RecentItemsValue &
   ProfilePersonalisationValue;
 
 const KEY = "crave.profile.v1";
@@ -138,6 +160,8 @@ const EMPTY: ProfileState = {
   favorites: [],
   orders: [],
   recentSearches: [],
+  recentDishes: [],
+  recentRestaurants: [],
 };
 
 const ProfileReadyContext = createContext<ProfileReadyValue | null>(null);
@@ -145,12 +169,13 @@ const ProfileIdentityContext = createContext<ProfileIdentityValue | null>(null);
 const FavoritesContext = createContext<FavoritesValue | null>(null);
 const ProfileOrdersContext = createContext<ProfileOrdersValue | null>(null);
 const SearchHistoryContext = createContext<SearchHistoryValue | null>(null);
+const RecentItemsContext = createContext<RecentItemsValue | null>(null);
 const ProfilePersonalisationContext = createContext<ProfilePersonalisationValue | null>(null);
 
 export function ProfileProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<ProfileState>(EMPTY);
   const [hydrated, setHydrated] = useState(false);
-  // One read, not a subscription: this only ever gates the two optional writes
+  // One read, not a subscription: this only ever gates the optional writes
   // below, and the banner that changes it lives above this provider.
   const { personalisationAllowed } = useConsent();
 
@@ -167,6 +192,26 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
           // (a code alone is not a credential), so they are dropped instead of
           // being shown as permanently unloadable rows.
           orders: Array.isArray(parsed.orders) ? parsed.orders.filter((o) => o?.code && o?.token) : [],
+          // The profile blob is user-writable. Keep only well-shaped recents so
+          // a hand-edited record cannot render a bad image or an oversized list.
+          recentSearches: Array.isArray(parsed.recentSearches)
+            ? parsed.recentSearches
+                .map((s: unknown) => (typeof s === "string" ? s.trim() : ""))
+                .filter(Boolean)
+                .slice(0, 6)
+            : [],
+          recentDishes: Array.isArray(parsed.recentDishes)
+            ? parsed.recentDishes
+                .map(normalizeRecentDish)
+                .filter((d): d is RecentDish => Boolean(d))
+                .slice(0, RECENT_ITEMS_LIMIT)
+            : [],
+          recentRestaurants: Array.isArray(parsed.recentRestaurants)
+            ? parsed.recentRestaurants
+                .map(normalizeRecentRestaurant)
+                .filter((r): r is RecentRestaurant => Boolean(r))
+                .slice(0, RECENT_ITEMS_LIMIT)
+            : [],
         });
       }
     } catch {
@@ -243,6 +288,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
       addresses: EMPTY.addresses,
       favorites: [],
       recentSearches: [],
+      recentDishes: [],
+      recentRestaurants: [],
     }));
   }, []);
 
@@ -300,11 +347,54 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, recentSearches: [] }));
   }, []);
 
+  // Same consent gate as recent terms: opening a dish or a restaurant records a
+  // recents entry on every navigation, so an opt-out must stop the write itself.
+  const rememberDish = useCallback(
+    (dish: RecentDish) => {
+      if (!personalisationAllowed) return;
+      setState((s) => ({ ...s, recentDishes: upsertRecentDish(s.recentDishes, dish) }));
+    },
+    [personalisationAllowed],
+  );
+
+  const rememberRestaurant = useCallback(
+    (restaurant: RecentRestaurant) => {
+      if (!personalisationAllowed) return;
+      setState((s) => ({ ...s, recentRestaurants: upsertRecentRestaurant(s.recentRestaurants, restaurant) }));
+    },
+    [personalisationAllowed],
+  );
+
+  const clearRecentDishes = useCallback(() => {
+    setState((s) => ({ ...s, recentDishes: [] }));
+  }, []);
+
+  const clearRecentRestaurants = useCallback(() => {
+    setState((s) => ({ ...s, recentRestaurants: [] }));
+  }, []);
+
+  const clearRecents = useCallback(() => {
+    setState((s) =>
+      s.recentSearches.length === 0 && s.recentDishes.length === 0 && s.recentRestaurants.length === 0
+        ? s
+        : { ...s, recentSearches: [], recentDishes: [], recentRestaurants: [] },
+    );
+  }, []);
+
   const clearPersonalisation = useCallback(() => {
     setState((s) =>
-      s.favorites.length === 0 && s.recentSearches.length === 0
+      s.favorites.length === 0 &&
+      s.recentSearches.length === 0 &&
+      s.recentDishes.length === 0 &&
+      s.recentRestaurants.length === 0
         ? s
-        : { ...s, favorites: [], recentSearches: [] },
+        : {
+            ...s,
+            favorites: [],
+            recentSearches: [],
+            recentDishes: [],
+            recentRestaurants: [],
+          },
     );
   }, []);
 
@@ -333,6 +423,27 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     [state.recentSearches, pushRecentSearch, clearRecentSearches],
   );
 
+  const recentItemsValue = useMemo<RecentItemsValue>(
+    () => ({
+      recentDishes: state.recentDishes,
+      recentRestaurants: state.recentRestaurants,
+      rememberDish,
+      rememberRestaurant,
+      clearRecentDishes,
+      clearRecentRestaurants,
+      clearRecents,
+    }),
+    [
+      state.recentDishes,
+      state.recentRestaurants,
+      rememberDish,
+      rememberRestaurant,
+      clearRecentDishes,
+      clearRecentRestaurants,
+      clearRecents,
+    ],
+  );
+
   const personalisationValue = useMemo<ProfilePersonalisationValue>(
     () => ({ clearPersonalisation }),
     [clearPersonalisation],
@@ -344,9 +455,11 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         <FavoritesContext.Provider value={favoritesValue}>
           <ProfileOrdersContext.Provider value={ordersValue}>
             <SearchHistoryContext.Provider value={searchValue}>
-              <ProfilePersonalisationContext.Provider value={personalisationValue}>
-                {children}
-              </ProfilePersonalisationContext.Provider>
+              <RecentItemsContext.Provider value={recentItemsValue}>
+                <ProfilePersonalisationContext.Provider value={personalisationValue}>
+                  {children}
+                </ProfilePersonalisationContext.Provider>
+              </RecentItemsContext.Provider>
             </SearchHistoryContext.Provider>
           </ProfileOrdersContext.Provider>
         </FavoritesContext.Provider>
@@ -382,12 +495,20 @@ export function useSearchHistory(): SearchHistoryValue {
   return useSlice(SearchHistoryContext, "useSearchHistory");
 }
 
+export function useRecentItems(): RecentItemsValue {
+  return useSlice(RecentItemsContext, "useRecentItems");
+}
+
+/** Narrow hook for the consent surface, so recents writes do not re-render it. */
+export function useProfilePersonalisation(): ProfilePersonalisationValue {
+  return useSlice(ProfilePersonalisationContext, "useProfilePersonalisation");
+}
+
 /**
  * Everything, for screens that legitimately need the whole profile (the profile
- * page) and for the one place that has to act on consent across slices at once
- * (`ConsentSurface`). Subscribes to all five slices, so it re-renders on any
- * profile change — which is correct for those callers, but why leaf consumers
- * should prefer the narrow hooks above.
+ * page). Subscribes to every slice, so it re-renders on any profile change —
+ * which is correct for that caller, but why leaf consumers should prefer the
+ * narrow hooks above.
  */
 export function useProfile(): ProfileContextValue {
   return {
@@ -396,6 +517,7 @@ export function useProfile(): ProfileContextValue {
     ...useSlice(FavoritesContext, "useProfile"),
     ...useSlice(ProfileOrdersContext, "useProfile"),
     ...useSlice(SearchHistoryContext, "useProfile"),
+    ...useSlice(RecentItemsContext, "useProfile"),
     ...useSlice(ProfilePersonalisationContext, "useProfile"),
   };
 }

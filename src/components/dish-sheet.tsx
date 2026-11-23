@@ -2,6 +2,7 @@
 
 import Image from "next/image";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Check, Minus, Plus, X } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { cn, formatINR } from "@/lib/domain";
@@ -13,6 +14,7 @@ import {
   type CartModifier,
 } from "@/lib/cart";
 import { useToast } from "@/lib/toast";
+import { isMenuItemSoldOut } from "@/lib/menu-availability-core";
 import type { MenuItemDto, ModifierGroupDto } from "@/lib/types";
 
 /** groupId -> optionId -> quantity */
@@ -40,6 +42,7 @@ export function DishSheet({
 }) {
   const cart = useCart();
   const { toast } = useToast();
+  const soldOut = isMenuItemSoldOut(item);
   const groups = useMemo(() => item.modifierGroups ?? [], [item.modifierGroups]);
   const [sel, setSel] = useState<Selection>({});
   const panelRef = useRef<HTMLDivElement>(null);
@@ -111,7 +114,7 @@ export function DishSheet({
 
   const unsatisfied = groups.filter((g) => groupTotal(sel, g.id) < g.minSelect);
   const unitPrice = cartUnitPriceCents({ priceCents: item.priceCents, modifiers });
-  const canAdd = unsatisfied.length === 0;
+  const canAdd = !soldOut && unsatisfied.length === 0;
 
   const submit = (e: React.MouseEvent<HTMLButtonElement>) => {
     if (!canAdd) {
@@ -140,7 +143,9 @@ export function DishSheet({
     onClose();
   };
 
-  return (
+  // The route template keeps a transform applied, so a `fixed` sheet would be
+  // bound to that wrapper and stretch past the viewport. Render it on the body.
+  return createPortal(
     <div
       role="dialog"
       aria-modal="true"
@@ -334,13 +339,16 @@ export function DishSheet({
                 canAdd ? "hover:brightness-110" : "opacity-55",
               )}
             >
-              {canAdd
-                ? `Add to cart · ${formatINR(unitPrice)}`
-                : "Complete your selection"}
+              {soldOut
+                ? "Sold out"
+                : canAdd
+                  ? `Add to cart · ${formatINR(unitPrice)}`
+                  : "Complete your selection"}
             </button>
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

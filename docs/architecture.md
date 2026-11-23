@@ -319,3 +319,10 @@ overstate completeness. They are not introduced by this document.
 5. **Legal placeholders.** Seven published contact/entity fields in
    `lib/site-legal.ts` still need real values; `npm run verify:legal` fails until
    they are filled.
+6. **Merchant payout execution is external.** `lib/merchant-settlements.ts`
+   projects the Merchant feed from signature-verified captures, platform-fee
+   snapshots and refunds. There is no bank transfer ledger, UTR or payout
+   timestamp in this repo; a real payout provider and reconciliation workflow
+   must be configured outside Marketplace before merchant money is actually
+   moved. `.env.example` lists the customer-auth variables required for a public
+   checkout; production fails closed without them.

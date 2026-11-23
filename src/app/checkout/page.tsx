@@ -4,6 +4,7 @@ import Image from "next/image";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   ArrowLeft,
   ArrowRight,
@@ -25,12 +26,24 @@ import {
   X,
 } from "lucide-react";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
+import { ensureInboxToken } from "@/lib/customer-notification-copy";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { CustomerAuthDialog } from "@/components/customer-auth-dialog";
 import { PaymentStage } from "@/components/payment-stage";
 import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
 import { parseOfferCode, type PublicMerchantOffer } from "@/lib/merchant-offer";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
+import {
+  checkoutBillKey,
+  checkoutContactComplete,
+  checkoutIssue,
+  checkoutIssueMessage,
+  checkoutPhoneDigits,
+  previewForSelection,
+  type CheckoutBillLine,
+} from "@/lib/checkout-form-core";
+import { useMenuAvailability } from "@/lib/menu-availability";
+import { availableCartSubtotalCents, cartItemIsSoldOut } from "@/lib/menu-availability-core";
 import { useCustomerAccount } from "@/lib/customer-account";
 import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
@@ -46,12 +59,7 @@ import type { OrderDto } from "@/lib/types";
 type PayChoice = "online" | "cod";
 type PlaceState = "idle" | "loading" | "success" | "error";
 
-interface CartLinePayload {
-  menuItemId: number;
-  quantity: number;
-  priceCents?: number;
-  modifiers?: { optionId: number; quantity: number }[];
-}
+type CartLinePayload = CheckoutBillLine;
 
 interface PlacedOrder {
   code: string;
@@ -77,15 +85,47 @@ function cartLines(items: CartItem[]): CartLinePayload[] {
   }));
 }
 
+/**
+ * The locality picker persists its choice in the URL and in localStorage. The
+ * server rechecks it against the restaurant's served locality; this only needs
+ * to forward the customer's current selection, never a price or a decision.
+ */
+function currentLocalityKey(): string | undefined {
+  try {
+    const fromUrl = new URLSearchParams(window.location.search).get("loc");
+    if (fromUrl) return fromUrl;
+    const raw = localStorage.getItem("crave.location.v1");
+    const parsed = raw ? (JSON.parse(raw) as { key?: unknown }) : null;
+    return typeof parsed?.key === "string" ? parsed.key : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+interface DroppedCartItem {
+  menuItemId: number;
+  name: string;
+  reason: string;
+}
+
 interface BillPreview {
   ok?: boolean;
   bill?: BillBreakdown;
+  dropped?: DroppedCartItem[];
   offer?: string | null;
   offerAvailable?: boolean;
   promo?: PublicMerchantOffer | null;
   promoCode?: string | null;
   error?: string;
   code?: string;
+}
+
+interface BillPreviewState {
+  /** The exact cart + offer selection this preview was requested for. */
+  key: string;
+  preview: BillPreview | null;
+  promoError: string | null;
+  billError: string | null;
 }
 
 /**
@@ -124,6 +164,7 @@ async function postBill(
 
 export default function CheckoutPage() {
   const cart = useCart();
+  const availability = useMenuAvailability(cart.restaurantSlug);
   // Checkout needs identity, hydration and the order-slot write — and nothing
   // else. Reading the whole profile used to make a favorite tap or a saved
   // search re-render the entire payment form.
@@ -140,7 +181,7 @@ export default function CheckoutPage() {
   const [accountAddresses, setAccountAddresses] = useState<Address[]>([]);
 
   const [addressId, setAddressId] = useState<string | null>(null);
-  const [label, setLabel] = useState("");
+  const label = "Home";
   const [addressText, setAddressText] = useState("");
   const [showAddressForm, setShowAddressForm] = useState(false);
   const [saveNewAddressToAccount, setSaveNewAddressToAccount] = useState(false);
@@ -156,23 +197,27 @@ export default function CheckoutPage() {
    */
   const [acceptedTerms, setAcceptedTerms] = useState(false);
   const [openSummary, setOpenSummary] = useState(false);
+  const [showExtras, setShowExtras] = useState(false);
   const [authOpen, setAuthOpen] = useState(false);
   const [pendingCheckout, setPendingCheckout] = useState(false);
   const [placeState, setPlaceState] = useState<PlaceState>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [bill, setBill] = useState<BillBreakdown | null>(null);
+  /**
+   * One preview, tagged with the exact selection it prices. All displayed bill
+   * fields are derived from the entry matching the current selection, so a slow
+   * reply to an older offer choice can never overwrite the visible total.
+   */
+  const [billState, setBillState] = useState<BillPreviewState | null>(null);
   const [billLoading, setBillLoading] = useState(false);
   /** Offers are opt-in by default — a customer must tick the box to use one. */
   const [applyOffer, setApplyOffer] = useState(false);
-  const [offer, setOffer] = useState<string | null>(null);
-  const [offerAvailable, setOfferAvailable] = useState(false);
   /** Merchant App promotions for this listing, published by the kitchen. */
   const [merchantOffers, setMerchantOffers] = useState<PublicMerchantOffer[]>([]);
   const [offersLoading, setOffersLoading] = useState(false);
   const [promoCode, setPromoCode] = useState("");
   const [promoInput, setPromoInput] = useState("");
-  const [promoError, setPromoError] = useState<string | null>(null);
-  const [appliedPromo, setAppliedPromo] = useState<PublicMerchantOffer | null>(null);
+  /** A malformed typed code fails before a request; server refusals live in billState. */
+  const [promoInputError, setPromoInputError] = useState<string | null>(null);
   const [placed, setPlaced] = useState<PlacedOrder | null>(null);
   const [payTarget, setPayTarget] = useState<PaymentTarget | null>(null);
   const [redirectIn, setRedirectIn] = useState<number | null>(null);
@@ -185,6 +230,7 @@ export default function CheckoutPage() {
   // Stable per-checkout-session idempotency key: retried place attempts reuse
   // it so a lost-response retry never creates a duplicate order.
   const [placeRequestId] = useState(() => crypto.randomUUID());
+  const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
 
   const allAddresses = useMemo(() => {
     if (!accountAddresses.length) return profile.addresses;
@@ -193,19 +239,57 @@ export default function CheckoutPage() {
     return [...accountAddresses, ...local];
   }, [accountAddresses, profile.addresses]);
 
+  const cartPayload = useMemo(() => cartLines(cart.items), [cart.items]);
+  const selectionKey = useMemo(
+    () =>
+      checkoutBillKey({
+        restaurantSlug: cart.restaurantSlug,
+        items: cartPayload,
+        applyOffer,
+        promoCode,
+      }),
+    [cart.restaurantSlug, cartPayload, applyOffer, promoCode],
+  );
+
+  // Only the preview priced for THIS cart and THIS offer choice may drive the
+  // visible bill. Everything else is treated as if it never arrived.
+  const activeBillState = previewForSelection(billState, billState?.key, selectionKey);
+  const activePreview = activeBillState?.preview ?? null;
+  const bill = activePreview?.ok && activePreview.bill ? activePreview.bill : null;
+  const dropped = activePreview?.ok && Array.isArray(activePreview.dropped) ? activePreview.dropped : [];
+  const offer = activePreview?.offer ?? null;
+  const offerAvailable = activePreview?.offerAvailable ?? false;
+  const appliedPromo = activePreview?.promo ?? null;
+  const promoError = promoInputError ?? activeBillState?.promoError ?? null;
+  const billError = activeBillState?.billError ?? null;
+
   // Until the authoritative preview lands, the client estimate supplies the
   // same breakdown shape so the final bill never shows a missing delivery fee.
-  const estimate = estimateBill(cart.subtotalCents);
+  // Sold-out cart lines are excluded here because computeBill drops them too.
+  const activeSubtotalCents = availableCartSubtotalCents(cart.items, availability);
+  const estimate = estimateBill(activeSubtotalCents);
   const totalCents = bill?.totalCents ?? estimate.total;
 
-  const applyPreview = useCallback((preview: BillPreview | null) => {
-    const promoFailed = Boolean(preview && preview.ok === false && preview.code && PROMO_ERROR_CODES.has(preview.code));
-    setBill(preview?.ok && preview.bill ? preview.bill : null);
-    setOffer(preview?.offer ?? null);
-    setOfferAvailable(preview?.offerAvailable ?? false);
-    setAppliedPromo(preview?.promo ?? null);
-    setPromoError(promoFailed ? preview?.error ?? "That offer could not be applied." : null);
+  const applyPreview = useCallback((preview: BillPreview | null, key: string) => {
+    const promoFailed = Boolean(
+      preview && preview.ok === false && preview.code && PROMO_ERROR_CODES.has(preview.code),
+    );
+    const billFailed = preview === null || (preview.ok === false && !promoFailed);
+    setBillState({
+      key,
+      preview,
+      promoError: promoFailed ? preview?.error ?? "That offer could not be applied." : null,
+      billError:
+        billFailed && !promoFailed
+          ? preview?.error ?? "We couldn't calculate the final bill. Please try again."
+          : null,
+    });
   }, []);
+
+  // The route template animates with a transform, which becomes the containing
+  // block for descendant `fixed` elements. Portal the sticky bar to the body so
+  // it pins to the viewport instead of the bottom of the animated page.
+  useEffect(() => setPortalHost(document.body), []);
 
   // Merchant-created promotions are public, but they are scoped to the listing
   // in the cart. Loading them here (rather than at build time) means a code the
@@ -240,24 +324,25 @@ export default function CheckoutPage() {
   useEffect(() => {
     setPromoCode("");
     setPromoInput("");
-    setPromoError(null);
-    setAppliedPromo(null);
+    setPromoInputError(null);
   }, [cart.restaurantSlug]);
 
-  // fetch the authoritative bill for the current cart (mirrors createOrder)
+  // Fetch the authoritative bill for the current cart (mirrors createOrder).
+  // The request key travels with the response so a late reply for an earlier
+  // offer choice is discarded instead of overwriting the current total.
   useEffect(() => {
     if (!cart.hydrated || cart.items.length === 0) return;
     let cancelled = false;
     setBillLoading(true);
-    postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer, promoCode).then((preview) => {
+    postBill(cart.restaurantSlug, cartPayload, applyOffer, promoCode).then((preview) => {
       if (cancelled) return;
-      applyPreview(preview);
+      applyPreview(preview, selectionKey);
       setBillLoading(false);
     });
     return () => {
       cancelled = true;
     };
-  }, [cart.hydrated, cart.restaurantSlug, cart.items, applyOffer, promoCode, applyPreview]);
+  }, [cart.hydrated, cart.restaurantSlug, cart.items.length, cartPayload, applyOffer, promoCode, selectionKey, applyPreview]);
 
   // 10s grace on the success screen before auto-navigating to the order
   useEffect(() => {
@@ -370,36 +455,48 @@ export default function CheckoutPage() {
     (showAddressForm ? null : allAddresses.find((a) => a.id === addressId)) ?? null;
   const effectiveAddressText = showAddressForm ? addressText : selectedAddress?.text ?? "";
   const effectiveLabel = showAddressForm ? label || "Other" : selectedAddress?.label ?? "Home";
-  const phoneDigits = phone.replace(/\D/g, "");
+  const phoneDigits = checkoutPhoneDigits(phone);
   /** Everything needed to actually submit: contact, address and consent. */
-  const detailsComplete =
-    name.trim().length > 0 && phoneDigits.length >= 10 && effectiveAddressText.trim().length > 10;
-  // An unapplied code must not look successful: block the order until the shopper
-  // fixes or removes it. The server re-checks every code at order time anyway.
-  const canPlace = detailsComplete && acceptedTerms && !promoError;
+  const detailsComplete = checkoutContactComplete({
+    name,
+    phone,
+    addressText: effectiveAddressText,
+  });
+  const hasBillableItems = cart.items.some((i) => !cartItemIsSoldOut(availability, i.menuItemId));
+  const unavailableNames = dropped.length
+    ? dropped.map((d) => d.name)
+    : cart.items
+        .filter((i) => cartItemIsSoldOut(availability, i.menuItemId))
+        .map((i) => i.name);
+  // An unapplied code must not look successful, and an order must never be
+  // placed from the optimistic fallback. Both the code and the final total come
+  // from the authoritative preview for the current selection.
+  const canPlace =
+    detailsComplete && acceptedTerms && !promoError && !billError && hasBillableItems && !!bill;
+  const issueMessage = checkoutIssueMessage(
+    checkoutIssue({ detailsComplete, acceptedTerms, promoError, billError, hasBillableItems }),
+    billError,
+  );
 
   const selectPromo = (code: string) => {
     setPromoCode(code);
     setPromoInput(code);
-    setPromoError(null);
+    setPromoInputError(null);
     // Only one discount per order. A promo selection replaces the legacy flag;
     // ticking the legacy offer below clears the promo instead.
     setApplyOffer(false);
-    setBill(null);
   };
 
   const clearPromo = () => {
     setPromoCode("");
     setPromoInput("");
-    setPromoError(null);
-    setAppliedPromo(null);
-    setBill(null);
+    setPromoInputError(null);
   };
 
   const applyTypedPromo = () => {
     const parsed = parseOfferCode(promoInput);
     if (!parsed) {
-      setPromoError("Enter a valid offer code");
+      setPromoInputError("Enter a valid offer code");
       return;
     }
     selectPromo(parsed);
@@ -429,6 +526,9 @@ export default function CheckoutPage() {
         body: JSON.stringify({
           restaurantSlug: cart.restaurantSlug,
           clientRequestId: placeRequestId,
+          // Device-scoped inbox: this high-entropy token stays in localStorage;
+          // the server stores only its SHA-256 hash on the order.
+          inboxToken: ensureInboxToken(),
           items: cartLines(cart.items),
           addressLabel: newAddress?.label ?? effectiveLabel,
           addressText: newAddress?.text ?? effectiveAddressText,
@@ -443,6 +543,8 @@ export default function CheckoutPage() {
           promoCode,
           // The server re-checks this: `canPlace` only gates the button.
           acceptedTerms,
+          // Customer's active delivery area, rechecked against this restaurant.
+          localityKey: currentLocalityKey(),
         }),
       });
       // Safari/WebKit throws a DOMException ("The string did not match the
@@ -567,13 +669,17 @@ export default function CheckoutPage() {
       setAuthOpen(true);
       return;
     }
+    if (billError) return;
     let target = bill;
     if (!target) {
-      const preview = await postBill(cart.restaurantSlug, cartLines(cart.items), applyOffer, promoCode);
-      if (preview?.ok && preview.bill) {
-        target = preview.bill;
-        applyPreview(preview);
+      const preview = await postBill(cart.restaurantSlug, cartPayload, applyOffer, promoCode);
+      applyPreview(preview, selectionKey);
+      if (!preview?.ok || !preview.bill) {
+        setPlaceState("error");
+        setError(preview?.error ?? "We couldn't calculate the final bill. Please try again.");
+        return;
       }
+      target = preview.bill;
     }
     void placeOrder(payChoice);
   };
@@ -666,7 +772,7 @@ export default function CheckoutPage() {
   }
 
   return (
-    <div className="mx-auto max-w-5xl px-4 pb-36 pt-6 md:px-6 md:pb-12 md:pt-9">
+    <div className="mx-auto max-w-5xl px-4 pb-40 pt-6 md:px-6 md:pb-12 md:pt-9">
       <Link href="/cart" className="press inline-flex items-center gap-1.5 text-sm font-medium text-cream-400 transition-colors hover:text-cream-50">
         <ArrowLeft className="size-4" /> Back to cart
       </Link>
@@ -675,10 +781,9 @@ export default function CheckoutPage() {
         From <span className="font-semibold text-cream-300">{cart.restaurantName}</span> · arrives in ~30 min
       </p>
 
-      <div className="mt-7 grid gap-8 lg:grid-cols-[1fr_340px]">
-        <div className="min-w-0 space-y-5">
-          {/* ------------------------------ address ------------------------------ */}
-          <Section step={1} title="Delivery address" Icon={MapPin}>
+      <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_340px] lg:gap-8">
+        <div className="min-w-0 space-y-4">
+          <Section title="Delivery details" Icon={MapPin}>
             <div className="space-y-2.5">
               {accountAuth.status === "signedIn" && (
                 <p className="text-xs text-cream-500">
@@ -725,12 +830,6 @@ export default function CheckoutPage() {
 
               {showAddressForm ? (
                 <div className="animate-fade-in space-y-2.5 rounded-2xl border border-ember-400/40 bg-ember-400/6 p-4">
-                  <input
-                    value={label}
-                    onChange={(e) => setLabel(e.target.value)}
-                    placeholder="Label — Home, Work, Gym…"
-                    className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
-                  />
                   <textarea
                     value={addressText}
                     onChange={(e) => setAddressText(e.target.value)}
@@ -773,34 +872,35 @@ export default function CheckoutPage() {
                 </button>
               )}
             </div>
-          </Section>
 
-          {/* ------------------------------ contact ------------------------------ */}
-          <Section step={2} title="Contact details" Icon={Smartphone}>
-            <div className="grid gap-2.5 sm:grid-cols-2">
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Your name"
-                autoComplete="name"
-                className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
-              />
-              <input
-                value={phone}
-                onChange={(e) => setPhone(e.target.value.replace(/[^\d+ ]/g, ""))}
-                placeholder="10-digit mobile"
-                inputMode="tel"
-                autoComplete="tel"
-                className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
-              />
+            <div className="mt-4 border-t border-white/8 pt-4">
+              <p className="mb-2 flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.12em] text-cream-500">
+                <Smartphone className="size-3.5" /> Contact for delivery
+              </p>
+              <div className="grid gap-2.5 sm:grid-cols-2">
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="Your name"
+                  autoComplete="name"
+                  className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+                />
+                <input
+                  value={phone}
+                  onChange={(e) => setPhone(e.target.value.replace(/[^\d+ ]/g, ""))}
+                  placeholder="10-digit mobile"
+                  inputMode="tel"
+                  autoComplete="tel"
+                  className="w-full rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+                />
+              </div>
+              {phone.length > 0 && phoneDigits.length < 10 && (
+                <p className="mt-2 text-xs text-chili-300">Enter a 10-digit mobile number</p>
+              )}
             </div>
-            {phone.length > 0 && phoneDigits.length < 10 && (
-              <p className="mt-2 text-xs text-chili-300">Enter a 10-digit mobile number</p>
-            )}
           </Section>
 
-          {/* ------------------------------ payment ------------------------------ */}
-          <Section step={3} title="Payment" Icon={CreditCard}>
+          <Section title="Payment" Icon={CreditCard}>
             <div className="grid gap-2.5 sm:grid-cols-2">
               {PAY_CHOICES.map((c) => (
                 <button
@@ -885,92 +985,106 @@ export default function CheckoutPage() {
               </div>
             </div>
 
-            <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between sm:gap-6">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="grid size-11 shrink-0 place-items-center rounded-2xl bg-mint-500/10 text-mint-400">
-                  <ShieldCheck className="size-5" />
-                </span>
-                <div className="min-w-0">
-                  <p className="text-sm font-bold text-cream-50">
-                    {payChoice === "online" ? "Pay securely online" : "Pay cash on delivery"}
-                  </p>
-                  <p className="truncate text-xs text-cream-500">
-                    {cart.itemCount} item{cart.itemCount === 1 ? "" : "s"} · {cart.restaurantName}
-                  </p>
-                </div>
+            <div className="mt-4 flex items-start gap-3">
+              <span className="grid size-10 shrink-0 place-items-center rounded-2xl bg-mint-500/10 text-mint-400">
+                <ShieldCheck className="size-5" />
+              </span>
+              <div className="min-w-0">
+                <p className="text-sm font-bold text-cream-50">
+                  {payChoice === "online" ? "Pay securely online" : "Pay cash on delivery"}
+                </p>
+                <p className="text-xs leading-relaxed text-cream-500">
+                  {payChoice === "online"
+                    ? "UPI, cards and netbanking open in Razorpay. The kitchen starts only after payment is confirmed."
+                    : `${cart.itemCount} item${cart.itemCount === 1 ? "" : "s"} from ${cart.restaurantName}. Keep the exact amount ready for the rider.`}
+                </p>
               </div>
-              <button
-                type="button"
-                disabled={!canPlace || billLoading || accountAuth.status === "loading"}
-                onClick={startCheckout}
-                className="press inline-flex shrink-0 items-center justify-center gap-2 rounded-full bg-gradient-to-b from-ember-400 to-chili-600 px-5 py-3 text-sm font-bold text-white shadow-glow transition-opacity hover:opacity-95 disabled:cursor-not-allowed disabled:opacity-40"
-              >
-                {accountAuth.status !== "signedIn"
-                  ? "Sign in to place order"
-                  : payChoice === "online"
-                    ? "Pay"
-                    : "Place order"}{" "}
-                {formatINR(totalCents)} <ArrowRight className="size-4" />
-              </button>
             </div>
-            {payChoice === "online" && (
-              <p className="mt-2.5 text-[11px] leading-relaxed text-cream-500">
-                UPI, cards, netbanking and wallets are offered on the secure payment page. The
-                restaurant only receives your order once the payment is confirmed.
+
+            {issueMessage && (
+              <p role="status" className="mt-3 text-xs font-medium text-chili-300">
+                {issueMessage}
               </p>
             )}
-            {!detailsComplete && (
-              <p className="mt-2.5 text-xs text-chili-300">
-                Add a delivery address, name &amp; 10-digit phone to continue
-              </p>
-            )}
-            {detailsComplete && !acceptedTerms && (
-              <p className="mt-2.5 text-xs text-chili-300">
-                Please accept the Terms &amp; Privacy Policy to continue
+            {error && (
+              <p role="alert" className="mt-2 text-xs font-medium text-chili-300">
+                {error}
               </p>
             )}
             {canPlace && accountAuth.status !== "signedIn" && accountAuth.status !== "loading" && (
-              <p className="mt-2.5 flex items-center gap-1.5 text-xs text-ember-300">
+              <p className="mt-2 flex items-center gap-1.5 text-xs text-ember-300">
                 <ShieldCheck className="size-3.5" /> You’ll sign in or create an account when you place your order.
               </p>
             )}
           </Section>
 
-          {/* ------------------------------ offers ------------------------------ */}
-          <Section step={4} title="Offers" Icon={Tag} optional>
-            <OfferPicker
-              offers={merchantOffers}
-              loading={offersLoading}
-              selectedCode={promoCode}
-              codeInput={promoInput}
-              error={promoError}
-              subtotalCents={cart.subtotalCents}
-              onCodeInput={setPromoInput}
-              onApplyCode={applyTypedPromo}
-              onSelect={selectPromo}
-              onClear={clearPromo}
-            />
-          </Section>
-
-          {/* --------------------------- instructions --------------------------- */}
-          <Section step={5} title="Anything we should know?" Icon={NotebookPen} optional>
-            <textarea
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              placeholder="e.g. Extra spicy, ring the bell twice, no cutlery"
-              rows={2}
-              className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
-            />
-          </Section>
+          <section className="glass rounded-3xl p-5 md:p-6">
+            <button
+              type="button"
+              onClick={() => setShowExtras((show) => !show)}
+              aria-expanded={showExtras}
+              aria-controls="checkout-extras"
+              className="press flex w-full items-center justify-between gap-3"
+            >
+              <span className="flex min-w-0 items-center gap-2.5 font-display text-base font-bold text-cream-50">
+                <Tag className="size-4 shrink-0 text-cream-400" /> Offers &amp; delivery note
+              </span>
+              <span className="flex shrink-0 items-center gap-2">
+                {(promoCode || instructions.trim()) && (
+                  <span className="rounded-full bg-mint-500/12 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-mint-300">
+                    Added
+                  </span>
+                )}
+                <ChevronDown className={cn("size-4 text-cream-400 transition-transform duration-300", showExtras && "rotate-180")} />
+              </span>
+            </button>
+            <div
+              id="checkout-extras"
+              hidden={!showExtras}
+              className="mt-4 animate-fade-in space-y-4 border-t border-white/8 pt-4"
+            >
+              <OfferPicker
+                offers={merchantOffers}
+                loading={offersLoading}
+                selectedCode={promoCode}
+                codeInput={promoInput}
+                error={promoError}
+                subtotalCents={cart.subtotalCents}
+                onCodeInput={setPromoInput}
+                onApplyCode={applyTypedPromo}
+                onSelect={selectPromo}
+                onClear={clearPromo}
+              />
+              <label className="block">
+                <span className="mb-2 flex items-center gap-1.5 text-xs font-semibold text-cream-300">
+                  <NotebookPen className="size-3.5" /> Delivery note (optional)
+                </span>
+                <textarea
+                  value={instructions}
+                  onChange={(e) => setInstructions(e.target.value)}
+                  placeholder="e.g. Extra spicy, ring the bell twice, no cutlery"
+                  rows={2}
+                  className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+                />
+              </label>
+            </div>
+          </section>
         </div>
 
-        {/* ------------------------------ summary ------------------------------ */}
-        <aside className="lg:sticky lg:top-24 lg:self-start">
+        <aside className="order-first lg:order-none lg:sticky lg:top-24 lg:self-start">
+          {unavailableNames.length > 0 && (
+            <div role="status" className="mb-4 flex items-start gap-2.5 rounded-2xl border border-chili-500/25 bg-chili-500/8 px-4 py-3 text-sm leading-relaxed text-chili-300">
+              <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+              <span>
+                {unavailableNames.join(", ")} {unavailableNames.length === 1 ? "is" : "are"} sold out and will not be charged. Remove {unavailableNames.length === 1 ? "it" : "them"} from your cart to clear this notice.
+              </span>
+            </div>
+          )}
           <CheckoutSummary
             open={openSummary}
             onToggle={() => setOpenSummary((o) => !o)}
             totalCents={totalCents}
-            subtotalCents={cart.subtotalCents}
+            subtotalCents={bill?.subtotalCents ?? activeSubtotalCents}
             discountCents={bill?.discountCents ?? 0}
             deliveryFeeCents={bill?.deliveryFeeCents ?? estimate.deliveryFee}
             platformFeeCents={bill?.platformFeeCents ?? estimate.platformFee}
@@ -980,13 +1094,14 @@ export default function CheckoutPage() {
             promoCode={promoCode}
             appliedPromo={appliedPromo}
             onToggleOffer={(value) => {
-              // Drop the old preview so no stale total/discount is shown while
-              // the authoritative bill for the new selection is fetched.
+              // One discount per order: selecting the listing offer clears any
+              // code. The selection key changes immediately, so the old total
+              // stops driving the summary while the new preview is fetched.
               if (value) clearPromo();
               setApplyOffer(value);
-              setBill(null);
             }}
             onClearPromo={clearPromo}
+            unavailableNames={unavailableNames}
             itemsNode={
               <ul className="space-y-3">
                 {cart.items.map((i) => (
@@ -998,6 +1113,11 @@ export default function CheckoutPage() {
                       <span className="flex items-center gap-1.5">
                         <VegDot veg={i.isVeg} className="size-3" />
                         <span className="truncate text-[13px] font-medium text-cream-200">{i.name}</span>
+                        {cartItemIsSoldOut(availability, i.menuItemId) && (
+                          <span className="shrink-0 rounded-full bg-chili-500/18 px-1.5 py-0.5 text-[9px] font-bold text-chili-300">
+                            SOLD OUT
+                          </span>
+                        )}
                       </span>
                       {i.modifiers?.length ? (
                         <span className="mt-0.5 block text-[11px] leading-snug text-cream-500">
@@ -1025,36 +1145,27 @@ export default function CheckoutPage() {
             onClick={startCheckout}
             className="mt-4 hidden lg:flex"
           />
-          {!detailsComplete && (
-            <p className="mt-2 hidden text-center text-xs text-cream-500 lg:block">
-              Add a delivery address, name &amp; 10-digit phone to continue
-            </p>
-          )}
-          {detailsComplete && !acceptedTerms && (
-            <p className="mt-2 hidden text-center text-xs text-cream-500 lg:block">
-              Accept the Terms &amp; Privacy Policy to continue
-            </p>
-          )}
-          {canPlace && accountAuth.status !== "signedIn" && accountAuth.status !== "loading" && (
-            <p className="mt-2 hidden text-center text-xs text-ember-300/90 lg:block">
-              Sign-in required to place order
-            </p>
-          )}
-          {error && <p className="mt-3 text-center text-sm text-chili-300">{error}</p>}
         </aside>
       </div>
 
-      {/* mobile sticky place order */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
-        <PlaceOrderButton
-          state={placeState}
-          disabled={!canPlace || accountAuth.status === "loading"}
-          busy={billLoading}
-          totalCents={totalCents}
-          label={accountAuth.status !== "signedIn" ? "Sign in to place order" : payChoice === "online" ? "Pay" : "Place order"}
-          onClick={startCheckout}
-        />
-      </div>
+      {/* mobile sticky place order — portalled out of the animated route wrapper */}
+      {portalHost &&
+        createPortal(
+          <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
+            {(issueMessage ?? error) && (
+              <p className="mb-2 text-center text-[11px] font-medium text-chili-300">{issueMessage ?? error}</p>
+            )}
+            <PlaceOrderButton
+              state={placeState}
+              disabled={!canPlace || accountAuth.status === "loading"}
+              busy={billLoading}
+              totalCents={totalCents}
+              label={accountAuth.status !== "signedIn" ? "Sign in to place order" : payChoice === "online" ? "Pay" : "Place order"}
+              onClick={startCheckout}
+            />
+          </div>,
+          portalHost,
+        )}
 
       {payTarget && (
         <PaymentStage
@@ -1072,11 +1183,9 @@ export default function CheckoutPage() {
         onClose={() => {
           setAuthOpen(false);
           if (!signedInDuringAuthRef.current) setPendingCheckout(false);
-          // eslint-disable-next-line react-hooks/immutability -- event handler updates dialog-flow ref
           signedInDuringAuthRef.current = false;
         }}
         onSignedIn={() => {
-          // eslint-disable-next-line react-hooks/immutability -- event handler updates dialog-flow ref
           signedInDuringAuthRef.current = true;
           setPendingCheckout(true);
           setAuthOpen(false);
@@ -1091,27 +1200,19 @@ export default function CheckoutPage() {
 /* ------------------------------ pieces ------------------------------ */
 
 function Section({
-  step,
   title,
   Icon,
-  optional,
   children,
 }: {
-  step: number;
   title: string;
   Icon: typeof MapPin;
-  optional?: boolean;
   children: ReactNode;
 }) {
   return (
     <section className="glass rounded-3xl p-5 md:p-6">
       <h2 className="mb-4 flex items-center gap-2.5 font-display text-base font-bold text-cream-50">
-        <span className="grid size-7 place-items-center rounded-lg bg-white/8 text-xs font-bold text-ember-300 tabular-nums">
-          {step}
-        </span>
         <Icon className="size-4 text-cream-400" />
         {title}
-        {optional && <span className="text-xs font-medium text-cream-600">(optional)</span>}
       </h2>
       {children}
     </section>
@@ -1253,6 +1354,7 @@ function CheckoutSummary({
   appliedPromo,
   onToggleOffer,
   onClearPromo,
+  unavailableNames,
 }: {
   open: boolean;
   onToggle: () => void;
@@ -1269,6 +1371,7 @@ function CheckoutSummary({
   appliedPromo: PublicMerchantOffer | null;
   onToggleOffer: (value: boolean) => void;
   onClearPromo: () => void;
+  unavailableNames: string[];
 }) {
   const cart = useCart();
   return (
@@ -1288,7 +1391,8 @@ function CheckoutSummary({
           {cart.items
             .map((i) => {
               const extras = i.modifiers?.length ? ` (${i.modifiers.map((m) => m.name).join(", ")})` : "";
-              return `${i.quantity}× ${i.name}${extras}`;
+              const soldOut = unavailableNames.includes(i.name) ? " — sold out" : "";
+              return `${i.quantity}× ${i.name}${extras}${soldOut}`;
             })
             .join(", ")}
         </p>
@@ -1390,6 +1494,7 @@ function PlaceOrderButton({
   return (
     <button
       type="button"
+      data-checkout-cta=""
       disabled={disabled || state === "loading" || state === "success" || busy}
       onClick={onClick}
       className={cn(

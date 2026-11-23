@@ -2,15 +2,21 @@
 
 import Image from "next/image";
 import Link from "next/link";
-import { ArrowLeft, ArrowRight, BadgePercent, ShoppingBag, Trash2, Truck } from "lucide-react";
+import { createPortal } from "react-dom";
+import { ArrowLeft, ArrowRight, BadgePercent, ShoppingBag, Trash2, TriangleAlert, Truck } from "lucide-react";
 import { AddButton } from "@/components/add-button";
 import { BLUR_DATA, EmptyState, VegDot } from "@/components/atoms";
 import { AnimatedPrice } from "@/components/motion-primitives";
-import { estimateBill, formatINR } from "@/lib/domain";
+import { estimateBill, formatINR, withLoc } from "@/lib/domain";
 import { useCart, cartModifierTotalCents } from "@/lib/cart";
+import { useLocation } from "@/lib/location";
+import { useMenuAvailability } from "@/lib/menu-availability";
+import { availableCartSubtotalCents, cartItemIsSoldOut } from "@/lib/menu-availability-core";
 
 export default function CartPage() {
   const cart = useCart();
+  const { locality } = useLocation();
+  const availability = useMenuAvailability(cart.restaurantSlug);
 
   if (!cart.hydrated) {
     return (
@@ -45,7 +51,12 @@ export default function CartPage() {
     );
   }
 
-  const bill = estimateBill(cart.subtotalCents);
+  const soldOutLines = cart.items.filter((i) => cartItemIsSoldOut(availability, i.menuItemId));
+  const activeSubtotalCents = availableCartSubtotalCents(cart.items, availability);
+  const activeItemCount = cart.items
+    .filter((i) => !cartItemIsSoldOut(availability, i.menuItemId))
+    .reduce((count, i) => count + i.quantity, 0);
+  const bill = estimateBill(activeSubtotalCents);
 
   return (
     <div className="mx-auto max-w-6xl px-4 pb-40 pt-6 md:px-6 md:pb-12 md:pt-9">
@@ -59,6 +70,15 @@ export default function CartPage() {
           The {cart.restaurantName} <span className="text-gradient">haul</span>
         </h1>
       </header>
+
+      {soldOutLines.length > 0 && (
+        <div role="status" className="mt-5 flex items-start gap-2.5 rounded-2xl border border-chili-500/25 bg-chili-500/8 px-4 py-3 text-sm leading-relaxed text-chili-300">
+          <TriangleAlert className="mt-0.5 size-4 shrink-0" />
+          <span>
+            {soldOutLines.map((i) => i.name).join(", ")} {soldOutLines.length === 1 ? "is" : "are"} sold out. They stay in your cart so you can remove them, but checkout will not charge for them. Add an available dish to continue.
+          </span>
+        </div>
+      )}
 
       <div className="mt-7 grid gap-8 lg:grid-cols-[1fr_360px]">
         {/* items */}
@@ -85,6 +105,11 @@ export default function CartPage() {
                   <div className="flex items-center gap-1.5">
                     <VegDot veg={i.isVeg} />
                     <h3 className="truncate font-display text-[15px] font-bold text-cream-50">{i.name}</h3>
+                    {cartItemIsSoldOut(availability, i.menuItemId) && (
+                      <span className="shrink-0 rounded-full bg-chili-500/18 px-1.5 py-0.5 text-[9px] font-bold text-chili-300">
+                        SOLD OUT
+                      </span>
+                    )}
                   </div>
                   {i.modifiers?.length ? (
                     <ul className="mt-1 space-y-0.5">
@@ -121,6 +146,7 @@ export default function CartPage() {
                     restaurantSlug={cart.restaurantSlug}
                     restaurantName={cart.restaurantName}
                     compact
+                    soldOut={cartItemIsSoldOut(availability, i.menuItemId)}
                   />
                 </div>
               </li>
@@ -143,7 +169,7 @@ export default function CartPage() {
             <dl className="mt-4 space-y-3 text-sm">
               <div className="flex items-center justify-between">
                 <dt className="text-cream-400">Item total</dt>
-                <dd className="font-semibold text-cream-50 tabular-nums">{formatINR(cart.subtotalCents)}</dd>
+                <dd className="font-semibold text-cream-50 tabular-nums">{formatINR(activeSubtotalCents)}</dd>
               </div>
               <div className="flex items-center justify-between">
                 <dt className="flex items-center gap-1.5 text-cream-400">
@@ -163,7 +189,7 @@ export default function CartPage() {
               </div>
               {!bill.freeDelivery && (
                 <p className="rounded-xl bg-mint-500/8 px-3 py-2 text-xs text-mint-400">
-                  Add {formatINR(49900 - cart.subtotalCents)} more for free delivery
+                  Add {formatINR(49900 - activeSubtotalCents)} more for free delivery
                 </p>
               )}
               <div className="flex items-center gap-1.5 rounded-xl bg-chili-500/8 px-3 py-2 text-xs text-chili-300">
@@ -178,30 +204,36 @@ export default function CartPage() {
           </div>
 
           {/* desktop CTA */}
-          <Link
-            href="/checkout"
-            className="press mt-4 hidden items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-4 text-[15px] font-bold text-white shadow-glow transition-shadow hover:shadow-[0_16px_52px_-8px_rgba(255,90,60,0.65)] lg:flex"
-          >
-            Proceed to checkout <ArrowRight className="size-4.5" />
-          </Link>
+          {activeItemCount > 0 && (
+            <Link
+              href={withLoc("/checkout", locality.key)}
+              className="press mt-4 hidden items-center justify-center gap-2 rounded-2xl bg-gradient-to-b from-ember-400 to-chili-600 py-4 text-[15px] font-bold text-white shadow-glow transition-shadow hover:shadow-[0_16px_52px_-8px_rgba(255,90,60,0.65)] lg:flex"
+            >
+              Proceed to checkout <ArrowRight className="size-4.5" />
+            </Link>
+          )}
         </aside>
       </div>
 
-      {/* mobile sticky CTA */}
-      <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
-        <Link
-          href="/checkout"
-          className="press flex items-center justify-between rounded-2xl bg-gradient-to-r from-ember-500 to-chili-600 px-5 py-3.5 font-bold text-white shadow-glow"
-        >
-          <span className="text-left leading-tight">
-            <span className="block text-[11px] font-medium text-white/75">{cart.itemCount} items</span>
-            <AnimatedPrice cents={bill.total} className="block text-base font-bold" />
-          </span>
-          <span className="flex items-center gap-1.5 text-sm">
-            Checkout <ArrowRight className="size-4.5" />
-          </span>
-        </Link>
-      </div>
+      {/* mobile sticky CTA — portalled out of the animated route wrapper */}
+      {activeItemCount > 0 &&
+        createPortal(
+          <div className="fixed inset-x-0 bottom-0 z-40 border-t border-white/10 bg-void/85 p-4 backdrop-blur-xl lg:hidden" style={{ paddingBottom: "max(1rem, env(safe-area-inset-bottom))" }}>
+            <Link
+              href={withLoc("/checkout", locality.key)}
+              className="press flex items-center justify-between rounded-2xl bg-gradient-to-r from-ember-500 to-chili-600 px-5 py-3.5 font-bold text-white shadow-glow"
+            >
+              <span className="text-left leading-tight">
+                <span className="block text-[11px] font-medium text-white/75">{activeItemCount} items</span>
+                <AnimatedPrice cents={bill.total} className="block text-base font-bold" />
+              </span>
+              <span className="flex items-center gap-1.5 text-sm">
+                Checkout <ArrowRight className="size-4.5" />
+              </span>
+            </Link>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

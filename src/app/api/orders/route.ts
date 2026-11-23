@@ -15,6 +15,7 @@ import { guardRead, guardWrite, readJsonBody } from "@/lib/abuse";
 import { toPublicOrder } from "@/lib/order-public";
 import { resolveAccountSession } from "@/lib/security/customer-account-session";
 import { listOrdersByCustomerAccountId } from "@/db/customer-accounts";
+import { hashInboxToken, recordOrderNotification } from "@/lib/customer-notifications";
 
 export const dynamic = "force-dynamic";
 
@@ -114,19 +115,37 @@ async function checkout(req: NextRequest) {
     );
   }
 
+  // The raw inbox token is a browser capability: hash it once here and never
+  // pass the plaintext into the order write. Stripping it also keeps the checkout
+  // whitelist from widening the order insert surface.
+  const { inboxToken, ...orderInput } = validated.request;
+  const customerInboxHash = inboxToken ? hashInboxToken(inboxToken) : null;
+
   // Explicit/proven account link: attribute the new order to the signed-in account
   // (server-resolved, never client-trusted).
   const result = await createOrder({
-    ...validated.request,
+    ...orderInput,
+    customerInboxHash,
     customerAccountId: accountSession.account.id,
+    // The URL claim is server-read; a client body value cannot replace it with
+    // another restaurant's locality without also matching that restaurant.
+    urlLocalityKey: req.nextUrl.searchParams.get("loc"),
   });
   if (!result.ok) {
     // Phase 7 — deterministic outlet errors surface as 422 (client sent a bad
     // branch/outlet claim), everything else stays a client 400.
     const status =
-      result.code === "OUTLET_NOT_MAPPED" || result.code === "INTEGRATION_NOT_CONNECTED" ? 422 : 400;
+      result.code === "OUTLET_NOT_MAPPED" ||
+      result.code === "INTEGRATION_NOT_CONNECTED" ||
+      result.code === "OUTSIDE_SERVICE_AREA"
+        ? 422
+        : 400;
     return Response.json(result, { status });
   }
+
+  // Best-effort: the order is already committed, so a notification failure must
+  // not turn a successful checkout into an error. The emitter dedupes retries.
+  await recordOrderNotification({ orderId: result.order.id, kind: "order_placed" });
 
   // Phase 6 — payment lifecycle. Online methods open a PAYMENT_PENDING record
   // and the order is HELD out of the POS until the provider confirms the

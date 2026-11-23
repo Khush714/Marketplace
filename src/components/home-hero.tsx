@@ -181,7 +181,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       {/* categories */}
       <div className="mt-8 md:mt-9">
         <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:hidden">What’s on your mind?</p>
-        <p className="mb-3 hidden text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:block">Popular near you</p>
+        <p className="mb-3 hidden text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:block">What’s on your mind?</p>
 
         <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1 md:hidden">
           {CATEGORIES.map(({ label, q, Icon, tint }, i) => (

@@ -35,8 +35,10 @@ interface Props {
 }
 
 /**
- * Beautiful sign-in / sign-up popup. Uses phone OTP via the existing customer
- * account flow; creates an account automatically on first verification.
+ * Beautiful sign-in / sign-up popup. Phone OTP via the existing customer
+ * account flow is unchanged (including automatic account creation on first
+ * verification). When configured, an optional free Google Sign-In button is
+ * shown above the phone form as another way to continue.
  * Guest checkout remains available elsewhere - this dialog is only shown when
  * a flow explicitly requires an account.
  */
@@ -58,6 +60,9 @@ export function CustomerAuthDialog({
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [googleAvailable, setGoogleAvailable] = useState(false);
+  const [googleBusy, setGoogleBusy] = useState(false);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   const [devCode, setDevCode] = useState<string | null>(null);
   const [resendIn, setResendIn] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
@@ -72,6 +77,8 @@ export function CustomerAuthDialog({
     setStep("phone");
     setCode("");
     setError(null);
+    setGoogleError(null);
+    setGoogleBusy(false);
     setDevCode(null);
     setResendIn(0);
     setBusy(false);
@@ -88,6 +95,32 @@ export function CustomerAuthDialog({
     return () => window.clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, initialIntent]);
+
+  // Google Sign-In is optional; availability comes from the server. The async
+  // fetch keeps state updates out of the synchronous effect body.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await fetch("/api/customer/auth/google/status", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        const data = (await res.json().catch(() => null)) as
+          | { ok?: boolean; available?: boolean }
+          | null;
+        if (!cancelled && res.ok && data?.ok) {
+          setGoogleAvailable(Boolean(data.available));
+        }
+      } catch {
+        // Ignore errors: Google is simply unavailable for this session.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   useEffect(() => {
     if (resendIn <= 0) return;
@@ -185,6 +218,25 @@ export function CustomerAuthDialog({
     onClose();
   };
 
+  const signInWithGoogle = async () => {
+    if (busy || googleBusy || !googleAvailable) return;
+    setGoogleBusy(true);
+    setGoogleError(null);
+    const res = await account.signInWithGoogle({
+      returnTo: window.location.pathname + window.location.search,
+    });
+    setGoogleBusy(false);
+    if (!res.ok) {
+      setGoogleError(res.error ?? "Unable to sign in with Google.");
+      return;
+    }
+    // Same post-sign-in cleanup as OTP verification.
+    clearOrders();
+    identity.resetIdentity();
+    onSignedIn?.();
+    onClose();
+  };
+
   if (typeof document === "undefined") return null;
 
   return createPortal(
@@ -227,8 +279,8 @@ export function CustomerAuthDialog({
               </h2>
               <p className="mt-1.5 max-w-md text-sm leading-relaxed text-cream-400">
                 {intent === "signup"
-                  ? "Create an account with your phone number. If you're already registered, we'll ask you to sign in."
-                  : (message ?? "Sign in with your phone number to continue. Your account and order history are safely preserved.")}
+                  ? "Create an account with your phone number or Google. If you're already registered, we'll ask you to sign in."
+                  : (message ?? "Sign in with your phone or Google to continue. Your account and order history are safely preserved.")}
               </p>
 
               <div className="mt-4 flex items-center gap-2 text-xs text-cream-400">
@@ -293,6 +345,21 @@ export function CustomerAuthDialog({
                     onSubmit={start}
                     className="space-y-4"
                   >
+                    <button
+                      type="button"
+                      onClick={() => void signInWithGoogle()}
+                      disabled={googleBusy || !googleAvailable}
+                      className="press inline-flex w-full items-center justify-center gap-2.5 rounded-2xl border border-white/12 bg-white/8 px-5 py-3.5 text-sm font-semibold text-cream-50 transition-colors hover:bg-white/12 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      {googleBusy ? <LoaderCircle className="size-4 animate-spin-slow" /> : <GoogleMark />}
+                      {googleBusy ? "Connecting to Google…" : "Continue with Google"}
+                    </button>
+                    <div className="flex items-center gap-3" aria-hidden="true">
+                      <span className="h-px flex-1 bg-white/10" />
+                      <span className="text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">or</span>
+                      <span className="h-px flex-1 bg-white/10" />
+                    </div>
+
                     <div className="grid gap-2.5 sm:grid-cols-3">
                       <Feature icon={Smartphone} title="One-time code" text="Fast phone verification." />
                       <Feature icon={ShieldCheck} title="Secure" text="Hashed, never logged." />
@@ -316,6 +383,7 @@ export function CustomerAuthDialog({
                     </label>
 
                     {error && <ErrorBox message={error} />}
+                    {googleError && <ErrorBox message={googleError} />}
 
                     <button
                       type="submit"
@@ -352,7 +420,7 @@ export function CustomerAuthDialog({
                       </p>
                     </div>
 
-                    <div className="grid gap-3 sm:grid-cols-2">
+                    <div className={cn("grid gap-3", intent === "signup" && "sm:grid-cols-2")}>
                       <label className="block">
                         <span className="mb-1.5 block text-xs font-bold uppercase tracking-[0.14em] text-cream-500">Verification code</span>
                         <input
@@ -365,24 +433,22 @@ export function CustomerAuthDialog({
                           className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5 text-center font-mono text-lg font-bold tracking-[0.35em] text-cream-50 placeholder:tracking-normal placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none focus:ring-2 focus:ring-ember-400/15"
                         />
                       </label>
-                      <label className="block">
-                        <span className="mb-1.5 block text-xs font-bold uppercase tracking-[0.14em] text-cream-500">
-                          Your name{" "}
-                          {intent === "signup" ? (
+                      {intent === "signup" && (
+                        <label className="block">
+                          <span className="mb-1.5 block text-xs font-bold uppercase tracking-[0.14em] text-cream-500">
+                            Your name{" "}
                             <span className="font-medium normal-case tracking-normal text-chili-400">(required)</span>
-                          ) : (
-                            <span className="font-medium normal-case tracking-normal text-cream-600">(optional)</span>
-                          )}
-                        </span>
-                        <input
-                          value={name}
-                          onChange={(e) => setName(e.target.value)}
-                          placeholder="How should we call you?"
-                          autoComplete="name"
-                          required={intent === "signup"}
-                          className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none focus:ring-2 focus:ring-ember-400/15"
-                        />
-                      </label>
+                          </span>
+                          <input
+                            value={name}
+                            onChange={(e) => setName(e.target.value)}
+                            placeholder="How should we call you?"
+                            autoComplete="name"
+                            required
+                            className="w-full rounded-2xl border border-white/10 bg-black/30 px-4 py-3.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none focus:ring-2 focus:ring-ember-400/15"
+                          />
+                        </label>
+                      )}
                     </div>
 
                     {devCode && (
@@ -436,6 +502,17 @@ export function CustomerAuthDialog({
       )}
     </AnimatePresence>,
     document.body,
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg viewBox="0 0 48 48" aria-hidden="true" className="size-4 shrink-0">
+      <path fill="#EA4335" d="M24 9.5c3.54 0 6.71 1.22 9.21 3.6l6.85-6.85C35.9 2.38 30.47 0 24 0 14.62 0 6.51 5.38 2.56 13.22l7.98 6.19C12.43 13.72 17.74 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.98 24.55c0-1.57-.15-3.09-.38-4.55H24v9.02h12.94c-.58 2.96-2.26 5.48-4.78 7.18l7.73 6c4.51-4.18 7.09-10.36 7.09-17.65z" />
+      <path fill="#FBBC05" d="M10.53 28.59c-.48-1.45-.76-2.99-.76-4.59s.27-3.14.76-4.59l-7.98-6.19C.92 16.46 0 20.12 0 24c0 3.88.92 7.54 2.56 10.78l7.97-6.19z" />
+      <path fill="#34A853" d="M24 48c6.48 0 11.93-2.13 15.89-5.81l-7.73-6c-2.15 1.45-4.92 2.3-8.16 2.3-6.26 0-11.57-4.22-13.47-9.91l-7.98 6.19C6.51 42.62 14.62 48 24 48z" />
+    </svg>
   );
 }
 

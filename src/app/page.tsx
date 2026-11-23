@@ -3,11 +3,14 @@ import Image from "next/image";
 import Link from "next/link";
 import { ArrowRight, BadgePercent, Bike, Flame, Star, Timer, Wallet } from "lucide-react";
 import { HomeHero } from "@/components/home-hero";
+import { OfferStrip } from "@/components/offer-strip";
+import { PopularDishCard } from "@/components/popular-dish-card";
 import { Rail } from "@/components/rail";
 import { RestaurantCard } from "@/components/restaurant-card";
 import { SectionHeader } from "@/components/atoms";
+import { getPublicPopularity } from "@/db/public-popularity";
 import { browseRestaurants, featuredRestaurants } from "@/db/queries";
-import { localityByKey } from "@/lib/domain";
+import { localityByKey, withLoc } from "@/lib/domain";
 
 export const dynamic = "force-dynamic";
 
@@ -45,13 +48,15 @@ interface HomeSearchParams {
 export default async function HomePage(props: { searchParams: Promise<HomeSearchParams> }) {
   const sp = await props.searchParams;
   const locality = localityByKey(sp.loc);
-  const [all, featured, offers, topRated, nearby] = await Promise.all([
+  const [all, featured, offers, topRated, nearby, popularity] = await Promise.all([
     browseRestaurants({ locality: locality.name }),
     featuredRestaurants(locality.name),
     browseRestaurants({ offers: true, locality: locality.name }),
     browseRestaurants({ sort: "rating", locality: locality.name }),
     browseRestaurants({ sort: "near", locality: locality.name }),
+    getPublicPopularity(locality),
   ]);
+  const popularityOrders = popularity.dishes.reduce((sum, dish) => sum + dish.orderCount, 0);
 
   return (
     <div className="pb-8">
@@ -74,8 +79,88 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
         </div>
       </div>
 
-      {/* Ember Drop — hero promo */}
-      <section className="mx-auto mt-8 max-w-7xl px-4 md:mt-16 md:px-6">
+      <OfferStrip restaurants={offers} localityKey={locality.key} localityName={locality.name} />
+
+      {/* Popular dishes — only rendered when real order data clears the sample floor */}
+      {popularity.dishes.length > 0 && (
+        <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+          <div data-reveal="up">
+            <SectionHeader
+              title={`Popular dishes near ${popularity.scopeLabel}`}
+              sub={`Trending from ${popularityOrders} real orders in the last ${popularity.windowDays} days`}
+            />
+          </div>
+          <Rail ariaLabel="Popular dishes">
+            {popularity.dishes.map((dish, i) => (
+              <PopularDishCard key={`${dish.id}:${dish.restaurantSlug}`} dish={dish} index={i} />
+            ))}
+          </Rail>
+        </section>
+      )}
+
+      {/* Featured rail */}
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+        <div data-reveal="up">
+          <SectionHeader title="Featured tonight" sub={`Hand-picked in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
+        </div>
+        <Rail ariaLabel="Featured restaurants">
+          {featured.map((r, i) => (
+            <RestaurantCard
+              key={r.slug}
+              restaurant={r}
+              size="lg"
+              priority={i < 2}
+              index={i}
+              className="w-[78vw] max-w-[340px] shrink-0 snap-start md:w-[340px]"
+            />
+          ))}
+        </Rail>
+      </section>
+
+      {/* Distance-sorted listings are nearby, not popularity-ranked */}
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+        <div data-reveal="up">
+          <SectionHeader title="Restaurants near you" sub={`Within a short ride of ${locality.name}`} href={`/restaurants?sort=near&loc=${locality.key}`} />
+        </div>
+        <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+          {nearby.slice(0, 8).map((r, i) => (
+            <RestaurantCard key={r.slug} restaurant={r} index={i} />
+          ))}
+        </div>
+      </section>
+
+      {/* Top rated rail */}
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+        <div data-reveal="up">
+          <SectionHeader title="Top rated" sub={`Consistently exceptional in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
+        </div>
+        <Rail ariaLabel="Top rated restaurants">
+          {topRated.slice(0, 8).map((r, i) => (
+            <RestaurantCard
+              key={r.slug}
+              restaurant={r}
+              index={i}
+              className="w-[70vw] max-w-[300px] shrink-0 snap-start md:w-[300px]"
+            />
+          ))}
+        </Rail>
+      </section>
+
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+        <Link
+          href={withLoc("/restaurants", locality.key)}
+          className="press group flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3.5 transition-colors hover:bg-white/[0.06] md:px-5"
+        >
+          <span className="min-w-0">
+            <span className="block font-display text-base font-bold text-cream-50">All restaurants</span>
+            <span className="block text-xs text-cream-500">Browse every kitchen delivering to {locality.name}</span>
+          </span>
+          <ArrowRight className="size-4 shrink-0 text-ember-300 transition-transform duration-300 group-hover:translate-x-1" />
+        </Link>
+      </section>
+
+      {/* Editorial promos sit below discovery so they never push restaurants off the first screen */}
+      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <Link
           href="/restaurants/ember-and-oak"
           className="group relative block overflow-hidden rounded-[28px] shadow-float press"
@@ -118,38 +203,6 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
         </Link>
       </section>
 
-      {/* Featured rail */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
-        <div data-reveal="up">
-          <SectionHeader title="Featured tonight" sub={`Hand-picked in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
-        </div>
-        <Rail ariaLabel="Featured restaurants">
-          {featured.map((r, i) => (
-            <RestaurantCard
-              key={r.slug}
-              restaurant={r}
-              size="lg"
-              priority={i < 2}
-              index={i}
-              className="w-[78vw] max-w-[340px] shrink-0 snap-start md:w-[340px]"
-            />
-          ))}
-        </Rail>
-      </section>
-
-      {/* Popular near you */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
-        <div data-reveal="up">
-          <SectionHeader title="Popular near you" sub={`Within a short ride of ${locality.name}`} href={`/restaurants?sort=near&loc=${locality.key}`} />
-        </div>
-        <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {nearby.slice(0, 8).map((r, i) => (
-            <RestaurantCard key={r.slug} restaurant={r} index={i} />
-          ))}
-        </div>
-      </section>
-
-      {/* Dessert promo */}
       <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
         <Link
           href="/restaurants/the-velvet-crumb"
@@ -192,35 +245,6 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
             </div>
           </div>
         </Link>
-      </section>
-
-      {/* Top rated rail */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
-        <div data-reveal="up">
-          <SectionHeader title="Top rated" sub={`Consistently exceptional in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
-        </div>
-        <Rail ariaLabel="Top rated restaurants">
-          {topRated.slice(0, 8).map((r, i) => (
-            <RestaurantCard
-              key={r.slug}
-              restaurant={r}
-              index={i}
-              className="w-[70vw] max-w-[300px] shrink-0 snap-start md:w-[300px]"
-            />
-          ))}
-        </Rail>
-      </section>
-
-      {/* Offers */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
-        <div data-reveal="up">
-          <SectionHeader title="Offers near you" sub={`Deals worth crossing the street for in ${locality.name}`} href={`/restaurants?offers=1&loc=${locality.key}`} />
-        </div>
-        <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
-          {offers.slice(0, 8).map((r, i) => (
-            <RestaurantCard key={r.slug} restaurant={r} index={i} />
-          ))}
-        </div>
       </section>
     </div>
   );

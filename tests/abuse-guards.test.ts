@@ -195,6 +195,7 @@ test("the customer-facing budgets leave room for a shared mobile address", () =>
   assert.ok(ABUSE_BUDGETS.checkout.limit >= 10, "several people must be able to order from one address");
   assert.ok(ABUSE_BUDGETS.billPreview.limit >= 60, "a cart with many edits must not self-throttle");
   assert.ok(ABUSE_BUDGETS.restaurants.limit >= 120, "browse is refetched on every filter change");
+  assert.ok(ABUSE_BUDGETS.popularity.limit >= 60, "search chips refetch popularity on open");
   assert.ok(ABUSE_BUDGETS.publicReviews.limit >= 120, "reviews are paged on every listing visit");
   assert.ok(ABUSE_BUDGETS.search.limit >= 30, "a person searches continuously");
   assert.ok(ABUSE_BUDGETS.orderLookup.limit >= 20, "history is refetched on every page load");
@@ -243,6 +244,12 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
   { path: "src/app/api/partner/session/route.ts", guard: "guardWrite", scope: "ownerVerify" },
   { path: "src/app/api/integration/login/route.ts", guard: "guardWrite", scope: "integrationLogin" },
   { path: "src/app/api/search/route.ts", guard: "guardRead", scope: "search" },
+  {
+    path: "src/app/api/popularity/route.ts",
+    guard: "guardRead",
+    scope: "popularity",
+    db: "getPublicPopularity",
+  },
   { path: "src/app/api/restaurants/route.ts", guard: "guardRead", scope: "restaurants" },
   { path: "src/app/api/restaurants/[slug]/route.ts", guard: "guardRead", scope: "restaurants" },
   {
@@ -263,6 +270,12 @@ const GUARDED_ROUTES: { path: string; guard: string; scope: string; db?: string 
     guard: "guardWrite",
     scope: "orderCancel",
     db: "requestCustomerCancellation",
+  },
+  {
+    path: "src/app/api/orders/[code]/cancel/route.ts",
+    guard: "guardWrite",
+    scope: "orderCancel",
+    db: "cancelMerchantOrderByCode",
   },
   { path: "src/app/api/orders/[code]/review/route.ts", guard: "guardWrite", scope: "orderReview", db: "getOrderByCode" },
   // Credential-gated routes, budgeted ahead of the credential check. Several
@@ -371,7 +384,7 @@ test("the guard runs before the route does any work", () => {
     const dbAt = source.search(
       route.db
         ? new RegExp(`await ${route.db}\\(`)
-        : /await (db|createOrder|computeBill|getOrderByCode|verifyOwner|searchAll|browseRestaurants|featuredRestaurants|restaurantsBySlugs|selfRegisterRestaurant)/,
+        : /await (db|createOrder|computeBill|getOrderByCode|verifyOwner|searchAll|searchFacets|browseRestaurants|featuredRestaurants|restaurantsBySlugs|selfRegisterRestaurant)/,
     );
     assert.ok(guardAt >= 0, `${route.path} has no guard`);
     assert.ok(dbAt === -1 || dbAt > guardAt, `${route.path} touches the database before the guard`);
@@ -444,8 +457,12 @@ test("the partner form ships the honeypot field and is unfocusable", () => {
 test("search escapes the pattern at the query layer, not only at the route", () => {
   // The route clamps the term; the LIKE pattern is built here. If escaping lived
   // only at the route, a second caller of searchAll would reintroduce the bug.
+  // The shared helper is the single place that escapes wildcards, so both the
+  // search and browse call sites must go through it.
   const source = readSource("src/db/queries.ts");
-  assert.match(source, /const like = `%\$\{escapeLike\(q\)\}%`;/);
+  assert.match(source, /function containsLike\(q: string\): string \{\s*return `%\$\{escapeLike\(q\)\}%`;\s*\}/);
+  assert.match(source, /const like = containsLike\(q\);/);
+  assert.match(source, /const like = containsLike\(filters\.q\);/);
 });
 
 test("the slug cap holds in the query helper too, not only at the route", () => {

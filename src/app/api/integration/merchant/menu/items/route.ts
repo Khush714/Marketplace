@@ -1,4 +1,5 @@
 import { NextRequest } from "next/server";
+import { getMerchantMenuRevision } from "@/db/merchant-menu-import";
 import { createMenuItem, deleteMenuItem, getPartnerMenu, setItemModifierGroups, updateMenuItem } from "@/db/partner-menu";
 import { guardBudget, readJsonBody } from "@/lib/abuse";
 import { authenticateMerchantApp, unauthenticatedMerchantApp } from "@/lib/merchant-app-auth";
@@ -10,8 +11,10 @@ function mapItem(item: PartnerMenuItemDto, businessId: string) {
   return {
     id: String(item.id), businessId, name: item.name, description: item.description,
     price: item.priceCents, category: item.category, imageUrl: item.imageUrl,
-    dietary: item.isVeg ? "veg" : "nonveg", available: item.available, archived: false,
+    dietary: item.dietary ?? (item.isVeg ? "veg" : "nonveg"),
+    available: item.available, archived: item.archived ?? false,
     stockQuantity: item.stockQuantity, modifierGroupIds: item.modifierGroupIds,
+    ...(item.externalId ? { externalId: item.externalId } : {}),
     posSynced: item.posSynced,
   };
 }
@@ -26,9 +29,13 @@ async function readPayload(req: NextRequest): Promise<{ auth: { restaurantId: nu
 export async function GET(req: NextRequest) {
   const result = await readPayload(req);
   if ("response" in result) return result.response;
-  const menu = await getPartnerMenu(result.auth.restaurantId);
+  const [menu, revision] = await Promise.all([
+    getPartnerMenu(result.auth.restaurantId),
+    getMerchantMenuRevision(result.auth.restaurantId),
+  ]);
   if (!menu) return Response.json({ ok: false, error: "Merchant not found" }, { status: 404 });
   return Response.json({
+    revision,
     items: menu.items.map((item) => mapItem(item, result.auth.businessId)),
     modifierGroups: menu.modifierGroups,
   }, { headers: { "Cache-Control": "no-store" } });

@@ -1,10 +1,13 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
 import { useCallback, useEffect, useMemo, useState, type FormEvent, type ReactNode } from "react";
 import {
+  ArrowRight,
   BadgeCheck,
   Check,
+  Clock3,
   Heart,
   House,
   Leaf,
@@ -28,8 +31,9 @@ import {
 import { RestaurantCard } from "@/components/restaurant-card";
 import { Rail } from "@/components/rail";
 import { useCustomerAccount } from "@/lib/customer-account";
-import { cn, formatINR } from "@/lib/domain";
+import { cn, formatINR, withLoc } from "@/lib/domain";
 import { avatarEmojiFor, CUSTOMER_AVATAR_OPTIONS } from "@/lib/customer-avatar";
+import { useLocation } from "@/lib/location";
 import type { PublicOrder } from "@/lib/order-public";
 import { useProfile } from "@/lib/profile";
 import { useToast } from "@/lib/toast";
@@ -61,6 +65,7 @@ function formatPhone(phoneE164: string): string {
 export default function ProfilePage() {
   const profile = useProfile();
   const account = useCustomerAccount();
+  const { locality } = useLocation();
   const { toast } = useToast();
 
   const [editing, setEditing] = useState(false);
@@ -467,6 +472,107 @@ export default function ProfilePage() {
           )}
         </div>
       </section>
+
+      {(profile.recentSearches.length > 0 ||
+        profile.recentDishes.length > 0 ||
+        profile.recentRestaurants.length > 0) && (
+        <section className="glass mt-7 rounded-3xl p-5 md:p-6" aria-label="Recent activity">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+            <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
+              <Clock3 className="size-4.5 text-ember-400" /> Recent
+            </h2>
+            <button
+              type="button"
+              onClick={profile.clearRecents}
+              aria-label="Clear all recents"
+              className="press rounded-full bg-white/8 px-3.5 py-1.5 text-xs font-semibold text-cream-300 transition-colors hover:bg-white/12 hover:text-chili-300"
+            >
+              Clear all
+            </button>
+          </div>
+
+          <div className="space-y-5">
+            {profile.recentSearches.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500">
+                  Searches
+                </h3>
+                <div className="flex flex-wrap gap-2">
+                  {profile.recentSearches.map((s) => (
+                    <Link
+                      key={s}
+                      href={withLoc(`/restaurants?q=${encodeURIComponent(s)}`, locality.key)}
+                      className="press rounded-full bg-white/6 px-3 py-1.5 text-sm text-cream-200 transition-colors hover:bg-white/12"
+                    >
+                      {s}
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {profile.recentDishes.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500">
+                  Dishes
+                </h3>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {profile.recentDishes.map((d) => (
+                    <Link
+                      key={`${d.id}:${d.restaurantSlug}`}
+                      href={`/restaurants/${d.restaurantSlug}?dish=${d.id}`}
+                      onClick={() => profile.rememberDish(d)}
+                      className="press group flex min-w-0 items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] p-2.5 transition-colors hover:bg-white/[0.07]"
+                    >
+                      <span className="relative size-14 shrink-0 overflow-hidden rounded-xl">
+                        <Image src={d.imageUrl} alt="" fill sizes="56px" className="object-cover" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="flex items-center gap-1.5">
+                          {d.isVeg && <Leaf className="size-3 shrink-0 text-mint-400" />}
+                          <span className="truncate text-sm font-semibold text-cream-50">{d.name}</span>
+                        </span>
+                        <span className="mt-0.5 block truncate text-xs text-cream-500">
+                          {d.restaurantName} · {formatINR(d.priceCents)}
+                        </span>
+                      </span>
+                      <ArrowRight className="size-4 shrink-0 text-cream-600 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:text-ember-400" />
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {profile.recentRestaurants.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500">
+                  Restaurants
+                </h3>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {profile.recentRestaurants.map((r) => (
+                    <Link
+                      key={r.slug}
+                      href={`/restaurants/${r.slug}`}
+                      className="press group flex min-w-0 items-center gap-3 rounded-2xl border border-white/8 bg-white/[0.03] p-2.5 transition-colors hover:bg-white/[0.07]"
+                    >
+                      <span className="relative size-14 shrink-0 overflow-hidden rounded-xl">
+                        <Image src={r.imageUrl} alt="" fill sizes="56px" className="object-cover" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-semibold text-cream-50">{r.name}</span>
+                        <span className="mt-0.5 block truncate text-xs text-cream-500">
+                          {r.cuisines.slice(0, 2).join(" · ") || "Restaurant"} · {r.deliveryMinutes} min
+                        </span>
+                      </span>
+                      <ArrowRight className="size-4 shrink-0 text-cream-600 transition-transform duration-300 group-hover:translate-x-0.5 group-hover:text-ember-400" />
+                    </Link>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
+        </section>
+      )}
 
       {signedIn && (<>
       {/* identity card */}

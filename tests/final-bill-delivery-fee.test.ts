@@ -44,7 +44,7 @@ test("checkout final bill renders a delivery fee line from the bill/estimate", (
   // the client estimate while the preview is in flight.
   assert.match(checkout, /deliveryFeeCents=\{bill\?\.deliveryFeeCents \?\? estimate\.deliveryFee\}/);
   assert.match(checkout, /platformFeeCents=\{bill\?\.platformFeeCents \?\? estimate\.platformFee\}/);
-  assert.match(checkout, /subtotalCents=\{cart\.subtotalCents\}/);
+  assert.match(checkout, /subtotalCents=\{bill\?\.subtotalCents \?\? activeSubtotalCents\}/);
 
   // Not just a bare total: the delivery fee is a visible line item with the
   // free-delivery case handled, and the total still matches the bill.

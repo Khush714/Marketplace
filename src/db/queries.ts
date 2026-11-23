@@ -1,6 +1,6 @@
 import "server-only";
 import { randomBytes } from "node:crypto";
-import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, ne, or, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, ilike, inArray, isNotNull, isNull, lt, lte, ne, or, sql, type SQL, type SQLWrapper } from "drizzle-orm";
 import { db } from "@/db";
 import { findRedeemableMerchantOffer } from "@/db/merchant-offers";
 import { publicRatingSql, publicRestaurantColumns } from "@/db/public-rating";
@@ -50,7 +50,12 @@ import { CUSTOMER_SESSION_TTL_MS, makeCustomerSessionToken, normalizeOrderCodes 
 import { hashTrackingToken, makeTrackingToken } from "@/lib/order-tracking";
 import { feedbackDto } from "@/lib/order-feedback";
 import { publicRating } from "@/lib/public-rating-core";
+import { listingAvailability } from "@/lib/restaurant-availability-core";
+import { isMenuItemSoldOut } from "@/lib/menu-availability-core";
+import { isWithinMerchantHours } from "@/lib/merchant-hours";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
+import { resolveDeliveryLocality } from "@/lib/delivery-locality-core";
+import { deliveryAvailableSql, openNowSql } from "@/db/availability";
 import { discoverableRestaurant } from "@/lib/discoverability";
 import { closedReason, isRestaurantClosed } from "@/lib/restaurant-closure";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
@@ -92,6 +97,8 @@ import type {
   OrderStatusDto,
   RestaurantDto,
   RestaurantManageDto,
+  SearchFacets,
+  SearchMatchKind,
   SearchResult,
 } from "@/lib/types";
 
@@ -115,6 +122,7 @@ function toRestaurantDto(r: RestaurantRow): RestaurantDto {
     { rating: r.rating, ratingsCount: r.ratingsCount },
     r.publicRating == null ? null : { averageRating: r.publicRating, reviewCount: r.publicRatingCount ?? 0 },
   );
+  const availability = listingAvailability(r);
   return {
     id: r.id,
     slug: r.slug,
@@ -132,6 +140,8 @@ function toRestaurantDto(r: RestaurantRow): RestaurantDto {
     featured: r.featured,
     pureVeg: r.pureVeg,
     locality: r.locality,
+    openNow: availability.openNow,
+    deliveryAvailable: availability.deliveryAvailable,
     marketplaceId: r.marketplaceId ?? null,
   };
 }
@@ -150,6 +160,8 @@ function toMenuItemDto(
     imageUrl: sanitizeImageUrl(m.imageUrl, DEFAULT_DISH_IMAGE),
     isVeg: m.isVeg,
     isBestseller: m.isBestseller,
+    available: m.available,
+    stockQuantity: m.stockQuantity,
     ...(modifierGroups?.length ? { modifierGroups } : {}),
   };
 }
@@ -523,6 +535,14 @@ export interface BrowseFilters {
   offers?: boolean;
   minRating?: boolean;
   veg?: boolean;
+  /** Within the merchant's published IST hours; closures are already excluded. */
+  openNow?: boolean;
+  /** Merchant App delivery setting, layered on the same open-hours test. */
+  delivery?: boolean;
+  /** Cost-for-two tier (1–4), the same value rendered as ₹…₹₹₹₹ on cards. */
+  price?: number;
+  /** Upper bound on the published delivery estimate, in minutes. */
+  maxTime?: number;
 }
 
 export async function browseRestaurants(filters: BrowseFilters = {}): Promise<RestaurantDto[]> {
@@ -531,12 +551,22 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
     // Escaped the same way `searchAll` escapes: `%`/`_` in a typed term are
     // literals, not pattern syntax, so a query of "%" does not match the whole
     // catalogue (and browse has no `.limit()` to absorb it).
-    const like = `%${escapeLike(filters.q)}%`;
+    const like = containsLike(filters.q);
+    const dishMatch = sql`exists (
+      select 1 from ${menuItems} mi
+      where mi.restaurant_id = ${restaurants.id}
+        and mi.available = true
+        and (mi.name ilike ${like} or mi.description ilike ${like} or mi.category ilike ${like})
+    )`;
     conditions.push(
       or(
         ilike(restaurants.name, like),
         ilike(restaurants.tagline, like),
         sql`exists (select 1 from unnest(${restaurants.cuisines}) c where c ilike ${like})`,
+        // A dish hit is a real reason to show a restaurant. Without this,
+        // "Paneer Tikka" only found kitchens that happened to put the words in
+        // their name/tagline, which is the opposite of what customers expect.
+        dishMatch,
       ),
     );
   }
@@ -547,8 +577,15 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
   if (filters.offers) conditions.push(sql`${restaurants.offer} is not null`);
   if (filters.minRating) conditions.push(gt(publicRatingSql, 4.5));
   if (filters.veg) conditions.push(eq(restaurants.pureVeg, true));
+  // Availability is an additional constraint on a discoverable listing: a
+  // closed kitchen is already hidden, and these narrow further to hours and
+  // the merchant's delivery toggle. Both reuse checkout's exact rules.
+  if (filters.openNow) conditions.push(openNowSql);
+  if (filters.delivery) conditions.push(deliveryAvailableSql);
+  if (filters.price !== undefined) conditions.push(eq(restaurants.priceLevel, filters.price));
+  if (filters.maxTime !== undefined) conditions.push(lte(restaurants.deliveryMinutes, filters.maxTime));
 
-  const orderBy =
+  const selectedOrder =
     filters.sort === "rating"
       ? [desc(publicRatingSql)]
       : filters.sort === "fast"
@@ -563,6 +600,13 @@ export async function browseRestaurants(filters: BrowseFilters = {}): Promise<Re
               // implicitly for ASC.
               ? [sql`${restaurants.distanceKm} asc nulls last`]
               : [desc(restaurants.featured), desc(publicRatingSql)];
+
+  // A text query is a relevance question first and a sort question second.
+  // Ranking dish hits alongside restaurant-name hits keeps "Paneer Tikka"
+  // anchored to kitchens that actually sell it, even on the browse page.
+  const orderBy = filters.q
+    ? [desc(browseMatchRankSql(filters.q)), ...selectedOrder]
+    : selectedOrder;
 
   const rows = await db
     .select(publicRestaurantColumns)
@@ -646,12 +690,153 @@ export async function getRestaurant(slug: string) {
 
 /* --------------------------------- search -------------------------------- */
 
+/**
+ * Relevance weights live in one place so the overlay, the search endpoint and
+ * the browse endpoint agree on what "Paneer Tikka" means. Higher wins: a dish
+ * named exactly like the query is more useful than a kitchen that merely has
+ * the words in its tagline.
+ */
+const SEARCH_RANK = {
+  dish: {
+    nameExact: 100,
+    namePrefix: 90,
+    categoryExact: 80,
+    categoryPrefix: 70,
+    nameContains: 60,
+    categoryContains: 50,
+    description: 40,
+  },
+  restaurant: {
+    nameExact: 60,
+    namePrefix: 50,
+    cuisineExact: 40,
+    cuisineContains: 35,
+    tagline: 30,
+    nameContains: 20,
+  },
+} as const;
+
+function containsLike(q: string): string {
+  return `%${escapeLike(q)}%`;
+}
+
+function prefixLike(q: string): string {
+  return `${escapeLike(q)}%`;
+}
+
+function dishRankSql(q: string, name: SQLWrapper, description: SQLWrapper, category: SQLWrapper): SQL {
+  const exact = q.toLowerCase();
+  const r = SEARCH_RANK.dish;
+  return sql<number>`
+    case
+      when lower(${name}) = ${exact} then ${r.nameExact}
+      when ${name} ilike ${prefixLike(q)} then ${r.namePrefix}
+      when lower(${category}) = ${exact} then ${r.categoryExact}
+      when ${category} ilike ${prefixLike(q)} then ${r.categoryPrefix}
+      when ${name} ilike ${containsLike(q)} then ${r.nameContains}
+      when ${category} ilike ${containsLike(q)} then ${r.categoryContains}
+      when ${description} ilike ${containsLike(q)} then ${r.description}
+      else 0
+    end
+  `;
+}
+
+function restaurantRankSql(q: string, name: SQLWrapper, tagline: SQLWrapper, cuisines: SQLWrapper): SQL {
+  const exact = q.toLowerCase();
+  const r = SEARCH_RANK.restaurant;
+  return sql<number>`
+    case
+      when lower(${name}) = ${exact} then ${r.nameExact}
+      when ${name} ilike ${prefixLike(q)} then ${r.namePrefix}
+      when exists (select 1 from unnest(${cuisines}) c where lower(c) = ${exact}) then ${r.cuisineExact}
+      when exists (select 1 from unnest(${cuisines}) c where c ilike ${containsLike(q)}) then ${r.cuisineContains}
+      when ${tagline} ilike ${containsLike(q)} then ${r.tagline}
+      when ${name} ilike ${containsLike(q)} then ${r.nameContains}
+      else 0
+    end
+  `;
+}
+
+function dishMatchKind(rank: number): SearchMatchKind {
+  // Compare against the exact weights, not a running threshold: category exact
+  // intentionally outranks name substring, but it is still a category match.
+  const r = SEARCH_RANK.dish;
+  if (rank === r.nameExact || rank === r.namePrefix || rank === r.nameContains) return "name";
+  if (rank === r.categoryExact || rank === r.categoryPrefix || rank === r.categoryContains) return "category";
+  return "description";
+}
+
+function restaurantMatchKind(rank: number): SearchMatchKind {
+  const r = SEARCH_RANK.restaurant;
+  if (rank === r.nameExact || rank === r.namePrefix || rank === r.nameContains) return "name";
+  if (rank === r.cuisineExact || rank === r.cuisineContains) return "cuisine";
+  return "tagline";
+}
+
+function browseMatchRankSql(q: string): SQL {
+  const dishRank = dishRankSql(q, sql`mi.name`, sql`mi.description`, sql`mi.category`);
+  return sql<number>`greatest(
+    ${restaurantRankSql(q, restaurants.name, restaurants.tagline, restaurants.cuisines)},
+    coalesce((
+      select max(${dishRank})
+      from ${menuItems} mi
+      where mi.restaurant_id = ${restaurants.id}
+        and mi.available = true
+        and (mi.stock_quantity is null or mi.stock_quantity > 0)
+    ), 0)
+  )`;
+}
+
 export async function searchAll(q: string, locality?: string): Promise<SearchResult[]> {
   // The term becomes a LIKE pattern, so its wildcards have to be escaped or a
   // query of "%" matches every row and "_" matches any character — the pattern
   // stops meaning what the user typed. `.limit()` below still bounds the result
   // set; this bounds the pattern the planner has to work through.
-  const like = `%${escapeLike(q)}%`;
+  const like = containsLike(q);
+
+  const dishRank = dishRankSql(q, menuItems.name, menuItems.description, menuItems.category);
+  const dishConditions: (SQL | undefined)[] = [
+    discoverableRestaurant,
+    eq(menuItems.available, true),
+    or(isNull(menuItems.stockQuantity), gt(menuItems.stockQuantity, 0)),
+    or(
+      ilike(menuItems.name, like),
+      ilike(menuItems.category, like),
+      ilike(menuItems.description, like),
+    ),
+  ];
+  if (locality) dishConditions.push(eq(restaurants.locality, locality));
+
+  const dishRows = await db
+    .select({
+      id: menuItems.id,
+      name: menuItems.name,
+      priceCents: menuItems.priceCents,
+      isVeg: menuItems.isVeg,
+      imageUrl: menuItems.imageUrl,
+      restaurantSlug: restaurants.slug,
+      restaurantName: restaurants.name,
+      rank: dishRank,
+    })
+    .from(menuItems)
+    .innerJoin(restaurants, eq(menuItems.restaurantId, restaurants.id))
+    .where(and(...dishConditions))
+    .orderBy(desc(dishRank), desc(menuItems.isBestseller), asc(menuItems.name))
+    .limit(8);
+
+  const dishResults: SearchResult[] = dishRows.map((d) => ({
+    type: "dish",
+    id: d.id,
+    name: d.name,
+    priceCents: d.priceCents,
+    isVeg: d.isVeg,
+    imageUrl: sanitizeImageUrl(d.imageUrl, DEFAULT_DISH_IMAGE),
+    restaurantSlug: d.restaurantSlug,
+    restaurantName: d.restaurantName,
+    match: dishMatchKind(Number(d.rank ?? 0)),
+  }));
+
+  const restaurantRank = restaurantRankSql(q, restaurants.name, restaurants.tagline, restaurants.cuisines);
   const restaurantCondition = and(
     discoverableRestaurant,
     or(
@@ -661,11 +846,11 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
     ),
   );
   const restRows = await db
-    .select(publicRestaurantColumns)
+    .select({ ...publicRestaurantColumns, rank: restaurantRank })
     .from(restaurants)
     .where(locality ? and(restaurantCondition, eq(restaurants.locality, locality)) : restaurantCondition)
-    .orderBy(desc(publicRatingSql))
-    .limit(5);
+    .orderBy(desc(restaurantRank), desc(publicRatingSql), desc(restaurants.featured))
+    .limit(4);
 
   const restResults: SearchResult[] = restRows.map((r) => {
     const rating = publicRating(
@@ -682,49 +867,66 @@ export async function searchAll(q: string, locality?: string): Promise<SearchRes
       deliveryMinutes: r.deliveryMinutes,
       imageUrl: sanitizeImageUrl(r.imageUrl, DEFAULT_RESTAURANT_IMAGE),
       offer: r.offer,
+      match: restaurantMatchKind(Number(r.rank ?? 0)),
     };
   });
 
-  const dishLike = await db
-    .select({
-      id: menuItems.id,
-      name: menuItems.name,
-      priceCents: menuItems.priceCents,
-      isVeg: menuItems.isVeg,
-      imageUrl: menuItems.imageUrl,
-      restaurantSlug: restaurants.slug,
-      restaurantName: restaurants.name,
-    })
+  // Dish hits lead. A kitchen whose name contains the words is still useful,
+  // but it must never bury the dishes customers actually came to find.
+  return [...dishResults, ...restResults];
+}
+
+/**
+ * Cuisine and category refinements for the suggestion strip.
+ *
+ * These are facets, not results: a customer typing "north" should be able to
+ * jump to the `North Indian` cuisine even when no single dish or restaurant
+ * name contains the whole phrase. Both scans keep the same escaping and
+ * discoverability rules as `searchAll`, and both are bounded because this runs
+ * on every debounced keystroke.
+ */
+export async function searchFacets(q: string, locality?: string): Promise<SearchFacets> {
+  const like = containsLike(q);
+  const needle = q.toLowerCase();
+  const rank = (text: string) => {
+    const lower = text.toLowerCase();
+    return lower === needle ? 0 : lower.startsWith(needle) ? 1 : 2;
+  };
+
+  const categoryConditions: (SQL | undefined)[] = [
+    discoverableRestaurant,
+    eq(menuItems.available, true),
+    or(isNull(menuItems.stockQuantity), gt(menuItems.stockQuantity, 0)),
+    ilike(menuItems.category, like),
+  ];
+  if (locality) categoryConditions.push(eq(restaurants.locality, locality));
+  const categoryRows = await db
+    .selectDistinct({ text: menuItems.category })
     .from(menuItems)
     .innerJoin(restaurants, eq(menuItems.restaurantId, restaurants.id))
-    .where(
-      locality
-        ? and(
-            eq(restaurants.isActive, true),
-            or(ilike(menuItems.name, like), ilike(menuItems.description, like)),
-            eq(restaurants.locality, locality),
-          )
-        : and(
-            eq(restaurants.isActive, true),
-            or(ilike(menuItems.name, like), ilike(menuItems.description, like)),
-          ),
-    )
-    .orderBy(desc(menuItems.isBestseller))
-    .limit(6);
+    .where(and(...categoryConditions))
+    .limit(24);
+  const categories = categoryRows
+    .map((row) => row.text)
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .slice(0, 4);
 
-  // Deduplicate: favourite dishes whose restaurant already matched still surfaced as dishes
-  const dishResults: SearchResult[] = dishLike.map((d) => ({
-    type: "dish",
-    id: d.id,
-    name: d.name,
-    priceCents: d.priceCents,
-    isVeg: d.isVeg,
-    imageUrl: sanitizeImageUrl(d.imageUrl, DEFAULT_DISH_IMAGE),
-    restaurantSlug: d.restaurantSlug,
-    restaurantName: d.restaurantName,
-  }));
+  const cuisineConditions: (SQL | undefined)[] = [
+    discoverableRestaurant,
+    sql`exists (select 1 from unnest(${restaurants.cuisines}) c where c ilike ${like})`,
+  ];
+  if (locality) cuisineConditions.push(eq(restaurants.locality, locality));
+  const cuisineRows = await db
+    .select({ cuisines: restaurants.cuisines })
+    .from(restaurants)
+    .where(and(...cuisineConditions))
+    .limit(24);
+  const cuisines = [...new Set(cuisineRows.flatMap((row) => row.cuisines))]
+    .filter((c) => c.toLowerCase().includes(needle))
+    .sort((a, b) => rank(a) - rank(b) || a.localeCompare(b))
+    .slice(0, 4);
 
-  return [...restResults, ...dishResults];
+  return { cuisines, categories };
 }
 
 export async function restaurantsBySlugs(slugs: string[]): Promise<RestaurantDto[]> {
@@ -2924,6 +3126,11 @@ export interface CreateOrderInput {
    */
   clientRequestId?: string;
   /**
+   * SHA-256 of the browser's anonymous inbox token. Set by the checkout route
+   * after validating the token; never accepted as a raw client value here.
+   */
+  customerInboxHash?: string | null;
+  /**
    * Optional outlet claim (Phase 7). When present it must match the
    * restaurant's ACTIVE integration record outlet, else the checkout is
    * rejected (never silently routed to a different branch). Absent → legacy
@@ -2935,6 +3142,9 @@ export interface CreateOrderInput {
    * server after resolving a live account session; never trusted from the client.
    */
   customerAccountId?: number | null;
+  /** Checkout's selected locality key and the URL's `?loc=` claim, rechecked before the write. */
+  localityKey?: string;
+  urlLocalityKey?: string | null;
 }
 
 /** Linked modifier group + its available options, resolved per menu item. */
@@ -2960,16 +3170,6 @@ export async function hasActiveMerchantAppLink(restaurantId: number): Promise<bo
   return Boolean(link);
 }
 
-function withinMerchantHours(restaurant: typeof restaurants.$inferSelect, now = new Date()): boolean {
-  if (!restaurant.merchantHoursEnabled) return true;
-  const current = new Intl.DateTimeFormat("en-GB", {
-    timeZone: "Asia/Kolkata", hour: "2-digit", minute: "2-digit", hourCycle: "h23",
-  }).format(now);
-  const open = restaurant.merchantOpensAt;
-  const close = restaurant.merchantClosesAt;
-  if (open === close) return false;
-  return open < close ? current >= open && current < close : current >= open || current < close;
-}
 
 export async function computeBill(
   restaurantSlug: string,
@@ -3003,7 +3203,9 @@ export async function computeBill(
     .limit(1);
   if (!r) return { ok: false, error: "Restaurant not found" };
   if (!r.isActive || isRestaurantClosed(r)) return { ok: false, error: `${r.name} is ${closedReason(r).toLowerCase()}` };
-  if (!withinMerchantHours(r)) return { ok: false, error: `${r.name} is outside its operating hours` };
+  if (!isWithinMerchantHours(r.merchantHoursEnabled, r.merchantOpensAt, r.merchantClosesAt)) {
+    return { ok: false, error: `${r.name} is outside its operating hours` };
+  }
   if (!items.length) return { ok: false, error: "Cart is empty" };
 
   // Ordering gate. Enforced before any line is priced so the bill preview and
@@ -3043,7 +3245,7 @@ export async function computeBill(
     // silently rewritten here.
     const qty = Math.min(MAX_ITEM_QUANTITY, Math.max(1, Math.floor(item.quantity) || 1));
 
-    if (!m.available || (m.stockQuantity !== null && m.stockQuantity <= 0)) {
+    if (isMenuItemSoldOut(m)) {
       dropped.push({ menuItemId: m.id, name: m.name, reason: "sold_out" });
       continue;
     }
@@ -3099,6 +3301,17 @@ export async function computeBill(
     const lineSubtotal = m.priceCents * qty + modifierSubtotal;
     subtotal += lineSubtotal;
     lines.push({ menuItem: m, quantity: qty, stalePrice, modifiers: priced });
+  }
+
+  // A cart made entirely of sold-out dishes must not become a zero-value order.
+  // The client hides its checkout CTA in this case; this is the backstop for a
+  // direct call or a dish that sold out after the cart was last refreshed.
+  if (!lines.length) {
+    return {
+      ok: false,
+      error: "Every item in your cart is sold out",
+      code: "ALL_ITEMS_SOLD_OUT",
+    };
   }
 
   const normalizedPromo = promoCode ? parseOfferCode(promoCode) : null;
@@ -3284,6 +3497,14 @@ export async function createOrder(
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
   const { restaurant: r, lines, bill } = computed;
 
+  const locality = resolveDeliveryLocality({
+    localityKey: input.localityKey,
+    urlLocalityKey: input.urlLocalityKey,
+    addressText: input.addressText,
+    restaurantLocality: r.locality,
+  });
+  if (!locality.ok) return { ok: false, error: locality.error, code: locality.code };
+
   // The gate decision is stamped on the order rather than re-derived later, so
   // tracking shows the POS lifecycle this order was actually admitted into even
   // if the restaurant's integration is disabled while the order is in flight.
@@ -3369,6 +3590,7 @@ export async function createOrder(
         // offer's usage limit and the Merchant App's redemption count real.
         offerCode: computed.promoCode ?? null,
         clientRequestId,
+        customerInboxHash: input.customerInboxHash ?? null,
         posConnected,
         merchantManaged,
         ...(claimedOutletId ? { outletId: claimedOutletId } : {}),

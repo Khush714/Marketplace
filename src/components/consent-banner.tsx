@@ -5,7 +5,7 @@ import Link from "next/link";
 import { Cookie, ShieldCheck, X } from "lucide-react";
 import { CONSENT_CATEGORIES, useConsent, type ConsentChoice } from "@/lib/consent";
 import { cn } from "@/lib/domain";
-import { useProfile } from "@/lib/profile";
+import { useProfilePersonalisation } from "@/lib/profile";
 import { LEGAL_ROUTES } from "@/lib/site-legal";
 
 /**
@@ -33,7 +33,7 @@ import { LEGAL_ROUTES } from "@/lib/site-legal";
  */
 export function ConsentSurface() {
   const { hydrated, choice, preferencesOpen, decide, openPreferences, closePreferences } = useConsent();
-  const { clearPersonalisation } = useProfile();
+  const { clearPersonalisation } = useProfilePersonalisation();
 
   // Withdrawing consent has to reach the data already on disk, not merely stop
   // future writes. Gated on an explicit "essential", never on the absence of a
@@ -153,7 +153,7 @@ function ConsentBanner({
         </div>
 
         <p className="mt-3 text-[11px] leading-relaxed text-cream-600">
-          Choosing essential only clears your favourites and recent searches from this browser. See
+          Choosing essential only clears your favourites, recent searches and recently viewed places from this browser. See
           the{" "}
           <Link
             href={LEGAL_ROUTES.privacy}
@@ -313,7 +313,7 @@ function ConsentPreferences({
                 </ul>
                 {!category.required && !on && (
                   <p className="mt-2.5 text-[11px] font-medium text-gold-400">
-                    Switching this off clears your existing favourites and recent searches.
+                    Switching this off clears your existing favourites, recent searches and recents.
                   </p>
                 )}
               </li>

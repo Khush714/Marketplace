@@ -192,7 +192,14 @@ export async function applyMenuWebhook(
       .select({ next: max(menuWebhookEvents.menuVersion) })
       .from(menuWebhookEvents)
       .where(eq(menuWebhookEvents.restaurantId, restaurantId));
-    const nextVersion = (agg?.next ?? 0) + 1;
+    const [record] = await tx
+      .select({ latest: integrationRecords.latestMenuVersion })
+      .from(integrationRecords)
+      .where(eq(integrationRecords.restaurantId, restaurantId))
+      .limit(1);
+    // Merchant full-menu imports write the same counter without emitting a menu
+    // webhook event, so the stored latest version must also bound the next one.
+    const nextVersion = Math.max(agg?.next ?? 0, record?.latest ?? 1) + 1;
 
     const handled = await applyEvent(tx, restaurantId, eventType, body);
 
@@ -231,11 +238,15 @@ export async function applyMenuWebhook(
       }
     }
 
-    // Accepted: advance the restaurant's menu version counter.
+    // Accepted: advance the restaurant's menu version counter. Upsert so a
+    // paired Merchant App can publish a revision before the first POS event.
     await tx
-      .update(integrationRecords)
-      .set({ latestMenuVersion: nextVersion })
-      .where(eq(integrationRecords.restaurantId, restaurantId));
+      .insert(integrationRecords)
+      .values({ restaurantId, latestMenuVersion: nextVersion })
+      .onConflictDoUpdate({
+        target: integrationRecords.restaurantId,
+        set: { latestMenuVersion: nextVersion },
+      });
 
     return {
       deduplicated: false,

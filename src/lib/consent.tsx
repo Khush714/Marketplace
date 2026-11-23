@@ -25,7 +25,7 @@ import {
  * That is why the choice is phrased as "essential" vs "everything" rather than
  * accept/reject: nothing here is a tracker, and a reject button that implied we
  * would stop following the visitor would be a lie. What "essential only" really
- * does is stop recording favourites and recent searches.
+ * does is stop recording favourites, recent searches and recently viewed places.
  *
  * Every string in `held` is a factual claim about what this app writes to
  * storage. If you add a call to `localStorage.setItem`, add it here too — and if
@@ -35,14 +35,14 @@ import {
  */
 
 /** Namespaced and versioned, matching the `crave.*` convention used elsewhere. */
-export const CONSENT_STORAGE_KEY = "crave.consent.v1";
+export const CONSENT_STORAGE_KEY = "crave.consent.v3";
 
 /**
  * Bump when `CONSENT_CATEGORIES` changes in substance. A stored record carrying
  * an older version is read as no decision at all, so widening the list asks the
  * visitor again rather than inheriting consent they never gave to the new items.
  */
-export const CONSENT_VERSION = 1;
+export const CONSENT_VERSION = 3;
 
 export type ConsentChoice = "all" | "essential";
 
@@ -71,13 +71,19 @@ export const CONSENT_CATEGORIES: readonly ConsentCategory[] = [
       "the delivery area you picked",
       "your name, phone number and addresses, so you are not asked for them again at checkout",
       "codes for the orders you placed, so you can reopen them",
+      // localStorage key: crave.inbox.v1 (see customer-notification-copy.ts).
+      "a private inbox code for this browser, so order updates can be shown here without an account",
     ],
   },
   {
     id: "personalisation",
-    label: "Favourites and recent searches",
+    label: "Favourites and recents",
     required: false,
-    held: ["the restaurants you favourite", "the terms you last searched for"],
+    held: [
+      "the restaurants you favourite",
+      "the terms you last searched for",
+      "the dishes and restaurants you recently opened",
+    ],
   },
 ];
 

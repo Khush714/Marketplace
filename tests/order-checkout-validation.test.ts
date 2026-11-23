@@ -214,6 +214,18 @@ test("validateCheckout normalizes its fields and rebuilds the input from a white
   }
 });
 
+test("validateCheckout keeps the locality selection as a bounded claim", () => {
+  const result = validateCheckout(checkoutBody({ localityKey: " OLD-CITY ", addressText: "Somewhere" }));
+  assert.ok(result.ok);
+  if (!result.ok) return;
+  assert.equal(result.request.localityKey, "old-city");
+  assert.equal("locality" in result.request, false, "a locality object must not enter the whitelist");
+
+  const blob = validateCheckout(checkoutBody({ localityKey: "x".repeat(200) }));
+  assert.ok(blob.ok);
+  if (blob.ok) assert.equal(blob.request.localityKey?.length, 40);
+});
+
 test("validateCheckout rejects a request missing any required field", () => {
   const cases: Record<string, unknown> = {
     restaurantSlug: "   ",
@@ -301,9 +313,13 @@ test("consent is enforced by the server, not only by the checkbox", () => {
 
 test("the shipped checkout form sends the consent flag the server checks", () => {
   const source = readSource("src/app/checkout/page.tsx");
-  assert.match(source, /acceptedTerms,\n?\s*\}\)/);
-  // The consent state is read by the request, not merely by the button.
-  assert.match(source, /canPlace = detailsComplete && acceptedTerms/);
+  assert.match(source, /acceptedTerms,[\s\S]*?localityKey: currentLocalityKey\(\),[\s\S]*?\}\)/);
+  // The consent state is read by the request, not merely by the button, and an
+  // order cannot be placed until the matching authoritative bill exists.
+  assert.match(
+    source,
+    /canPlace =\s*detailsComplete && acceptedTerms && !promoError && !billError && hasBillableItems && !!bill/,
+  );
 });
 
 test("an address label the client never sent falls back to the row default", () => {
@@ -321,8 +337,11 @@ test("POST /api/orders validates the body and passes the rebuilt input to create
   assert.match(source, /validateCheckout\(parsed\.body\)/);
   // The rebuilt request is forwarded, with only server-resolved account
   // attribution added (never raw/client-supplied identity or pricing).
-  assert.match(source, /createOrder\(\{\s*\.\.\.validated\.request,/);
+  assert.match(source, /const \{ inboxToken, \.\.\.orderInput \} = validated\.request;/);
+  assert.match(source, /createOrder\(\{\s*\.\.\.orderInput,/);
   assert.match(source, /customerAccountId:\s*accountSession\.account\.id/);
+  assert.match(source, /urlLocalityKey:\s*req\.nextUrl\.searchParams\.get\("loc"\)/);
+  assert.match(source, /OUTSIDE_SERVICE_AREA/);
   // Order placement requires an authenticated customer account (server-resolved).
   assert.match(source, /ACCOUNT_REQUIRED/);
   assert.match(source, /resolveAccountSession\(req\)/);

@@ -32,7 +32,7 @@ export async function GET(req: NextRequest) {
     ok: true,
     account: {
       id: account.id,
-      phoneE164: account.phoneE164,
+      phoneE164: account.phoneE164 ?? "",
       name: account.name ?? "",
       avatar: account.avatar ?? "",
       phoneVerifiedAt: account.phoneVerifiedAt?.toISOString() ?? null,
@@ -64,7 +64,7 @@ export async function PATCH(req: NextRequest) {
     ok: true,
     account: {
       id: updated.id,
-      phoneE164: updated.phoneE164,
+      phoneE164: updated.phoneE164 ?? "",
       name: updated.name ?? "",
       avatar: updated.avatar ?? "",
       phoneVerifiedAt: updated.phoneVerifiedAt?.toISOString() ?? null,

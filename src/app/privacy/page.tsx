@@ -166,16 +166,17 @@ export default function PrivacyPage() {
           <li>your saved name, phone number and addresses, so checkout is faster next time;</li>
           <li>your order history codes, so you can reopen past orders;</li>
           <li>your cart contents and favourite restaurants;</li>
-          <li>your most recent search terms and selected area;</li>
+          <li>your most recent search terms, dishes and restaurants you opened, and selected area;</li>
           <li>
             for restaurant partners, the owner key that authorises menu and integration changes.
           </li>
         </ul>
         <p>
           On your first visit we ask whether to keep the optional parts of that list &mdash; your
-          favourite restaurants and recent search terms. Everything else above is what the site
-          needs in order to function, so it is kept either way. Choosing the essential option also
-          deletes any favourites and search terms already stored. You can change your answer at any
+          favourite restaurants, recent search terms and recently opened dishes or restaurants.
+          Everything else above is what the site needs in order to function, so it is kept either
+          way. Choosing the essential option also deletes any favourites and recents already
+          stored. You can change your answer at any
           time from <strong>Storage preferences</strong> in the footer of every page; the record of
           your choice is held in your own browser and is not sent to us.
         </p>

@@ -2,6 +2,7 @@
 
 import type { ReactNode } from "react";
 import { CartProvider } from "@/lib/cart";
+import { CustomerNotificationsProvider } from "@/components/customer-notifications";
 import { ConsentProvider } from "@/lib/consent";
 import { CustomerAccountProvider } from "@/lib/customer-account";
 import { LocationProvider, useLocationPicker } from "@/lib/location";
@@ -27,11 +28,13 @@ export function Providers({ children }: { children: ReactNode }) {
           <CustomerAccountProvider>
             <CartProvider>
               <ToastProvider>
-                <SearchProvider>
-                  {children}
-                  <LocationPickerHost />
-                  <ConsentSurface />
-                </SearchProvider>
+                <CustomerNotificationsProvider>
+                  <SearchProvider>
+                    {children}
+                    <LocationPickerHost />
+                    <ConsentSurface />
+                  </SearchProvider>
+                </CustomerNotificationsProvider>
               </ToastProvider>
             </CartProvider>
           </CustomerAccountProvider>

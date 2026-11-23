@@ -257,12 +257,18 @@ export const menuItems = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
+    /** Stable key supplied by the paired Merchant App for full-menu replacement. */
+    externalId: text("external_id"),
     category: text("category").notNull(),
     name: text("name").notNull(),
     description: text("description").notNull().default(""),
     priceCents: integer("price_cents").notNull(),
     imageUrl: text("image_url").notNull(),
     isVeg: boolean("is_veg").notNull().default(false),
+    /** Merchant CSV dietary value; null on POS/manual rows, inferred from isVeg. */
+    dietary: text("dietary"),
+    /** Merchant CSV soft-delete flag. Archived dishes stay available to historical orders. */
+    archived: boolean("archived").notNull().default(false),
     isBestseller: boolean("is_bestseller").notNull().default(false),
     sort: integer("sort").notNull().default(0),
     available: boolean("available").notNull().default(true),
@@ -278,6 +284,7 @@ export const menuItems = pgTable(
   (t) => [
     index("menu_restaurant_idx").on(t.restaurantId),
     unique("menu_items_restaurant_pos_item_idx").on(t.restaurantId, t.posItemId),
+    uniqueIndex("menu_items_restaurant_external_id_idx").on(t.restaurantId, t.externalId),
   ],
 );
 
@@ -471,18 +478,30 @@ export const integrationAudit = pgTable(
 );
 
 /**
- * Authenticated customer accounts (Phase B MVP: phone identity).
+ * Authenticated customer accounts.
  *
  * Separate from anonymous `customer_sessions` (cookie-bound order-code ownership
  * for guests): account sessions carry identity/profile and explicitly/proven
  * linked orders across devices. Guest checkout remains supported.
+ *
+ * Two sign-in paths share this table without conflating identity: the original
+ * verified-phone/OTP flow (phone_e164 + phone_verified_at) and free Google
+ * Sign-In (google_sub + email). A Google-only account has NULL phone columns;
+ * a phone-only account has NULL google_sub/email. Neither path synthesizes the
+ * other's identifier, and an existing account is only ever modified by the path
+ * whose identifier it actually carries.
  */
 export const customerAccounts = pgTable(
   "customer_accounts",
   {
     id: serial("id").primaryKey(),
-    phoneE164: text("phone_e164").notNull(),
+    /** NULL for Google-only accounts; unchanged and unique for OTP accounts. */
+    phoneE164: text("phone_e164"),
     phoneVerifiedAt: timestamp("phone_verified_at", { withTimezone: true }),
+    /** Normalized lowercase email for Google accounts; NULL for phone-only accounts. */
+    email: text("email"),
+    /** Stable Google subject id ("sub"); NULL for phone-only accounts. */
+    googleSub: text("google_sub"),
     name: text("name").notNull().default(""),
     /** Optional avatar key: "male" | "female" | "" (unset). */
     avatar: text("avatar").notNull().default(""),
@@ -490,7 +509,11 @@ export const customerAccounts = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [uniqueIndex("customer_accounts_phone_e164_idx").on(t.phoneE164)],
+  (t) => [
+    uniqueIndex("customer_accounts_phone_e164_idx").on(t.phoneE164),
+    uniqueIndex("customer_accounts_email_idx").on(t.email),
+    uniqueIndex("customer_accounts_google_sub_idx").on(t.googleSub),
+  ],
 );
 
 export type CustomerAccountRow = typeof customerAccounts.$inferSelect;
@@ -693,6 +716,12 @@ export const orders = pgTable(
      * for legacy rows until the backfill migration stamps them.
      */
     trackingTokenHash: text("tracking_token_hash"),
+    /**
+     * SHA-256 of the browser-generated anonymous inbox token. The raw token never
+     * leaves the browser; this hash is the only server-side link between a device
+     * and its order notifications. NULL for orders created without an inbox hash.
+     */
+    customerInboxHash: text("customer_inbox_hash"),
     /** Separate Marketplace ↔ Merchant App lifecycle; never reuse POS integrationStatus. */
     merchantManaged: boolean("merchant_managed").notNull().default(false),
     merchantStatus: text("merchant_status").notNull().default("PLACED"),
@@ -743,6 +772,38 @@ export const orders = pgTable(
     index("orders_customer_account_id_idx").on(t.customerAccountId),
     uniqueIndex("orders_external_order_id_unique").on(t.externalOrderId),
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
+  ],
+);
+
+/**
+ * Device-scoped customer notification inbox. No customer identity, contact
+ * details or account id is stored here: the only capability is the SHA-256 hash
+ * of a random browser token, and each row is deduped per order + state change.
+ */
+export const customerNotifications = pgTable(
+  "customer_notifications",
+  {
+    id: serial("id").primaryKey(),
+    /** Orders are financial records: deleting one requires an explicit cascade. */
+    orderId: integer("order_id")
+      .notNull()
+      .references(() => orders.id, { onDelete: "cascade" }),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "restrict" }),
+    /** SHA-256 of the browser's random inbox token, never the raw token. */
+    inboxHash: text("inbox_hash").notNull(),
+    kind: text("kind").notNull(),
+    title: text("title").notNull(),
+    body: text("body").notNull(),
+    /** Stable key so replayed webhooks/status writes cannot duplicate a message. */
+    dedupeKey: text("dedupe_key").notNull(),
+    readAt: timestamp("read_at", { withTimezone: true }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("customer_notifications_inbox_dedupe_unique").on(t.inboxHash, t.dedupeKey),
+    index("customer_notifications_inbox_created_idx").on(t.inboxHash, t.createdAt),
   ],
 );
 
@@ -979,6 +1040,8 @@ export const modifierGroups = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
+    /** Stable key supplied by the paired Merchant App for full-menu replacement. */
+    externalId: text("external_id"),
     posGroupId: bigint("pos_group_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
     minSelect: integer("min_select").notNull().default(0),
@@ -986,7 +1049,10 @@ export const modifierGroups = pgTable(
     isActive: boolean("is_active").notNull().default(true),
     lastSyncedAt: timestamp("last_synced_at", { withTimezone: true }),
   },
-  (t) => [uniqueIndex("modifier_groups_restaurant_pos_idx").on(t.restaurantId, t.posGroupId)],
+  (t) => [
+    uniqueIndex("modifier_groups_restaurant_pos_idx").on(t.restaurantId, t.posGroupId),
+    uniqueIndex("modifier_groups_restaurant_external_id_idx").on(t.restaurantId, t.externalId),
+  ],
 );
 
 /**
@@ -1004,6 +1070,8 @@ export const modifierOptions = pgTable(
     restaurantId: integer("restaurant_id")
       .notNull()
       .references(() => restaurants.id, { onDelete: "cascade" }),
+    /** Stable key supplied by the paired Merchant App for full-menu replacement. */
+    externalId: text("external_id"),
     posGroupId: bigint("pos_group_id", { mode: "number" }).notNull(),
     posOptionId: bigint("pos_option_id", { mode: "number" }).notNull(),
     name: text("name").notNull(),
@@ -1014,6 +1082,7 @@ export const modifierOptions = pgTable(
   },
   (t) => [
     uniqueIndex("modifier_options_group_pos_idx").on(t.groupId, t.posOptionId),
+    uniqueIndex("modifier_options_group_external_id_idx").on(t.groupId, t.externalId),
     index("modifier_options_restaurant_idx").on(t.restaurantId),
   ],
 );
@@ -1190,6 +1259,35 @@ export type MerchantOrderEventRow = typeof merchantOrderEvents.$inferSelect;
 export type MerchantLinkCodeRow = typeof merchantLinkCodes.$inferSelect;
 export type MerchantAppLinkRow = typeof merchantAppLinks.$inferSelect;
 export type MerchantPayoutAccountRow = typeof merchantPayoutAccounts.$inferSelect;
+
+/**
+ * Idempotency ledger for paired Merchant App full-menu replacements.
+ *
+ * `(restaurantId, importId)` is the replay key. `payloadHash` lets an exact replay
+ * return the stored response while the same key with a different payload is a
+ * conflict. The stored response is immutable once the import commits.
+ */
+export const merchantMenuImports = pgTable(
+  "merchant_menu_imports",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    importId: text("import_id").notNull(),
+    businessId: text("business_id").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    fromRevision: integer("from_revision").notNull(),
+    toRevision: integer("to_revision").notNull(),
+    result: jsonb("result").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_menu_imports_restaurant_import_idx").on(t.restaurantId, t.importId),
+    index("merchant_menu_imports_restaurant_idx").on(t.restaurantId),
+  ],
+);
+export type MerchantMenuImportRow = typeof merchantMenuImports.$inferSelect;
 
 /**
  * Promotions owned by the Marketplace for a listed restaurant. A paired Merchant

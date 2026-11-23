@@ -20,6 +20,7 @@ import {
   initiateProviderRefund,
   settleCancelledOrderPayment,
 } from "@/integrations/payments/refund";
+import { recordOrderNotification } from "@/lib/customer-notifications";
 
 export const MAX_POS_DELIVERY_ATTEMPTS = 5;
 const BACKOFF_BASE_MS = 4000;
@@ -420,5 +421,16 @@ export async function applyOrderStatusTransition(opts: {
     current: "current" in result ? result.current : undefined,
     reason: "reason" in result ? result.reason : undefined,
   });
+
+  // Best-effort customer update after the status transaction has committed.
+  // Replayed frames and same-state frames collapse on the notification dedupe key.
+  if (result.outcome === "applied") {
+    const [customerOrder] = await db
+      .select({ id: orders.id })
+      .from(orders)
+      .where(and(eq(orders.restaurantId, opts.restaurantId), eq(orders.externalOrderId, opts.externalOrderId)))
+      .limit(1);
+    if (customerOrder) await recordOrderNotification({ orderId: customerOrder.id, kind: "order_status", detail: mapped });
+  }
   return result;
 }

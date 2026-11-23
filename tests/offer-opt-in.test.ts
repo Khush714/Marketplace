@@ -97,7 +97,7 @@ test("offer selection reaches billFor through both pricing paths", () => {
   assert.match(preview, /computeBill\(\s*restaurantSlug,\s*cart\.items,\s*body\?\.applyOffer === true,\s*promoCode \?\? undefined,\s*\)/);
 
   const checkout = readSource("src/app/checkout/page.tsx");
-  assert.match(checkout, /postBill\(cart\.restaurantSlug, cartLines\(cart\.items\), applyOffer, promoCode\)/);
+  assert.match(checkout, /postBill\(cart\.restaurantSlug, cartPayload, applyOffer, promoCode\)/);
   assert.match(checkout, /^\s*applyOffer,$/m, "the place-order request must carry the selection");
   assert.match(checkout, /^\s*promoCode,$/m, "the place-order request must carry the selected code");
 });

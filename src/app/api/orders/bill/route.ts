@@ -72,6 +72,9 @@ export async function POST(req: NextRequest) {
   return Response.json({
     ok: true,
     bill: result.bill,
+    // The preview may charge for fewer lines than the client cart holds. Send
+    // the server's dropped lines so checkout can say exactly what was removed.
+    dropped: result.dropped,
     offer: result.offer,
     offerAvailable: result.offerAvailable,
     promo: result.promo ?? null,

@@ -18,6 +18,7 @@ export function AddButton({
   restaurantName,
   className,
   compact = false,
+  soldOut = false,
   onConfigure,
 }: {
   item: Omit<CartItem, "quantity">;
@@ -25,6 +26,8 @@ export function AddButton({
   restaurantName: string;
   className?: string;
   compact?: boolean;
+  /** Source-backed unavailable state. Customers can still remove an existing line. */
+  soldOut?: boolean;
   /**
    * When set, the button opens the dish customization sheet instead of adding
    * straight away. Configurable dishes never show a stepper because one dish
@@ -38,10 +41,11 @@ export function AddButton({
   const [ripple, setRipple] = useState(0);
   const qty = cart.quantityOf(item.lineKey);
 
-  if (qty === 0 || onConfigure) {
+  if (soldOut || qty === 0 || onConfigure) {
     return (
       <button
         type="button"
+        disabled={soldOut}
         onClick={(e) => {
           const rect = e.currentTarget.getBoundingClientRect();
           e.currentTarget.style.setProperty("--rx-pt", `${e.clientX - rect.left}px`);
@@ -60,15 +64,24 @@ export function AddButton({
           }
         }}
         className={cn(
-          "press relative overflow-hidden rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 font-bold text-white shadow-glow",
-          "transition-all duration-200 hover:shadow-[0_12px_42px_-6px_rgba(255,90,60,0.65)] hover:brightness-110",
+          soldOut
+            ? "cursor-not-allowed bg-white/8 font-bold text-cream-500 shadow-none"
+            : "press relative overflow-hidden rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 font-bold text-white shadow-glow transition-all duration-200 hover:shadow-[0_12px_42px_-6px_rgba(255,90,60,0.65)] hover:brightness-110",
           compact ? "px-4 py-1.5 text-xs" : "px-6 py-2 text-sm",
           className,
         )}
-        aria-label={onConfigure ? `Customize ${item.name}` : `Add ${item.name} to cart`}
+        aria-label={
+          soldOut
+            ? `${item.name} is sold out`
+            : onConfigure
+              ? `Customize ${item.name}`
+              : `Add ${item.name} to cart`
+        }
       >
-        <span className="relative z-10">{onConfigure ? "CUSTOMISE" : "ADD"}</span>
-        <Ripple id={ripple} />
+        <span className="relative z-10">
+          {soldOut ? "SOLD OUT" : onConfigure ? "CUSTOMISE" : "ADD"}
+        </span>
+        {!soldOut && <Ripple id={ripple} />}
       </button>
     );
   }
@@ -103,13 +116,14 @@ export function AddButton({
       </span>
       <button
         type="button"
-        aria-label="Increase quantity"
+        disabled={soldOut}
+        aria-label={soldOut ? `${item.name} is sold out` : "Increase quantity"}
         onClick={() => {
           cart.setQuantity(item.lineKey, qty + 1);
           setRipple((r) => r + 1);
         }}
         className={cn(
-          "press relative grid place-items-center rounded-r-xl transition-colors hover:bg-white/15",
+          "press relative grid place-items-center rounded-r-xl transition-colors hover:bg-white/15 disabled:cursor-not-allowed disabled:opacity-40",
           compact ? "px-2 py-1.5" : "px-2.5 py-2",
         )}
       >

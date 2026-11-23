@@ -8,9 +8,11 @@ import { MenuBrowser } from "@/components/menu-browser";
 import { MiniCart } from "@/components/mini-cart";
 import { PublicReviews } from "@/components/public-reviews";
 import { FavoriteHeroButton } from "@/components/favorite-hero-button";
+import { RecentRestaurantRecorder } from "@/components/recent-restaurant-recorder";
 import { listPublicMerchantOffersForSlug } from "@/db/merchant-offers";
 import { getRestaurant, hasActiveIntegration, hasActiveMerchantAppLink } from "@/db/queries";
 import { cn, formatDistance, formatINR, formatK, isUnrated, priceSymbol } from "@/lib/domain";
+import { recentRestaurantFromDto } from "@/lib/recent-items";
 import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-gate";
 
 export const dynamic = "force-dynamic";
@@ -89,6 +91,7 @@ export default async function RestaurantPage(props: {
 
   return (
     <div className="pb-10">
+      <RecentRestaurantRecorder restaurant={recentRestaurantFromDto(r)} />
       {/* ------------------------------ hero ------------------------------ */}
       <section className="relative">
         <div className="relative h-60 overflow-hidden md:h-[380px]">
@@ -237,7 +240,7 @@ export default async function RestaurantPage(props: {
           />
         </div>
         <aside className="hidden lg:block">
-          <MiniCart restaurantSlug={r.slug} restaurantName={r.name} />
+          <MiniCart restaurantSlug={r.slug} restaurantName={r.name} sections={sections} />
         </aside>
       </div>
       <div className="mx-auto max-w-5xl px-4 md:px-6">

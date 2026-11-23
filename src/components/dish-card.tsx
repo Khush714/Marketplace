@@ -9,6 +9,7 @@ import { DishSheet } from "@/components/dish-sheet";
 import { cssVars } from "@/components/motion-primitives";
 import { cn, formatINR } from "@/lib/domain";
 import { lineKeyFor } from "@/lib/cart";
+import { isMenuItemSoldOut } from "@/lib/menu-availability-core";
 import type { MenuItemDto } from "@/lib/types";
 
 export const DishCard = forwardRef<
@@ -22,6 +23,7 @@ export const DishCard = forwardRef<
   }
 >(function DishCard({ item, restaurantSlug, restaurantName, highlighted, index = 0 }, ref) {
   const [configuring, setConfiguring] = useState(false);
+  const soldOut = isMenuItemSoldOut(item);
   const configurable = (item.modifierGroups?.length ?? 0) > 0;
   const cheapest = configurable
     ? Math.min(...item.modifierGroups!.flatMap((g) => g.options.map((o) => o.priceCents)))
@@ -44,6 +46,11 @@ export const DishCard = forwardRef<
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-1.5">
           <VegDot veg={item.isVeg} />
+          {soldOut && (
+            <span className="rounded-full bg-chili-500/18 px-1.5 py-0.5 text-[10px] font-bold text-chili-300">
+              SOLD OUT
+            </span>
+          )}
           {item.isBestseller && (
             <span className="flex items-center gap-1 rounded-full bg-gold-400/12 px-1.5 py-0.5 text-[10px] font-bold text-gold-400">
               <Flame className="size-2.5" /> BESTSELLER
@@ -81,7 +88,10 @@ export const DishCard = forwardRef<
             sizes="(max-width: 768px) 104px, 128px"
             placeholder="blur"
             blurDataURL={BLUR_DATA}
-            className="object-cover transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)] group-hover:scale-[1.05]"
+            className={cn(
+              "object-cover transition-transform duration-500 ease-[cubic-bezier(0.16,1,0.3,1)]",
+              soldOut ? "opacity-60 saturate-50" : "group-hover:scale-[1.05]",
+            )}
           />
         </div>
         <div className="absolute inset-x-2 -bottom-3.5 flex justify-center">
@@ -98,7 +108,8 @@ export const DishCard = forwardRef<
             restaurantName={restaurantName}
             className="w-full justify-center"
             compact
-            {...(configurable ? { onConfigure: () => setConfiguring(true) } : {})}
+            soldOut={soldOut}
+            {...(configurable && !soldOut ? { onConfigure: () => setConfiguring(true) } : {})}
           />
         </div>
       </div>

@@ -44,6 +44,19 @@ test("every per-order route authorises with the token OR the session", () => {
   assert.match(helper, /session\.orderCodes\.includes\(normalized\)/);
 });
 
+test("paired merchant cancellations use the canonical merchant lifecycle", () => {
+  const cancel = source("src/app/api/orders/[code]/cancel/route.ts");
+  assert.match(cancel, /cancelMerchantOrderByCode\(code\)/);
+  assert.match(cancel, /merchant\.kind !== "NOT_MERCHANT"/);
+  // Legacy POS orders still reach the signed request; the two paths must not
+  // both run for the same order or a merchant cancel would also hit a dead POS.
+  assert.match(cancel, /requestCustomerCancellation\(code\)/);
+  assert.ok(
+    cancel.indexOf("cancelMerchantOrderByCode(code)") < cancel.indexOf("requestCustomerCancellation(code)"),
+    "the merchant path must be resolved before the POS fallback",
+  );
+});
+
 test("checkout binds the new code to the session in the same response", () => {
   const checkout = source("src/app/api/orders/route.ts");
   assert.match(checkout, /ensureCustomerSession\(req\)/);

@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { browseRestaurants, featuredRestaurants, restaurantsBySlugs } from "@/db/queries";
 import type { BrowseFilters } from "@/db/queries";
+import { parseBrowseParams } from "@/lib/browse-filter-params";
 import { localityByKey } from "@/lib/domain";
 import { clampSearchQuery, clampSlugList } from "@/lib/abuse-core";
 import { guardRead } from "@/lib/abuse";
@@ -40,13 +41,29 @@ export async function GET(req: NextRequest) {
     );
   }
 
-  const filters: BrowseFilters = {
-    q: clampSearchQuery(sp.get("q")),
+  const parsed = parseBrowseParams({
+    q: sp.get("q") ?? undefined,
     cuisine: sp.get("cuisine") ?? undefined,
-    sort: (sp.get("sort") as BrowseFilters["sort"]) ?? undefined,
-    offers: sp.get("offers") === "1",
-    minRating: sp.get("minRating") === "1",
-    veg: sp.get("veg") === "1",
+    sort: sp.get("sort") ?? undefined,
+    offers: sp.get("offers") ?? undefined,
+    minRating: sp.get("minRating") ?? undefined,
+    veg: sp.get("veg") ?? undefined,
+    open: sp.get("open") ?? undefined,
+    delivery: sp.get("delivery") ?? undefined,
+    price: sp.get("price") ?? undefined,
+    maxTime: sp.get("maxTime") ?? undefined,
+  });
+  const filters: BrowseFilters = {
+    q: clampSearchQuery(parsed.q),
+    cuisine: parsed.cuisine,
+    sort: parsed.sort,
+    offers: parsed.offers,
+    minRating: parsed.minRating,
+    veg: parsed.veg,
+    openNow: parsed.openNow,
+    delivery: parsed.delivery,
+    price: parsed.price,
+    maxTime: parsed.maxTime,
     locality,
   };
   return Response.json(

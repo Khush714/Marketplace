@@ -21,6 +21,10 @@ export interface RestaurantDto {
   featured: boolean;
   pureVeg: boolean;
   locality: string;
+  /** Published hours and closure state, evaluated on the server's clock. */
+  openNow: boolean;
+  /** Merchant App delivery toggle while open; not a checkout/POS readiness claim. */
+  deliveryAvailable: boolean;
   /** Canonical public Marketplace External Restaurant ID (rst_…). */
   marketplaceId: string | null;
 }
@@ -62,6 +66,10 @@ export interface MenuItemDto {
   imageUrl: string;
   isVeg: boolean;
   isBestseller: boolean;
+  /** The menu row's real availability flag; false means stop offering this dish. */
+  available: boolean;
+  /** Null means stock is not tracked; zero is sold out at checkout. */
+  stockQuantity: number | null;
   /** Modifier groups offered for this dish. Absent when it has none. */
   modifierGroups?: ModifierGroupDto[];
 }
@@ -70,12 +78,18 @@ export interface MenuItemDto {
 
 export interface PartnerMenuItemDto {
   id: number;
+  /** Stable key supplied by the paired Merchant App; absent on POS/manual rows. */
+  externalId?: string;
   category: string;
   name: string;
   description: string;
   priceCents: number;
   imageUrl: string;
   isVeg: boolean;
+  /** Exact Merchant CSV dietary value; older rows infer it from isVeg. */
+  dietary?: "veg" | "nonveg" | "unspecified";
+  /** Soft-deleted by a full menu replacement; never hard-deleted. */
+  archived?: boolean;
   isBestseller: boolean;
   available: boolean;
   /** Null means stock is not tracked; zero is sold out at checkout. */
@@ -89,6 +103,8 @@ export interface PartnerMenuItemDto {
 
 export interface PartnerModifierOptionDto {
   id: number;
+  /** Stable key supplied by the paired Merchant App; absent on POS/manual rows. */
+  externalId?: string;
   name: string;
   priceCents: number;
   isVeg: boolean;
@@ -98,6 +114,8 @@ export interface PartnerModifierOptionDto {
 
 export interface PartnerModifierGroupDto {
   id: number;
+  /** Stable key supplied by the paired Merchant App; absent on POS/manual rows. */
+  externalId?: string;
   name: string;
   minSelect: number;
   maxSelect: number;
@@ -220,6 +238,8 @@ export interface ConnectionDto {
   connectedAt: string;
 }
 
+export type SearchMatchKind = "name" | "category" | "description" | "cuisine" | "tagline";
+
 export interface RestaurantSearchResult {
   type: "restaurant";
   slug: string;
@@ -231,6 +251,8 @@ export interface RestaurantSearchResult {
   deliveryMinutes: number;
   imageUrl: string;
   offer: string | null;
+  /** Which field earned the hit, so card copy never implies a dish match. */
+  match: SearchMatchKind;
 }
 
 export interface DishSearchResult {
@@ -242,6 +264,69 @@ export interface DishSearchResult {
   imageUrl: string;
   restaurantSlug: string;
   restaurantName: string;
+  /** Which field earned the hit — category matches still sell a real dish. */
+  match: SearchMatchKind;
 }
 
 export type SearchResult = RestaurantSearchResult | DishSearchResult;
+
+export type SearchSuggestionKind = "dish" | "cuisine" | "category" | "restaurant";
+
+/**
+ * A compact query refinement, not a second copy of a result card. Tapping a
+ * dish/cuisine/category suggestion runs a broader search for that term; tapping
+ * a restaurant suggestion opens the listing directly.
+ */
+export interface SearchSuggestion {
+  kind: SearchSuggestionKind;
+  text: string;
+  /** Only present for a restaurant suggestion. */
+  restaurantSlug?: string;
+  /** Only present for a dish suggestion that can deep-link to a menu item. */
+  dishId?: number;
+}
+
+export interface SearchFacets {
+  cuisines: string[];
+  categories: string[];
+}
+
+/* ---------------------- phase 5: locality popularity ---------------------- */
+
+/**
+ * One dish at one kitchen, ranked from first-party order snapshots.
+ *
+ * `orderCount` is distinct fulfilled orders, not units: one customer ordering
+ * ten plates must not outrank ten customers ordering one. The immutable order
+ * snapshot supplies what was actually ordered; the live menu row supplies the
+ * current image/price and the deep link.
+ */
+export interface PopularDishDto {
+  id: number;
+  name: string;
+  imageUrl: string;
+  priceCents: number;
+  isVeg: boolean;
+  restaurantSlug: string;
+  restaurantName: string;
+  locality: string;
+  orderCount: number;
+  unitsSold: number;
+}
+
+export type PopularityScope = "locality" | "city" | "none";
+
+/**
+ * Public popularity payload. `scope: "none"` is a real result: the UI hides the
+ * section instead of inventing a trend from a handful of orders or localStorage
+ * recents, neither of which is a reliable first-party signal.
+ */
+export interface PublicPopularityDto {
+  locality: string;
+  city: string;
+  scope: PopularityScope;
+  scopeLabel: string;
+  windowDays: number;
+  minimumOrders: number;
+  dishes: PopularDishDto[];
+}

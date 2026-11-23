@@ -6,6 +6,7 @@ import { recordIntegrationAudit } from "@/db/queries";
 import { feedbackDto } from "@/lib/order-feedback";
 import { merchantSyncVersion, type MerchantSyncSnapshot, type MerchantSyncVersion } from "@/lib/merchant-sync";
 import { handleCancelledOrderPayment } from "@/integrations/payments/refund";
+import { recordOrderNotification } from "@/lib/customer-notifications";
 
 export const MERCHANT_ORDER_STATUSES = ["PLACED", "ACCEPTED", "PREPARING", "READY", "OUT_FOR_DELIVERY", "COMPLETED", "REJECTED", "CANCELLED"] as const;
 export type MerchantOrderStatus = (typeof MERCHANT_ORDER_STATUSES)[number];
@@ -137,7 +138,7 @@ export async function transitionMerchantOrder(input: {
       ...(input.nextStatus === "CANCELLED" ? { integrationStatus: "CANCELLED" } : {}),
       statusUpdatedAt: now,
     }).where(and(eq(orders.id, current.id), eq(orders.restaurantId, input.restaurantId), eq(orders.merchantStatus, input.expectedStatus)))
-      .returning({ code: orders.code, externalOrderId: orders.externalOrderId, merchantStatus: orders.merchantStatus, merchantStatusUpdatedAt: orders.merchantStatusUpdatedAt, merchantPrepMinutes: orders.merchantPrepMinutes, merchantRejectionReason: orders.merchantRejectionReason });
+      .returning({ id: orders.id, code: orders.code, externalOrderId: orders.externalOrderId, merchantStatus: orders.merchantStatus, merchantStatusUpdatedAt: orders.merchantStatusUpdatedAt, merchantPrepMinutes: orders.merchantPrepMinutes, merchantRejectionReason: orders.merchantRejectionReason });
     if (!updated) return { kind: "CONFLICT" } as const;
     await tx.insert(merchantOrderEvents).values({ orderId: current.id, restaurantId: input.restaurantId, fromStatus: input.expectedStatus, toStatus: input.nextStatus, reason: input.reason?.trim().slice(0, 250) ?? "" });
     return { kind: "UPDATED", updated } as const;
@@ -151,6 +152,10 @@ export async function transitionMerchantOrder(input: {
   await recordIntegrationAudit(input.restaurantId, "MERCHANT_ORDER_STATUS_UPDATED", { actor: "partner" }, {
     order_code: result.updated.code, from_status: input.expectedStatus, to_status: input.nextStatus,
   }).catch(() => undefined);
+
+  // Customer-facing copy after the transition has committed. A failed write is
+  // swallowed by the emitter; the partner's status change is already durable.
+  await recordOrderNotification({ orderId: result.updated.id, kind: "order_status", detail: input.nextStatus });
   // Merchant rejection/cancellation must also enter the existing payment
   // settlement path. Captured payments become REFUND_PENDING; uncaptured ones
   // become PAYMENT_CANCELLED. Merchant status itself is never treated as proof
@@ -380,7 +385,7 @@ export async function cancelMerchantOrderByCode(code: string): Promise<CustomerM
       orderId: current.id, restaurantId: current.restaurantId, fromStatus: current.merchantStatus,
       toStatus: "CANCELLED", reason: "CUSTOMER_REQUEST",
     });
-    return { kind: "CANCELLED", idempotent: false, status: "CANCELLED", restaurantId: updated.restaurantId, externalOrderId: updated.externalOrderId, orderCode: updated.code } as const;
+    return { kind: "CANCELLED", idempotent: false, status: "CANCELLED", id: updated.id, restaurantId: updated.restaurantId, externalOrderId: updated.externalOrderId, orderCode: updated.code } as const;
   });
   if (result.kind === "CANCELLED" && !result.idempotent && "restaurantId" in result && result.externalOrderId) {
     await recordIntegrationAudit(result.restaurantId, "MERCHANT_ORDER_STATUS_UPDATED", { actor: "system" }, {
@@ -389,6 +394,7 @@ export async function cancelMerchantOrderByCode(code: string): Promise<CustomerM
     await handleCancelledOrderPayment(result.restaurantId, result.externalOrderId, "CUSTOMER_CANCELLED_ORDER").catch((error) => {
       console.error("[merchant-orders] customer cancellation payment settlement failed", error);
     });
+    await recordOrderNotification({ orderId: result.id, kind: "order_status", detail: "CANCELLED" });
   }
   return result.kind === "CANCELLED"
     ? { kind: "CANCELLED", idempotent: result.idempotent, status: "CANCELLED" }

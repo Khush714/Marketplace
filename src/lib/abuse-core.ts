@@ -92,6 +92,14 @@ export const ABUSE_BUDGETS = {
   restaurants: { limit: 240, windowMs: MINUTE_MS },
 
   /**
+   * Public popularity. One bounded aggregate over the rolling order window,
+   * fetched when the search overlay opens and once per home render. Same shape
+   * as browse traffic — generous for shared mobile addresses, but still
+   * budgeted so a loop cannot keep the order aggregation warm.
+   */
+  popularity: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
    * Merchant-created offers for one listing. Fetched on the restaurant page and
    * again at checkout, so it is a genuine per-customer read — but each call runs
    * a redemption COUNT and returns only a handful of rows. Generous enough for
@@ -348,6 +356,21 @@ export const ABUSE_BUDGETS = {
    * stays far below this ceiling.
    */
   opsSupportWrite: { limit: 120, windowMs: 10 * MINUTE_MS },
+
+  /**
+   * Customer notification inbox read. The browser polls every 15s while the app
+   * is foregrounded, so a single device averages four reads a minute. The query
+   * is one indexed lookup keyed by a high-entropy token, but the limit is still
+   * charged before validation so a guessing loop cannot probe for free.
+   */
+  notificationRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /**
+   * Mark notification(s) read. A durable write, so it uses `guardWrite`'s
+   * same-origin check as well as a tight per-minute budget; idempotent retries
+   * after a dropped response fit comfortably inside 60.
+   */
+  notificationWrite: { limit: 60, windowMs: MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

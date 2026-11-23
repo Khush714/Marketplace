@@ -182,12 +182,14 @@ async function loadGroupDto(groupId: number): Promise<PartnerModifierGroupDto> {
   ]);
   return {
     id: group.id,
+    ...(group.externalId ? { externalId: group.externalId } : {}),
     name: group.name,
     minSelect: group.minSelect,
     maxSelect: group.maxSelect,
     isActive: group.isActive,
     options: options.map((o) => ({
       id: o.id,
+      ...(o.externalId ? { externalId: o.externalId } : {}),
       name: o.name,
       priceCents: o.priceCents,
       isVeg: o.isVeg,
@@ -237,6 +239,7 @@ export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuD
     const list = optionsByGroup.get(o.groupId) ?? [];
     list.push({
       id: o.id,
+      ...(o.externalId ? { externalId: o.externalId } : {}),
       name: o.name,
       priceCents: o.priceCents,
       isVeg: o.isVeg,
@@ -260,6 +263,7 @@ export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuD
 
   const groupsDto: PartnerModifierGroupDto[] = groups.map((g) => ({
     id: g.id,
+    ...(g.externalId ? { externalId: g.externalId } : {}),
     name: g.name,
     minSelect: g.minSelect,
     maxSelect: g.maxSelect,
@@ -271,6 +275,11 @@ export async function getPartnerMenu(restaurantId: number): Promise<PartnerMenuD
 
   const itemsDto: PartnerMenuItemDto[] = rows.map((m) => ({
     id: m.id,
+    ...(m.externalId ? { externalId: m.externalId } : {}),
+    dietary: m.dietary === "veg" || m.dietary === "nonveg" || m.dietary === "unspecified"
+      ? m.dietary
+      : m.isVeg ? "veg" : "nonveg",
+    archived: m.archived,
     category: m.category,
     name: m.name,
     description: m.description,

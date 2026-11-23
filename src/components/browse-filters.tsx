@@ -2,8 +2,20 @@
 
 import { useRouter } from "next/navigation";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Check, Leaf, Percent, SlidersHorizontal, Star, X } from "lucide-react";
-import { cn, CUISINES, withLoc } from "@/lib/domain";
+import { createPortal } from "react-dom";
+import { Check, Clock3, Leaf, Percent, SlidersHorizontal, Star, Store, X } from "lucide-react";
+import {
+  activeFilterCount,
+  paramOn,
+  parseMaxDeliveryMinutes,
+  parsePriceLevel,
+  parseSort,
+  withBrowseParam,
+  DELIVERY_TIMES,
+  PRICE_LEVELS,
+  type BrowseParams,
+} from "@/lib/browse-filter-params";
+import { cn, CUISINES, priceSymbol } from "@/lib/domain";
 
 const SORTS = [
   { key: "", label: "Relevance" },
@@ -14,36 +26,24 @@ const SORTS = [
   { key: "price-high", label: "Cost: high → low" },
 ];
 
-interface Sp {
-  q?: string;
-  cuisine?: string;
-  sort?: string;
-  offers?: string;
-  minRating?: string;
-  veg?: string;
-  loc?: string;
-}
+type Sp = BrowseParams;
+type Goto = (patch: Partial<Sp>) => void;
 
 export function BrowseFilters({ sp }: { sp: Sp }) {
   const router = useRouter();
   const [sheetOpen, setSheetOpen] = useState(false);
 
-  const activeCount =
-    (sp.offers === "1" ? 1 : 0) + (sp.minRating === "1" ? 1 : 0) + (sp.veg === "1" ? 1 : 0) + (sp.sort ? 1 : 0);
-
-  const goto = (patch: Record<string, string | undefined>) => {
-    const params = new URLSearchParams();
-    const merged: Sp = { ...sp, ...patch };
-    Object.entries(merged).forEach(([k, v]) => {
-      if (v) params.set(k, v);
-    });
-    router.push(`/restaurants${params.size ? `?${params.toString()}` : ""}`);
-  };
+  const activeCount = activeFilterCount(sp);
+  const goto: Goto = (patch) => router.push(withBrowseParam(sp, patch));
 
   return (
     <>
       {/* sticky filter bar */}
-      <div className="sticky top-[100px] z-30 -mx-4 bg-void/80 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:px-0">
+      <div
+        role="group"
+        aria-label="Restaurant filters"
+        className="sticky top-[100px] z-30 -mx-4 bg-void/80 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:px-0"
+      >
         <div className="no-scrollbar mask-fade-x flex items-center gap-2 overflow-x-auto md:mask-none">
           {/* mobile filter button */}
           <button
@@ -61,7 +61,7 @@ export function BrowseFilters({ sp }: { sp: Sp }) {
           </button>
 
           {/* desktop sort + toggles */}
-          <div className="mr-1 hidden items-center gap-2 border-r border-white/10 pr-3 md:flex">
+          <div className="mr-1 hidden shrink-0 items-center gap-2 border-r border-white/10 pr-3 md:flex">
             {SORTS.map((s) => (
               <FilterChip
                 key={s.key}
@@ -73,12 +73,23 @@ export function BrowseFilters({ sp }: { sp: Sp }) {
             ))}
           </div>
 
-          <div className="flex items-center gap-2 md:contents">
+          <div className="flex shrink-0 items-center gap-2 md:contents">
             <ToggleChips sp={sp} goto={goto} />
+            <AvailabilityChips sp={sp} goto={goto} className="hidden md:flex" />
+          </div>
+
+          <div className="hidden shrink-0 items-center gap-2 border-l border-white/10 pl-3 md:flex">
+            <span className="shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-cream-600">Cost</span>
+            <PriceChips sp={sp} goto={goto} />
+          </div>
+
+          <div className="hidden shrink-0 items-center gap-2 border-l border-white/10 pl-3 md:flex">
+            <span className="shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-cream-600">Delivery</span>
+            <TimeChips sp={sp} goto={goto} />
           </div>
 
           {/* cuisines rail */}
-          <div className="flex items-center gap-2 md:ml-1">
+          <div className="flex shrink-0 items-center gap-2 md:ml-1">
             <span className="hidden shrink-0 text-[10px] font-bold uppercase tracking-[0.16em] text-cream-600 md:block">
               Cuisines
             </span>
@@ -100,18 +111,75 @@ export function BrowseFilters({ sp }: { sp: Sp }) {
   );
 }
 
-function ToggleChips({ sp, goto }: { sp: Sp; goto: (patch: Record<string, string | undefined>) => void }) {
+function ToggleChips({ sp, goto }: { sp: Sp; goto: Goto }) {
   return (
-    <div className="flex items-center gap-2">
-      <FilterChip active={sp.minRating === "1"} onClick={() => goto({ minRating: sp.minRating === "1" ? undefined : "1" })}>
+    <div className="flex shrink-0 items-center gap-2">
+      <FilterChip active={paramOn(sp.minRating)} onClick={() => goto({ minRating: paramOn(sp.minRating) ? undefined : "1" })}>
         <Star className="size-3 fill-gold-400 text-gold-400" /> 4.5+
       </FilterChip>
-      <FilterChip active={sp.offers === "1"} onClick={() => goto({ offers: sp.offers === "1" ? undefined : "1" })}>
+      <FilterChip active={paramOn(sp.offers)} onClick={() => goto({ offers: paramOn(sp.offers) ? undefined : "1" })}>
         <Percent className="size-3" /> Offers
       </FilterChip>
-      <FilterChip active={sp.veg === "1"} onClick={() => goto({ veg: sp.veg === "1" ? undefined : "1" })}>
+      <FilterChip active={paramOn(sp.veg)} onClick={() => goto({ veg: paramOn(sp.veg) ? undefined : "1" })}>
         <Leaf className="size-3 text-mint-400" /> Pure veg
       </FilterChip>
+    </div>
+  );
+}
+
+function AvailabilityChips({ sp, goto, className }: { sp: Sp; goto: Goto; className?: string }) {
+  return (
+    <div className={cn("flex shrink-0 items-center gap-2", className)}>
+      <FilterChip
+        active={paramOn(sp.open)}
+        onClick={() => goto({ open: paramOn(sp.open) ? undefined : "1" })}
+        label="Open now"
+      >
+        <Clock3 className="size-3 text-mint-400" /> Open now
+      </FilterChip>
+      <FilterChip
+        active={paramOn(sp.delivery)}
+        onClick={() => goto({ delivery: paramOn(sp.delivery) ? undefined : "1" })}
+        label="Delivering now"
+      >
+        <Store className="size-3 text-ember-400" /> Delivering
+      </FilterChip>
+    </div>
+  );
+}
+
+function PriceChips({ sp, goto }: { sp: Sp; goto: Goto }) {
+  const active = parsePriceLevel(sp.price);
+  return (
+    <div className="flex shrink-0 flex-wrap gap-2" role="group" aria-label="Cost for two">
+      {PRICE_LEVELS.map((level) => (
+        <FilterChip
+          key={level}
+          active={active === level}
+          onClick={() => goto({ price: active === level ? undefined : String(level) })}
+          label={`Cost for two ${priceSymbol(level)}`}
+        >
+          {priceSymbol(level)}
+        </FilterChip>
+      ))}
+    </div>
+  );
+}
+
+function TimeChips({ sp, goto }: { sp: Sp; goto: Goto }) {
+  const active = parseMaxDeliveryMinutes(sp.maxTime);
+  return (
+    <div className="flex shrink-0 flex-wrap gap-2" role="group" aria-label="Delivery time">
+      {DELIVERY_TIMES.map((minutes) => (
+        <FilterChip
+          key={minutes}
+          active={active === minutes}
+          onClick={() => goto({ maxTime: active === minutes ? undefined : String(minutes) })}
+          label={`Deliver within ${minutes} minutes`}
+        >
+          ≤ {minutes} min
+        </FilterChip>
+      ))}
     </div>
   );
 }
@@ -119,16 +187,19 @@ function ToggleChips({ sp, goto }: { sp: Sp; goto: (patch: Record<string, string
 function FilterChip({
   active,
   onClick,
+  label,
   children,
 }: {
   active: boolean;
   onClick: () => void;
+  label?: string;
   children: ReactNode;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
+      aria-label={label}
       aria-pressed={active}
       className={cn(
         "press flex shrink-0 items-center gap-1.5 rounded-full border px-3.5 py-2 text-sm font-medium transition-all duration-200",
@@ -152,7 +223,7 @@ function FilterSheet({
   onClose,
 }: {
   sp: Sp;
-  goto: (patch: Record<string, string | undefined>) => void;
+  goto: Goto;
   activeCount: number;
   onClose: () => void;
 }) {
@@ -174,10 +245,17 @@ function FilterSheet({
     };
   }, []);
 
-  const sortLabel = useMemo(() => SORTS.find((s) => s.key === (sp.sort ?? ""))?.label ?? "Relevance", [sp.sort]);
+  const sortLabel = useMemo(
+    () => SORTS.find((s) => s.key === (parseSort(sp.sort) ?? ""))?.label ?? "Relevance",
+    [sp.sort],
+  );
 
   /* Drag-to-dismiss with rubber-band resistance and velocity fling. */
   const onPointerDown = (e: React.PointerEvent<HTMLDivElement>) => {
+    // The header lives inside the gesture surface. Capturing the pointer for a
+    // button press retargets the ensuing click to the handle, silently eating
+    // "Clear all" taps on touch screens.
+    if ((e.target as HTMLElement).closest("button")) return;
     drag.current = {
       startY: e.clientY,
       lastY: e.clientY,
@@ -212,7 +290,9 @@ function FilterSheet({
     }
   };
 
-  return (
+  // The route template keeps a transform applied, so a `fixed` sheet would be
+  // bound to that wrapper and stretch past the viewport. Render it on the body.
+  return createPortal(
     <div role="dialog" aria-modal="true" aria-label="Filters" className="fixed inset-0 z-[75] md:hidden">
       <button aria-label="Close filters" onClick={onClose} className="animate-overlay-in absolute inset-0 cursor-default bg-black/60 backdrop-blur-sm" />
       <div
@@ -240,7 +320,7 @@ function FilterSheet({
             <button
               type="button"
               onClick={() => {
-                router.push(withLoc("/restaurants", sp.loc ?? ""));
+                router.push(withBrowseParam({}, { loc: sp.loc }));
               }}
               className="press text-sm font-semibold text-chili-400"
             >
@@ -263,6 +343,24 @@ function FilterSheet({
           <ToggleChips sp={sp} goto={goto} />
         </div>
 
+        <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">Availability</p>
+        <div className="mb-6">
+          <AvailabilityChips sp={sp} goto={goto} />
+        </div>
+
+        <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">Cost for two</p>
+        <div className="mb-6">
+          <PriceChips sp={sp} goto={goto} />
+        </div>
+
+        <p className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-cream-500">Delivery time</p>
+        <div className="mb-7">
+          <TimeChips sp={sp} goto={goto} />
+          <p className="mt-2 text-xs leading-relaxed text-cream-600">
+            Based on each kitchen&apos;s published delivery estimate — the same time shown on its listing.
+          </p>
+        </div>
+
         <button
           type="button"
           onClick={onClose}
@@ -272,6 +370,7 @@ function FilterSheet({
           Show results{activeCount > 0 ? ` · ${sortLabel}` : ""}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

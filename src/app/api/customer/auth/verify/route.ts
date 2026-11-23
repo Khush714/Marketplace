@@ -126,7 +126,7 @@ export async function POST(req: NextRequest) {
       ok: true,
       account: {
         id: account.id,
-        phoneE164: account.phoneE164,
+        phoneE164: account.phoneE164 ?? "",
         name: account.name ?? "",
         avatar: account.avatar ?? "",
       },

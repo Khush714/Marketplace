@@ -34,6 +34,7 @@
  * bound the routes enforce.
  */
 
+import { isInboxToken } from "./customer-notification-copy";
 import { parseOfferCode } from "./merchant-offer";
 
 /** Largest quantity one cart line may request. */
@@ -117,6 +118,15 @@ export interface CheckoutRequest {
   instructions?: string;
   clientRequestId?: string;
   outletId?: string;
+  /**
+   * Browser-generated anonymous inbox token. Accepted only when it has the
+   * expected high-entropy shape; the route hashes it before it reaches the DB.
+   * A malformed or absent token is dropped, never rejected — notifications are
+   * best-effort and must not stop a valid order.
+   */
+  inboxToken?: string;
+  /** Selected delivery locality key; rechecked against the restaurant's served locality before the write. */
+  localityKey?: string;
 }
 
 export type CheckoutResult =
@@ -275,9 +285,15 @@ export function validateCheckout(raw: unknown): CheckoutResult {
     typeof body.clientRequestId === "string" && body.clientRequestId.trim()
       ? body.clientRequestId.trim().slice(0, 80)
       : undefined;
+  // Best-effort: a bad token only disables this order's inbox, it never fails checkout.
+  const inboxToken = isInboxToken(body.inboxToken) ? body.inboxToken.slice(0, 128) : undefined;
   const outletId =
     typeof body.outletId === "string" && body.outletId.trim()
       ? body.outletId.trim().slice(0, 64)
+      : undefined;
+  const localityKey =
+    typeof body.localityKey === "string" && body.localityKey.trim()
+      ? body.localityKey.trim().toLowerCase().slice(0, 40)
       : undefined;
 
   // A code is a *selection*, not a price assertion. Reject malformed input here
@@ -310,7 +326,9 @@ export function validateCheckout(raw: unknown): CheckoutResult {
       paymentMethod,
       ...(instructions !== undefined ? { instructions } : {}),
       ...(clientRequestId !== undefined ? { clientRequestId } : {}),
+      ...(inboxToken !== undefined ? { inboxToken } : {}),
       ...(outletId !== undefined ? { outletId } : {}),
+      ...(localityKey !== undefined ? { localityKey } : {}),
     },
   };
 }

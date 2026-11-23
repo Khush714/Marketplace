@@ -11,6 +11,7 @@ import {
   type FeedbackSummary,
   type FeedbackTheme,
 } from "@/lib/order-feedback";
+import { recordOrderNotification } from "@/lib/customer-notifications";
 
 type Feedback = ReturnType<typeof feedbackDto>;
 
@@ -58,7 +59,8 @@ export async function submitOrderFeedback(input: {
 }
 
 export type ReplyFeedbackResult =
-  | { kind: "OK" | "ALREADY_REPLIED"; feedback: Feedback }
+  | { kind: "OK"; feedback: Feedback; orderId: number }
+  | { kind: "ALREADY_REPLIED"; feedback: Feedback }
   | { kind: "NOT_FOUND" }
   | { kind: "NO_FEEDBACK" }
   | { kind: "CONFLICT" };
@@ -95,8 +97,11 @@ export async function replyToOrderFeedback(input: {
       toStatus: current.merchantStatus,
       reason: "MERCHANT_FEEDBACK_REPLY",
     });
-    return { kind: "OK" as const, feedback: feedbackDto(updated) };
+    return { kind: "OK" as const, feedback: feedbackDto(updated), orderId: current.id };
   });
+  if (result.kind === "OK") {
+    await recordOrderNotification({ orderId: result.orderId, kind: "feedback_reply" });
+  }
   return result;
 }
 
