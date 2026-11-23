@@ -216,8 +216,8 @@ export default async function RestaurantPage(props: {
       </section>
 
       {/* ------------------------- menu + side cart ------------------------ */}
-      <div className="mx-auto mt-6 max-w-5xl px-4 md:mt-5 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-5">
-        <div>
+      <div className="mx-auto mt-6 max-w-5xl px-4 md:mt-5 md:px-6 lg:grid lg:grid-cols-[minmax(0,1fr)_300px] lg:gap-5">
+        <div className="min-w-0">
           {orderingClosed && (
             <div className="mb-5 flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-500/[0.07] px-4 py-3.5">
               <PlugZap className="mt-0.5 size-4.5 shrink-0 text-ember-400" />
@@ -239,7 +239,7 @@ export default async function RestaurantPage(props: {
             highlightId={dish ? Number(dish) || null : null}
           />
         </div>
-        <aside className="hidden lg:block">
+        <aside className="hidden min-w-0 lg:block">
           <MiniCart restaurantSlug={r.slug} restaurantName={r.name} sections={sections} />
         </aside>
       </div>

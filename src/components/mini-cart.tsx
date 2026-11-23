@@ -96,7 +96,7 @@ export function MiniCart({
               ))}
             </ul>
             {soldOutNames.length > 0 && (
-              <p className="mt-3 rounded-xl bg-chili-500/8 px-3 py-2 text-[11px] leading-relaxed text-chili-300">
+              <p className="mt-3 rounded-xl bg-chili-500/8 px-3 py-2 text-[11px] leading-relaxed break-words text-chili-300">
                 {soldOutNames.join(", ")} {soldOutNames.length === 1 ? "is" : "are"} sold out and not included in this total.
               </p>
             )}
@@ -113,7 +113,7 @@ export function MiniCart({
           </div>
         ) : cart.items.length > 0 ? (
           <div className="animate-fade-in mt-3">
-            <p className="text-sm leading-relaxed text-cream-400">
+            <p className="text-sm leading-relaxed break-words text-cream-400">
               Your cart has items from <span className="font-semibold text-cream-200">{cart.restaurantName}</span>.
             </p>
             <Link
