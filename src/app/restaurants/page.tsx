@@ -54,7 +54,7 @@ export default async function RestaurantsPage(props: { searchParams: Promise<Bro
   const restaurants = await browseRestaurants(filters);
 
   return (
-    <div className="mx-auto max-w-7xl px-4 pb-10 pt-4 md:px-6 md:pt-9">
+    <div className="mx-auto max-w-6xl px-4 pb-10 pt-4 md:px-6 md:pt-7">
       <header className="mb-3 md:mb-5">
         <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-ember-400">Discover</p>
         <h1 className="mt-1 font-display text-[26px] font-bold tracking-tight text-cream-50 md:mt-1.5 md:text-4xl">
@@ -94,7 +94,7 @@ export default async function RestaurantsPage(props: { searchParams: Promise<Bro
           />
         </div>
       ) : (
-        <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-3 sm:mt-7 sm:grid-cols-2 sm:gap-y-8 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="mt-4 grid grid-cols-1 gap-x-5 gap-y-3 sm:mt-7 sm:grid-cols-2 sm:gap-y-8 lg:grid-cols-3 lg:gap-x-4 xl:grid-cols-4">
           {restaurants.map((r, i) => (
             <RestaurantCard key={r.slug} restaurant={r} priority={i < 4} variant="row" />
           ))}

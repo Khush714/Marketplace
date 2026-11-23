@@ -62,7 +62,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
   }, []);
 
   return (
-    <section className="relative mx-auto max-w-7xl px-4 pt-6 md:px-6 md:pt-16">
+    <section className="relative mx-auto max-w-6xl px-4 pt-6 md:px-6 md:pt-10">
       {/* Focal glow — a brightness accent, not a second motion source.
           This was a second full-width morphing aurora field, running the same
           `animate-morph`/`animate-aurora` pair as the global ambience with a
@@ -112,7 +112,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </p>
 
       {/* headline — masked word reveal */}
-      <h1 className="mt-3 max-w-3xl font-display text-[34px] font-bold leading-[1.05] tracking-tight text-cream-50 sm:text-[42px] md:text-6xl lg:text-7xl">
+      <h1 className="mt-3 max-w-3xl font-display text-[34px] font-bold leading-[1.05] tracking-tight text-cream-50 sm:text-[42px] md:text-6xl">
         <WordReveal text="Craving something" delay={80} step={95} />
         <br />
         <span className="text-gradient-flow">
@@ -133,7 +133,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </p>
 
       {/* magnetic search trigger */}
-      <Magnetic className="animate-rise mt-5 hidden w-full max-w-xl md:mt-7 md:block" strength={0.16} max={9}>
+      <Magnetic className="animate-rise mt-5 hidden w-full max-w-xl md:mt-6 md:block" strength={0.16} max={9}>
         <button
           type="button"
           onClick={open}
@@ -157,7 +157,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
 
       {/* stats — odometer roll-up */}
       <div
-        className="animate-rise mt-5 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-cream-500"
+        className="animate-rise mt-5 flex flex-wrap items-center gap-x-5 gap-y-1.5 text-xs text-cream-500 md:mt-4 md:gap-x-4"
         style={cssVars({ animationDelay: "680ms" })}
       >
         <span className="flex items-center gap-1.5">
@@ -179,7 +179,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
       </div>
 
       {/* categories */}
-      <div className="mt-8 md:mt-9">
+      <div className="mt-8 md:mt-7">
         <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:hidden">What’s on your mind?</p>
         <p className="mb-3 hidden text-[11px] font-bold uppercase tracking-[0.2em] text-cream-500 md:block">What’s on your mind?</p>
 
@@ -205,7 +205,7 @@ export function HomeHero({ restaurantCount }: { restaurantCount: number }) {
           ))}
         </div>
 
-        <div className="no-scrollbar mask-fade-x -mx-4 hidden gap-2.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex md:flex-wrap md:px-0">
+        <div className="no-scrollbar mask-fade-x -mx-4 hidden gap-2.5 overflow-x-auto px-4 pb-1 md:mx-0 md:flex md:flex-wrap md:gap-2 md:px-0">
           {CATEGORIES.map(({ label, q, Icon, tint }, i) => (
             <Link
               key={label}

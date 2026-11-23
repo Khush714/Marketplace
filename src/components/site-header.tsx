@@ -65,7 +65,7 @@ export function SiteHeader() {
           : "border-b border-transparent bg-transparent",
       )}
     >
-      <div className="mx-auto flex max-w-7xl items-center gap-3 px-4 pt-2.5 md:h-16 md:gap-5 md:pt-0 lg:px-6">
+      <div className="mx-auto flex max-w-6xl items-center gap-3 px-4 pt-2.5 md:h-16 md:gap-3 md:pt-0 lg:px-6">
         {/* Mobile row-1: location + profile */}
         <div className="flex flex-1 items-center justify-between md:hidden">
           <button type="button" onClick={openPicker} className="flex items-center gap-1.5 press" aria-label="Change delivery location">
@@ -106,7 +106,7 @@ export function SiteHeader() {
         </div>
 
         {/* Desktop layout */}
-        <div className="hidden md:flex md:items-center md:gap-5">
+        <div className="hidden md:flex md:items-center md:gap-3">
           <Logo />
         </div>
         <button
@@ -128,7 +128,7 @@ export function SiteHeader() {
 
         <SearchTrigger className="hidden md:flex md:min-w-0 md:flex-1 md:max-w-md md:mx-auto" />
 
-        <div className="hidden items-center gap-2.5 md:flex">
+        <div className="hidden items-center gap-2.5 md:flex md:gap-2">
           <Link
             href="/orders"
             className="press flex items-center gap-1.5 rounded-full glass px-4 py-2 text-sm font-semibold text-cream-200 transition-colors hover:bg-white/10"

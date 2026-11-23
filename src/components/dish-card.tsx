@@ -36,7 +36,7 @@ export const DishCard = forwardRef<
       data-reveal="up"
       style={cssVars({ "--rd": `${(index % 6) * 55}ms` })}
       className={cn(
-        "group relative flex gap-3 rounded-2xl p-3 transition-colors duration-300 md:gap-4",
+        "group relative flex gap-3 rounded-2xl p-3 transition-colors duration-300 md:gap-3 md:p-2.5",
         highlighted
           ? "animate-fade-in bg-ember-400/8 ring-1 ring-ember-400/40"
           : "hover:bg-white/[0.035]",

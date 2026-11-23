@@ -123,7 +123,7 @@ export default async function RestaurantPage(props: {
 
         {/* info panel — floats over the cover */}
         <div className="mx-auto max-w-5xl px-4 md:px-6">
-          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-4 md:-mt-24 md:p-7">
+          <div className="glass-strong animate-rise-3d relative z-10 -mt-20 rounded-[26px] p-4 md:-mt-24 md:p-6">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
@@ -147,7 +147,7 @@ export default async function RestaurantPage(props: {
               </div>
             </div>
 
-            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/8 pt-4 text-sm text-cream-300">
+            <div className="mt-4 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-white/8 pt-4 text-sm text-cream-300 md:gap-x-4">
               <span className="flex items-center gap-1.5">
                 <Clock3 className="size-4 text-ember-400" />
                 <span className="font-semibold text-cream-50">{r.deliveryMinutes}-{r.deliveryMinutes + 10} min</span>
@@ -216,7 +216,7 @@ export default async function RestaurantPage(props: {
       </section>
 
       {/* ------------------------- menu + side cart ------------------------ */}
-      <div className="mx-auto mt-6 max-w-5xl px-4 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-8">
+      <div className="mx-auto mt-6 max-w-5xl px-4 md:mt-5 md:px-6 lg:grid lg:grid-cols-[1fr_300px] lg:gap-5">
         <div>
           {orderingClosed && (
             <div className="mb-5 flex items-start gap-3 rounded-2xl border border-ember-400/20 bg-ember-500/[0.07] px-4 py-3.5">

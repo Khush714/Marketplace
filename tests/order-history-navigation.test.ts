@@ -21,7 +21,7 @@ test("the desktop header exposes an Orders link", () => {
   const header = source("src/components/site-header.tsx");
   assert.match(header, /href="\/orders"/);
   // It must sit inside the desktop-only block, not just the mobile row.
-  const desktop = header.slice(header.indexOf('className="hidden items-center gap-2.5 md:flex"'));
+  const desktop = header.slice(header.indexOf('className="hidden items-center gap-2.5 md:flex'));
   assert.match(desktop, /href="\/orders"/);
 });
 

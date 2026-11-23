@@ -781,7 +781,7 @@ export default function CheckoutPage() {
         From <span className="font-semibold text-cream-300">{cart.restaurantName}</span> · arrives in ~30 min
       </p>
 
-      <div className="mt-6 grid gap-5 lg:grid-cols-[1fr_340px] lg:gap-8">
+      <div className="mt-6 grid gap-5 md:mt-5 lg:grid-cols-[1fr_340px] lg:gap-6">
         <div className="min-w-0 space-y-4">
           <Section title="Delivery details" Icon={MapPin}>
             <div className="space-y-2.5">

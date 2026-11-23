@@ -63,7 +63,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       <HomeHero restaurantCount={all.length} />
 
       {/* infinite ticker */}
-      <div className="mt-8 overflow-hidden border-y border-white/6 py-3 md:mt-16">
+      <div className="mt-8 overflow-hidden border-y border-white/6 py-3 md:mt-10">
         <div className="animate-marquee flex w-max items-center gap-10">
           {[0, 1].map((dup) => (
             <div key={dup} aria-hidden={dup === 1} className="flex items-center gap-10">
@@ -83,7 +83,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
 
       {/* Popular dishes — only rendered when real order data clears the sample floor */}
       {popularity.dishes.length > 0 && (
-        <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+        <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
           <div data-reveal="up">
             <SectionHeader
               title={`Popular dishes near ${popularity.scopeLabel}`}
@@ -99,7 +99,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       )}
 
       {/* Featured rail */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Featured tonight" sub={`Hand-picked in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
@@ -118,11 +118,11 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Distance-sorted listings are nearby, not popularity-ranked */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Restaurants near you" sub={`Within a short ride of ${locality.name}`} href={`/restaurants?sort=near&loc=${locality.key}`} />
         </div>
-        <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-x-5 gap-y-8 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 lg:gap-x-4 lg:gap-y-6">
           {nearby.slice(0, 8).map((r, i) => (
             <RestaurantCard key={r.slug} restaurant={r} index={i} />
           ))}
@@ -130,7 +130,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Top rated rail */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <div data-reveal="up">
           <SectionHeader title="Top rated" sub={`Consistently exceptional in ${locality.name}`} href={`/restaurants?sort=rating&loc=${locality.key}`} />
         </div>
@@ -146,7 +146,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
         </Rail>
       </section>
 
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <Link
           href={withLoc("/restaurants", locality.key)}
           className="press group flex items-center justify-between gap-3 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3.5 transition-colors hover:bg-white/[0.06] md:px-5"
@@ -160,14 +160,14 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
       </section>
 
       {/* Editorial promos sit below discovery so they never push restaurants off the first screen */}
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <Link
           href="/restaurants/ember-and-oak"
           className="group relative block overflow-hidden rounded-[28px] shadow-float press"
         >
           <div className="absolute inset-0 bg-[radial-gradient(85%_130%_at_12%_40%,#3a1a0e_0%,#160b08_52%,#0c0705_100%)]" />
           <div className="relative grid items-center gap-4 md:grid-cols-[1.1fr_1fr]">
-            <div data-reveal="left" className="p-8 md:p-12">
+            <div data-reveal="left" className="p-8 md:p-9">
               <p className="flex w-fit items-center gap-1.5 rounded-full bg-chili-500/18 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-chili-300">
                 <BadgePercent className="size-3.5" /> The Ember Drop
               </p>
@@ -203,7 +203,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
         </Link>
       </section>
 
-      <section className="mx-auto mt-10 max-w-7xl px-4 md:mt-20 md:px-6">
+      <section className="mx-auto mt-10 max-w-6xl px-4 md:mt-12 md:px-6">
         <Link
           href="/restaurants/the-velvet-crumb"
           className="group relative block overflow-hidden rounded-[28px] shadow-float press"
@@ -224,7 +224,7 @@ export default async function HomePage(props: { searchParams: Promise<HomeSearch
                 className="sheen-band absolute inset-y-0 -left-1/3 w-1/3 opacity-0 group-hover:animate-sheen group-hover:opacity-100"
               />
             </div>
-            <div data-reveal="left" className="order-1 p-8 md:order-2 md:p-12">
+            <div data-reveal="left" className="order-1 p-8 md:order-2 md:p-9">
               <p className="w-fit rounded-full bg-berry-400/15 px-3 py-1 text-[11px] font-bold uppercase tracking-[0.18em] text-berry-400">
                 Sweet endings
               </p>

@@ -20,8 +20,8 @@ export function OfferStrip({
   if (withOffers.length === 0) return null;
 
   return (
-    <section className="mx-auto mt-8 max-w-7xl px-4 md:mt-12 md:px-6" aria-labelledby="offer-strip-title">
-      <div className="mb-3 flex items-end justify-between gap-3">
+    <section className="mx-auto mt-8 max-w-6xl px-4 md:mt-9 md:px-6" aria-labelledby="offer-strip-title">
+      <div className="mb-3 flex items-end justify-between gap-3 md:mb-2.5">
         <div>
           <h2 id="offer-strip-title" className="font-display text-[19px] font-bold tracking-tight text-cream-50 md:text-2xl">
             Offers near you

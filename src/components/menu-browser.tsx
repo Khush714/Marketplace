@@ -114,7 +114,7 @@ export function MenuBrowser({
   return (
     <div className="min-w-0">
       {/* sticky category tabs + mobile filters */}
-      <div className="sticky top-[100px] z-30 -mx-4 bg-void/82 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:rounded-full md:px-0">
+      <div className="sticky top-[100px] z-30 -mx-4 bg-void/82 px-4 py-2.5 backdrop-blur-xl md:top-16 md:mx-0 md:rounded-full md:px-0 md:py-2">
         <div className="mb-2 flex items-center gap-2 md:hidden">
           <label className="flex min-w-0 flex-1 items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-2">
             <Search className="size-4 shrink-0 text-cream-500" />
@@ -170,7 +170,7 @@ export function MenuBrowser({
       </div>
 
       {/* sections */}
-      <div className="mt-2 space-y-8 pb-4">
+      <div className="mt-2 space-y-8 pb-4 md:space-y-5">
         {filteredSections.length === 0 ? (
           <div className="flex flex-col items-center rounded-3xl border border-dashed border-white/12 bg-white/[0.02] px-6 py-12 text-center">
             <Search className="size-6 text-cream-600" />
