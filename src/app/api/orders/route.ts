@@ -16,6 +16,7 @@ import { toPublicOrder } from "@/lib/order-public";
 import { resolveAccountSession } from "@/lib/security/customer-account-session";
 import { listOrdersByCustomerAccountId } from "@/db/customer-accounts";
 import { hashInboxToken, recordOrderNotification } from "@/lib/customer-notifications";
+import { filterHistory, paginateHistory, parseHistoryQuery } from "@/lib/order-history-core";
 
 export const dynamic = "force-dynamic";
 
@@ -227,40 +228,41 @@ async function checkout(req: NextRequest) {
   return res;
 }
 
-const MAX_HISTORY_CODES = 30;
-
 /**
- * Session-backed order history for this browser. Reads the codes bound to the
- * live anonymous customer session (set via POST /api/orders/attach) and returns
- * only the public projection. Missing or expired sessions yield an empty list,
- * never an error signal, and no codes beyond the session's bound set are read.
+ * Account/session order history with bounded pagination and filters. Reads only
+ * codes the server already proved this caller owns; a query string can narrow
+ * that set but never widen it. Missing or expired sessions yield an empty list,
+ * never an error signal.
  */
 export async function GET(req: Request) {
   const throttled = guardRead(req, "orderLookup");
   if (throttled) return throttled;
+  const query = parseHistoryQuery(new URL(req.url).searchParams);
 
   const accountSession = await resolveAccountSession(req);
 
   // Signed-in: account-linked orders only. Device/anonymous session orders are
   // not mixed in to prevent cross-customer leakage on shared browsers.
   if (accountSession) {
-    const linked = await listOrdersByCustomerAccountId(accountSession.account.id, MAX_HISTORY_CODES);
+    const linked = await listOrdersByCustomerAccountId(accountSession.account.id, 100);
     const loaded = await Promise.all(linked.map((row) => getOrderByCode(row.code)));
-    const orders = loaded
+    const all = loaded
       .filter((o): o is NonNullable<typeof o> => Boolean(o))
       .map((o) => toPublicOrder(o))
       .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-    return Response.json({ orders: orders.slice(0, MAX_HISTORY_CODES) });
+    const page = paginateHistory(filterHistory(all, query), query);
+    return Response.json({ ...page }, { headers: { "Cache-Control": "no-store" } });
   }
 
   // Guest/legacy: session-backed history for this browser only.
   const session = await resolveCustomerSession(req);
-  if (!session?.orderCodes.length) return Response.json({ orders: [] });
-  const codes = session.orderCodes.slice(0, MAX_HISTORY_CODES);
+  if (!session?.orderCodes.length) return Response.json({ orders: [], nextOffset: null });
+  const codes = session.orderCodes.slice(0, 100);
   const loaded = await Promise.all(codes.map((code) => getOrderByCode(code)));
-  const orders = loaded
+  const all = loaded
     .filter((o): o is NonNullable<typeof o> => Boolean(o))
     .map((o) => toPublicOrder(o))
     .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
-  return Response.json({ orders: orders.slice(0, MAX_HISTORY_CODES) });
+  const page = paginateHistory(filterHistory(all, query), query);
+  return Response.json({ ...page }, { headers: { "Cache-Control": "no-store" } });
 }

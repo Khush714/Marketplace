@@ -12,6 +12,8 @@ import {
   type ReactNode,
 } from "react";
 import { useConsent } from "@/lib/consent";
+import { DEFAULT_LOCALITY } from "@/lib/domain";
+import { normalizeAddress, type Address } from "@/lib/delivery-address";
 import {
   RECENT_ITEMS_LIMIT,
   normalizeRecentDish,
@@ -22,11 +24,7 @@ import {
   type RecentRestaurant,
 } from "@/lib/recent-items";
 
-export interface Address {
-  id: string;
-  label: string;
-  text: string;
-}
+export type { Address } from "@/lib/delivery-address";
 
 /**
  * A placed order as this browser remembers it. The token is the signed
@@ -92,6 +90,8 @@ interface ProfileIdentityValue {
   addresses: Address[];
   setIdentity: (name: string, phone: string) => void;
   addAddress: (label: string, text: string) => Address;
+  /** Save a map-picked address with its structured fields and coordinates. */
+  saveDeliveryAddress: (address: Address) => Address;
   removeAddress: (id: string) => void;
   /** Clears device-local identity/address data (used on account sign-out for shared-device privacy). */
   resetIdentity: () => void;
@@ -151,11 +151,18 @@ const EMPTY: ProfileState = {
   name: "",
   phone: "",
   addresses: [
-    {
+    normalizeAddress({
       id: "addr-default",
       label: "Home",
-      text: "12, Station Road, Old City, Bharuch, Gujarat 392001",
-    },
+      text: "",
+      house: "12",
+      street: "Station Road",
+      area: "Old City",
+      city: "Bharuch",
+      pincode: "392001",
+      latitude: DEFAULT_LOCALITY.lat,
+      longitude: DEFAULT_LOCALITY.lng,
+    }),
   ],
   favorites: [],
   orders: [],
@@ -187,7 +194,9 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
         setState({
           ...EMPTY,
           ...parsed,
-          addresses: parsed.addresses?.length ? parsed.addresses : EMPTY.addresses,
+          addresses: Array.isArray(parsed.addresses) && parsed.addresses.length
+            ? parsed.addresses.slice(0, 20).map(normalizeAddress).filter((a) => a.id)
+            : EMPTY.addresses,
           // Legacy builds stored bare codes. Those orders are unreachable now
           // (a code alone is not a credential), so they are dropped instead of
           // being shown as permanently unloadable rows.
@@ -270,11 +279,24 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, name, phone }));
   }, []);
 
-  const addAddress = useCallback((label: string, text: string) => {
-    const addr: Address = { id: `addr-${Date.now()}`, label: label || "Other", text };
-    setState((s) => ({ ...s, addresses: [...s.addresses, addr] }));
-    return addr;
+  const saveDeliveryAddress = useCallback((raw: Address) => {
+    const address = normalizeAddress({
+      ...raw,
+      id: raw.id || `addr-${globalThis.crypto?.randomUUID?.() ?? Date.now().toString(36)}`,
+    });
+    setState((s) => ({
+      ...s,
+      addresses: s.addresses.some((a) => a.id === address.id)
+        ? s.addresses.map((a) => (a.id === address.id ? address : a))
+        : [address, ...s.addresses].slice(0, 20),
+    }));
+    return address;
   }, []);
+
+  const addAddress = useCallback(
+    (label: string, text: string) => saveDeliveryAddress({ id: "", label, text }),
+    [saveDeliveryAddress],
+  );
 
   const removeAddress = useCallback((id: string) => {
     setState((s) => ({ ...s, addresses: s.addresses.filter((a) => a.id !== id) }));
@@ -403,8 +425,8 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   const readyValue = useMemo<ProfileReadyValue>(() => ({ hydrated }), [hydrated]);
 
   const identityValue = useMemo<ProfileIdentityValue>(
-    () => ({ name: state.name, phone: state.phone, addresses: state.addresses, setIdentity, addAddress, removeAddress, resetIdentity }),
-    [state.name, state.phone, state.addresses, setIdentity, addAddress, removeAddress, resetIdentity],
+    () => ({ name: state.name, phone: state.phone, addresses: state.addresses, setIdentity, addAddress, saveDeliveryAddress, removeAddress, resetIdentity }),
+    [state.name, state.phone, state.addresses, setIdentity, addAddress, saveDeliveryAddress, removeAddress, resetIdentity],
   );
 
   const favoritesValue = useMemo<FavoritesValue>(

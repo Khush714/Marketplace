@@ -61,6 +61,10 @@ export function buildPosOrderPayload(
       subtotal: round2(order.subtotalCents / 100),
       delivery_fee: round2(order.deliveryFeeCents / 100),
       total: round2(order.totalCents / 100),
+      // The POS already books `total`, so the tip must be visible as its own
+      // amount for reconciliation without changing the line-item contract.
+      tip: round2(order.tipCents / 100),
+      ...(order.scheduledFor ? { scheduled_for: new Date(order.scheduledFor).toISOString() } : {}),
       order_type: "delivery",
       // PAID → POS records amount_paid = total, balance_due = 0
       // COD  → POS records amount_paid = 0,   balance_due = total

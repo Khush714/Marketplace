@@ -319,10 +319,19 @@ overstate completeness. They are not introduced by this document.
 5. **Legal placeholders.** Seven published contact/entity fields in
    `lib/site-legal.ts` still need real values; `npm run verify:legal` fails until
    they are filled.
-6. **Merchant payout execution is external.** `lib/merchant-settlements.ts`
-   projects the Merchant feed from signature-verified captures, platform-fee
-   snapshots and refunds. There is no bank transfer ledger, UTR or payout
-   timestamp in this repo; a real payout provider and reconciliation workflow
-   must be configured outside Marketplace before merchant money is actually
-   moved. `.env.example` lists the customer-auth variables required for a public
-   checkout; production fails closed without them.
+6. **Owner payouts are priced and queued here, but money still moves outside
+   Marketplace.** `lib/merchant-settlements.ts` remains the read-only settlement
+   projection. `lib/payout-core.ts`, `db/merchant-payouts.ts` and the
+   `20261128_merchant_payout_ledger.sql` migration add owner-selectable cycles
+   (`weekly | fortnightly | monthly`), immutable preview batches with a money
+   checksum, a global double-allocation guard, a human approval gate and an
+   append-only outbox/event history. See ADR-0009. Approval reprices the exact
+   snapshot before queueing a durable intent; it does **not** call a bank. There
+   is no outbox processor, payout provider adapter, UTR write path or payout
+   reconciliation loop yet, and the Merchant feed stays `available:false` until
+   a batch is approved. The Merchant Payouts tab exposes cycle selection,
+   preview, batch freezing and checksum-gated approval behind `finance.write`
+   through `/api/merchant/payout-automation/*`. A real payout rail and
+   tax/compliance sign-off are still
+   required before money moves. `.env.example` lists the customer-auth variables
+   required for a public checkout; production fails closed without them.

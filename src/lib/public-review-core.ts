@@ -17,6 +17,7 @@ export type PublicReviewRow = Omit<FeedbackRow, "rating" | "feedbackAt"> & {
   id: number;
   rating: number;
   feedbackAt: Date;
+  reviewPhotoIds?: number[] | null;
 };
 
 export type PublicReviewCursor = {
@@ -30,6 +31,7 @@ export type PublicReviewDto = {
   feedbackAt: string;
   merchantResponse: string;
   merchantRespondedAt: string | null;
+  photoUrls: string[];
 };
 
 export type PublicReviewPage = {
@@ -46,6 +48,7 @@ export function publicReviewDto(row: PublicReviewRow): PublicReviewDto {
     feedbackAt: dto.feedbackAt ?? row.feedbackAt.toISOString(),
     merchantResponse: dto.merchantResponse,
     merchantRespondedAt: dto.merchantRespondedAt,
+    photoUrls: (row.reviewPhotoIds ?? []).map((id) => `/api/media/${id}`),
   };
 }
 

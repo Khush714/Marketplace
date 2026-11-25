@@ -6,17 +6,23 @@ import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react
 import {
   ArrowLeft,
   Check,
+  ClipboardList,
+  FileSpreadsheet,
   ImageOff,
   Layers,
   Pencil,
   Plus,
+  Printer,
   RefreshCw,
   Store,
   Trash2,
   TriangleAlert,
+  Upload,
   Utensils,
 } from "lucide-react";
+import { parseBulkMenuPaste } from "@/lib/bulk-menu-core";
 import { cn, formatINR } from "@/lib/domain";
+import { MAX_MEDIA_BYTES } from "@/lib/media-core";
 import { partnerFetch, RequirePartnerSession, usePartnerSession } from "@/lib/partner-session";
 import { useToast } from "@/lib/toast";
 import type { PartnerMenuDto, PartnerMenuItemDto, PartnerModifierGroupDto } from "@/lib/types";
@@ -32,6 +38,37 @@ async function call<T>(path: string, init: RequestInit = {}): Promise<Reply<T>> 
   const res = await partnerFetch<T>(path, init);
   if (res.ok) return { ...res, ok: true as const };
   return { ok: false, error: res.error };
+}
+
+const MEDIA_TYPES = ["image/jpeg", "image/png", "image/webp"] as const;
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const value = String(reader.result ?? "");
+      resolve(value.includes(",") ? value.slice(value.indexOf(",") + 1) : value);
+    };
+    reader.onerror = () => reject(new Error("Could not read that image."));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function uploadMenuImage(file: File): Promise<string> {
+  if (!(MEDIA_TYPES as readonly string[]).includes(file.type)) {
+    throw new Error("Upload a JPEG, PNG or WebP image.");
+  }
+  if (file.size > MAX_MEDIA_BYTES) {
+    throw new Error(`Images must be ${MAX_MEDIA_BYTES / 1024 / 1024} MB or less.`);
+  }
+  const dataBase64 = await fileToBase64(file);
+  const result = await call<{ id: number; url: string }>("/api/media", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind: "menu", contentType: file.type, dataBase64 }),
+  });
+  if (!result.ok) throw new Error(result.error);
+  return result.url;
 }
 
 const inputCls =
@@ -105,6 +142,20 @@ export default function PartnerMenuPage() {
         Add dishes and modifier groups straight to your marketplace listing. Anything you write here
         goes live immediately.
       </p>
+      <div className="mt-4 flex flex-wrap gap-2">
+        <Link
+          href="/partner/kds"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <ClipboardList className="size-3.5" /> Kitchen display
+        </Link>
+        <Link
+          href="/partner/print"
+          className="press inline-flex items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12"
+        >
+          <Printer className="size-3.5" /> Print tickets
+        </Link>
+      </div>
 
       <RequirePartnerSession>
         {menu && (
@@ -143,6 +194,7 @@ export default function PartnerMenuPage() {
             setBusyId={setBusyId}
             run={run}
           />
+          <BulkSection menu={menu} run={run} />
           <GroupSection
             menu={menu}
             editor={groupEditor}
@@ -175,6 +227,7 @@ function DishSection({
   setBusyId: (v: number | "new" | null) => void;
   run: <T>(work: () => Promise<Reply<T>>, success: { title: string; sub?: string } | null) => Promise<boolean>;
 }) {
+  const { toast } = useToast();
   const byCategory = useMemo(() => {
     const groups = new Map<string, PartnerMenuItemDto[]>();
     for (const item of menu.items) {
@@ -300,6 +353,50 @@ function DishSection({
                   >
                     {item.available ? "Available" : "Sold out"}
                   </button>
+                  {item.posSynced ? (
+                    <span
+                      title="Images on POS-owned dishes are managed by the POS"
+                      className="rounded-lg bg-sky-500/10 px-2.5 py-1.5 text-[11px] font-bold text-sky-300"
+                    >
+                      POS image
+                    </span>
+                  ) : (
+                    <label className="press flex cursor-pointer items-center gap-1.5 rounded-lg bg-white/8 px-2.5 py-1.5 text-[11px] font-bold text-cream-200 transition-colors hover:bg-white/12">
+                      <Upload className="size-3.5" />
+                      {busyId === item.id ? "Saving…" : "Upload image"}
+                      <input
+                        type="file"
+                        accept={MEDIA_TYPES.join(",")}
+                        disabled={busyId === item.id}
+                        className="hidden"
+                        onChange={(e) => {
+                          const file = e.target.files?.[0];
+                          e.target.value = "";
+                          if (!file) return;
+                          setBusyId(item.id);
+                          void (async () => {
+                            try {
+                              const url = await uploadMenuImage(file);
+                              await run(
+                                () =>
+                                  call<{ item: PartnerMenuItemDto }>(
+                                    `/api/partner/menu/items/${item.id}`,
+                                    { method: "PATCH", body: JSON.stringify({ imageUrl: url }) },
+                                  ),
+                                { title: "Image updated", sub: item.name },
+                              );
+                            } catch (error) {
+                              toast(error instanceof Error ? error.message : "Upload failed", {
+                                kind: "error",
+                              });
+                            } finally {
+                              setBusyId(null);
+                            }
+                          })();
+                        }}
+                      />
+                    </label>
+                  )}
                   <button
                     type="button"
                     aria-label={`Delete ${item.name}`}
@@ -329,6 +426,104 @@ function DishSection({
   );
 }
 
+function BulkSection({
+  menu,
+  run,
+}: {
+  menu: PartnerMenuDto;
+  run: <T>(work: () => Promise<Reply<T>>, success: { title: string; sub?: string } | null) => Promise<boolean>;
+}) {
+  const [text, setText] = useState("");
+  const [busy, setBusy] = useState(false);
+  const parsed = useMemo(() => parseBulkMenuPaste(text), [text]);
+  const ownedCount = menu.items.filter((item) => !item.posSynced).length;
+
+  const apply = async () => {
+    if (!parsed.ok || parsed.rows.length === 0) return;
+    setBusy(true);
+    const ok = await run(
+      () =>
+        call<{ updated: number }>("/api/partner/menu/bulk", {
+          method: "POST",
+          headers: { "Content-Type": "text/plain; charset=utf-8" },
+          body: text,
+        }),
+      { title: `Updated ${parsed.rows.length} dish${parsed.rows.length === 1 ? "" : "es"}` },
+    );
+    setBusy(false);
+    if (ok) setText("");
+  };
+
+  return (
+    <section className="glass rounded-3xl p-5 md:p-6">
+      <h2 className="flex items-center gap-2 font-display text-lg font-bold text-cream-50">
+        <FileSpreadsheet className="size-4.5 text-ember-400" /> Bulk edit
+      </h2>
+      <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+        Paste spreadsheet rows or CSV to update {ownedCount} partner-owned dish
+        {ownedCount === 1 ? "" : "es"} at once. POS-owned rows are rejected before anything is
+        written.
+      </p>
+      <p className="mt-2 font-mono text-[11px] text-cream-600">
+        id,name,price,available,stock · blank = unchanged · &quot;-&quot; clears · price in rupees
+      </p>
+
+      <textarea
+        value={text}
+        onChange={(e) => setText(e.target.value)}
+        rows={6}
+        spellCheck={false}
+        placeholder={'id,name,price,available,stock\n12,Paneer Tikka,249,yes,20\n18,Dosa,120,no,-'}
+        className={cn(inputCls, "mt-3 w-full font-mono text-xs leading-relaxed")}
+      />
+
+      {parsed.issues.length > 0 && (
+        <ul className="mt-2 space-y-1 rounded-xl border border-chili-500/25 bg-chili-500/8 px-3.5 py-2.5">
+          {parsed.issues.slice(0, 12).map((issue, index) => (
+            <li key={`${issue.line}-${index}`} className="text-[11px] text-chili-300">
+              Line {issue.line}
+              {issue.field ? ` · ${issue.field}` : ""}: {issue.message}
+            </li>
+          ))}
+          {parsed.issues.length > 12 && (
+            <li className="text-[11px] text-chili-300">+{parsed.issues.length - 12} more issues</li>
+          )}
+        </ul>
+      )}
+
+      {parsed.rows.length > 0 && (
+        <div className="mt-3 rounded-xl border border-white/10 bg-black/20 px-3.5 py-2.5">
+          <p className="text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500">
+            {parsed.rows.length} row{parsed.rows.length === 1 ? "" : "s"} ready
+          </p>
+          <ul className="mt-1 space-y-0.5 font-mono text-[11px] text-cream-400">
+            {parsed.rows.slice(0, 6).map((row) => (
+              <li key={row.line}>
+                #{row.id ?? "?"}
+                {row.name ? ` · ${row.name}` : ""}
+                {row.priceCents !== undefined ? ` · ${formatINR(row.priceCents)}` : ""}
+              </li>
+            ))}
+            {parsed.rows.length > 6 && <li>+{parsed.rows.length - 6} more</li>}
+          </ul>
+        </div>
+      )}
+
+      <div className="mt-3 flex justify-end">
+        <button
+          type="button"
+          onClick={() => void apply()}
+          disabled={busy || !parsed.ok || parsed.rows.length === 0}
+          className="press flex items-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-xs font-bold text-white transition-opacity disabled:opacity-50"
+        >
+          {busy ? <RefreshCw className="size-3.5 animate-spin" /> : <FileSpreadsheet className="size-3.5" />}
+          Apply {parsed.rows.length || ""} row{parsed.rows.length === 1 ? "" : "s"}
+        </button>
+      </div>
+    </section>
+  );
+}
+
 interface DishPayload {
   category: string;
   name: string;
@@ -347,6 +542,7 @@ function DishForm({
   onCancel: () => void;
   onSubmit: (payload: DishPayload) => void;
 }) {
+  const { toast } = useToast();
   const [f, setF] = useState<DishPayload>({
     category: "",
     name: "",
@@ -355,10 +551,25 @@ function DishForm({
     imageUrl: "",
     isVeg: false,
   });
+  const [uploading, setUploading] = useState(false);
   const set = <K extends keyof DishPayload>(k: K, v: DishPayload[K]) => setF((p) => ({ ...p, [k]: v }));
+
+  const uploadImage = async (file: File) => {
+    setUploading(true);
+    try {
+      const url = await uploadMenuImage(file);
+      set("imageUrl", url);
+      toast("Image uploaded", { sub: "It will be attached when you save the dish" });
+    } catch (error) {
+      toast(error instanceof Error ? error.message : "Upload failed", { kind: "error" });
+    } finally {
+      setUploading(false);
+    }
+  };
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
+    if (uploading) return;
     onSubmit(f);
   };
 
@@ -408,6 +619,28 @@ function DishForm({
           className={inputCls}
         />
       </div>
+      <div className="flex flex-wrap items-center gap-2 sm:col-span-2">
+        <label className="press flex cursor-pointer items-center gap-1.5 rounded-lg bg-white/8 px-2.5 py-1.5 text-[11px] font-bold text-cream-200 transition-colors hover:bg-white/12">
+          <Upload className="size-3.5" />
+          {uploading ? "Uploading…" : "Upload image"}
+          <input
+            type="file"
+            accept={MEDIA_TYPES.join(",")}
+            disabled={busy || uploading}
+            className="hidden"
+            onChange={(e) => {
+              const file = e.target.files?.[0];
+              e.target.value = "";
+              if (file) void uploadImage(file);
+            }}
+          />
+        </label>
+        {f.imageUrl && (
+          <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-cream-500">
+            {f.imageUrl}
+          </span>
+        )}
+      </div>
       <div className="sm:col-span-2">
         <label className={labelCls} htmlFor="dish-desc">Description <span className="normal-case text-cream-600">(optional)</span></label>
         <input
@@ -431,11 +664,11 @@ function DishForm({
         <button type="button" onClick={onCancel} className={ghostBtn}>Cancel</button>
         <button
           type="submit"
-          disabled={busy}
+          disabled={busy || uploading}
           className="press flex items-center gap-1.5 rounded-xl bg-gradient-to-b from-ember-400 to-chili-600 px-4 py-2.5 text-sm font-bold text-white transition-opacity disabled:opacity-60"
         >
-          {busy ? <RefreshCw className="size-4 animate-spin" /> : <Plus className="size-4" />}
-          {busy ? "Saving…" : "Add dish"}
+          {busy || uploading ? <RefreshCw className="size-4 animate-spin" /> : <Plus className="size-4" />}
+          {busy ? "Saving…" : uploading ? "Uploading…" : "Add dish"}
         </button>
       </div>
     </form>

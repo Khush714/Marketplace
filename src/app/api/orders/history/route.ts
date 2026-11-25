@@ -1,6 +1,7 @@
 import { listOrders } from "@/db/queries";
 import { unreadSupportCodes } from "@/db/support";
 import { guardRead } from "@/lib/abuse";
+import { filterHistory, paginateHistory, parseHistoryQuery } from "@/lib/order-history-core";
 import { sessionHistoryCodes } from "@/lib/customer-session-core";
 import { resolveCustomerSession } from "@/lib/customer-session";
 import { toPublicOrder, type PublicOrder } from "@/lib/order-public";
@@ -25,13 +26,15 @@ export async function GET(req: Request) {
   if (throttled) return throttled;
 
   const session = await resolveCustomerSession(req);
-  if (!session) return Response.json({ orders: [] });
+  if (!session) return Response.json({ orders: [], nextOffset: null });
+  const query = parseHistoryQuery(new URL(req.url).searchParams);
 
   const codes = sessionHistoryCodes(session.orderCodes);
-  const [rows, unread] = await Promise.all([listOrders(codes), unreadSupportCodes(codes)]);
-  const orders: PublicOrder[] = rows.map((row) => ({
+  const [rows, unread] = await Promise.all([listOrders(codes, 100), unreadSupportCodes(codes)]);
+  const all: PublicOrder[] = rows.map((row) => ({
     ...toPublicOrder(row),
     unreadOpsReply: unread.has(row.code),
   }));
-  return Response.json({ orders });
+  const page = paginateHistory(filterHistory(all, query), query);
+  return Response.json({ ...page }, { headers: { "Cache-Control": "no-store" } });
 }

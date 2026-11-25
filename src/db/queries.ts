@@ -57,6 +57,7 @@ import { ORDERING_CLOSED_MESSAGE, orderingGateEnforced } from "@/lib/ordering-ga
 import { resolveDeliveryLocality } from "@/lib/delivery-locality-core";
 import { deliveryAvailableSql, openNowSql } from "@/db/availability";
 import { discoverableRestaurant } from "@/lib/discoverability";
+import { parseScheduledFor, parseTipCents, scheduledSlotOpen, withTip } from "@/lib/checkout-extras-core";
 import { closedReason, isRestaurantClosed } from "@/lib/restaurant-closure";
 import { escapeLike, MAX_SLUGS } from "@/lib/abuse-core";
 import { emitSecurityEvent } from "@/lib/security/security-events";
@@ -427,7 +428,10 @@ function toOrderDto(o: typeof orders.$inferSelect, restaurantLocality = ""): Ord
     deliveryFeeCents: o.deliveryFeeCents,
     platformFeeCents: o.platformFeeCents,
     discountCents: o.discountCents,
+    tipCents: o.tipCents,
     totalCents: o.totalCents,
+    scheduledFor: o.scheduledFor ? new Date(o.scheduledFor).toISOString() : null,
+    reviewPhotoIds: [...o.reviewPhotoIds],
     offerCode: o.offerCode,
     feedback: feedbackDto(o),
     createdAt: new Date(o.createdAt).toISOString(),
@@ -3145,6 +3149,12 @@ export interface CreateOrderInput {
   /** Checkout's selected locality key and the URL's `?loc=` claim, rechecked before the write. */
   localityKey?: string;
   urlLocalityKey?: string | null;
+  /** Optional map pin from the address picker; used for admission, never persisted. */
+  deliveryLocation?: { latitude: number; longitude: number };
+  /** Customer-selected gratuity; repriced and stored only as a server-derived bill. */
+  tipCents?: number;
+  /** Optional future slot, validated against hours and closures before insert. */
+  scheduledFor?: string;
 }
 
 /** Linked modifier group + its available options, resolved per menu item. */
@@ -3176,6 +3186,7 @@ export async function computeBill(
   items: CartLineSubmit[],
   applyOffer = false,
   promoCode?: string,
+  extras: { tipCents?: number; scheduledFor?: string } = {},
 ): Promise<
   | {
       ok: true;
@@ -3202,9 +3213,28 @@ export async function computeBill(
     .where(eq(restaurants.slug, restaurantSlug))
     .limit(1);
   if (!r) return { ok: false, error: "Restaurant not found" };
-  if (!r.isActive || isRestaurantClosed(r)) return { ok: false, error: `${r.name} is ${closedReason(r).toLowerCase()}` };
-  if (!isWithinMerchantHours(r.merchantHoursEnabled, r.merchantOpensAt, r.merchantClosesAt)) {
-    return { ok: false, error: `${r.name} is outside its operating hours` };
+
+  // Tips and slots are choices, not price assertions. Both are re-parsed here
+  // because this is the authoritative path shared by preview and checkout.
+  const tip = parseTipCents(extras.tipCents);
+  if (!tip.ok) return { ok: false, error: tip.error, code: "INVALID_TIP" };
+  const schedule = parseScheduledFor(extras.scheduledFor);
+  if (!schedule.ok) return { ok: false, error: schedule.error, code: "INVALID_SCHEDULE" };
+
+  if (schedule.scheduledFor) {
+    const at = new Date(schedule.scheduledFor);
+    if (!scheduledSlotOpen(schedule.scheduledFor, r)) {
+      return {
+        ok: false,
+        error: `${r.name} is ${closedReason(r, at).toLowerCase()}`,
+        code: "INVALID_SCHEDULE",
+      };
+    }
+  } else {
+    if (!r.isActive || isRestaurantClosed(r)) return { ok: false, error: `${r.name} is ${closedReason(r).toLowerCase()}` };
+    if (!isWithinMerchantHours(r.merchantHoursEnabled, r.merchantOpensAt, r.merchantClosesAt)) {
+      return { ok: false, error: `${r.name} is outside its operating hours` };
+    }
   }
   if (!items.length) return { ok: false, error: "Cart is empty" };
 
@@ -3327,7 +3357,7 @@ export async function computeBill(
       offer: r.offer,
       offerAvailable: r.offerPercent > 0 || r.offerMaxCents > 0,
       lines,
-      bill,
+      bill: withTip(bill, tip.tipCents),
       dropped,
     };
   }
@@ -3352,7 +3382,7 @@ export async function computeBill(
     promo,
     promoCode: normalizedPromo,
     lines,
-    bill: billWithMerchantOffer(bill, evaluated.discountCents),
+    bill: withTip(billWithMerchantOffer(bill, evaluated.discountCents), tip.tipCents),
     dropped,
   };
 }
@@ -3493,14 +3523,18 @@ export async function createOrder(
     input.items,
     input.applyOffer === true,
     input.promoCode,
+    { tipCents: input.tipCents, scheduledFor: input.scheduledFor },
   );
   if (!computed.ok) return { ok: false, error: computed.error, code: computed.code };
+  const parsedTip = parseTipCents(input.tipCents);
+  if (!parsedTip.ok) return { ok: false, error: parsedTip.error, code: "INVALID_TIP" };
   const { restaurant: r, lines, bill } = computed;
 
   const locality = resolveDeliveryLocality({
     localityKey: input.localityKey,
     urlLocalityKey: input.urlLocalityKey,
     addressText: input.addressText,
+    deliveryLocation: input.deliveryLocation,
     restaurantLocality: r.locality,
   });
   if (!locality.ok) return { ok: false, error: locality.error, code: locality.code };
@@ -3585,6 +3619,8 @@ export async function createOrder(
         deliveryFeeCents: bill.deliveryFeeCents,
         platformFeeCents: bill.platformFeeCents,
         discountCents: bill.discountCents,
+        tipCents: parsedTip.tipCents,
+        scheduledFor: input.scheduledFor ? new Date(input.scheduledFor) : null,
         totalCents: bill.totalCents,
         // Only a server-resolved code is ever stamped. This is what makes the
         // offer's usage limit and the Merchant App's redemption count real.
@@ -3715,7 +3751,7 @@ export async function loadOrderCancelContext(code: string): Promise<OrderCancelC
   };
 }
 
-export async function listOrders(codes: string[]): Promise<OrderDto[]> {
+export async function listOrders(codes: string[], limit = 30, offset = 0): Promise<OrderDto[]> {
   if (!codes.length) return [];
   const upper = codes.map((c) => c.toUpperCase());
   const rows = await db
@@ -3724,7 +3760,8 @@ export async function listOrders(codes: string[]): Promise<OrderDto[]> {
     .innerJoin(restaurants, eq(restaurants.id, orders.restaurantId))
     .where(inArray(orders.code, upper))
     .orderBy(desc(orders.createdAt))
-    .limit(30);
+    .limit(Math.max(1, Math.min(100, limit)))
+    .offset(Math.max(0, Math.min(10_000, Math.floor(offset))));
   return rows.map((row) => toOrderDto(row.order, row.locality));
 }
 

@@ -17,7 +17,13 @@ type PublicReviewQueryRow = Omit<PublicReviewRow, "rating" | "feedbackAt"> & {
   feedbackAt: Date | null;
 };
 
-function isPublicReviewRow(row: PublicReviewQueryRow): row is PublicReviewRow {
+type NarrowedPublicReviewRow = Omit<PublicReviewRow, "rating" | "feedbackAt" | "reviewPhotoIds"> & {
+  rating: number;
+  feedbackAt: Date;
+  reviewPhotoIds: number[];
+};
+
+function isPublicReviewRow(row: PublicReviewQueryRow): row is NarrowedPublicReviewRow {
   return typeof row.rating === "number" && row.feedbackAt instanceof Date;
 }
 
@@ -53,6 +59,7 @@ export async function listPublicRestaurantReviews(
       feedbackAt: orders.feedbackAt,
       merchantResponse: orders.merchantResponse,
       merchantRespondedAt: orders.merchantRespondedAt,
+      reviewPhotoIds: orders.reviewPhotoIds,
     })
     .from(orders)
     .where(and(

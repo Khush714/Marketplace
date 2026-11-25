@@ -6,9 +6,12 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
+import { mergeCartStates, normalizeCartState } from "@/lib/cart-sync-core";
+import { useCustomerAccount } from "@/lib/customer-account";
 
 export interface CartModifier {
   optionId: number;
@@ -115,11 +118,27 @@ function normalizeItem(raw: unknown): CartItem | null {
   };
 }
 
+function fromSyncedState(raw: unknown): CartState | null {
+  const normalized = normalizeCartState(raw);
+  if (!normalized) return null;
+  return {
+    restaurantSlug: normalized.restaurantSlug,
+    restaurantName: normalized.restaurantName,
+    items: normalized.items.map((item) => ({
+      ...item,
+      lineKey: item.lineKey ?? lineKeyFor(item.menuItemId, item.modifiers as CartModifier[] | undefined),
+    })),
+  };
+}
+
 export function CartProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<CartState>(EMPTY);
   const [hydrated, setHydrated] = useState(false);
   const [conflict, setConflict] = useState<PendingAdd | null>(null);
   const [bump, setBump] = useState(0);
+  const account = useCustomerAccount();
+  const [syncReady, setSyncReady] = useState(false);
+  const syncRequested = useRef(false);
 
   useEffect(() => {
     try {
@@ -148,6 +167,55 @@ export function CartProvider({ children }: { children: ReactNode }) {
       /* ignore */
     }
   }, [state, hydrated]);
+
+  useEffect(() => {
+    if (account.status === "signedIn") return;
+    syncRequested.current = false;
+    setSyncReady(false);
+  }, [account.status]);
+
+  // Fetch before any account write: merging here is what stops a fresh browser
+  // from overwriting the server cart with its still-empty initial state.
+  useEffect(() => {
+    if (!hydrated || account.status !== "signedIn" || syncRequested.current) return;
+    syncRequested.current = true;
+    let cancelled = false;
+    void (async () => {
+      try {
+        const res = await account.accountFetch("/api/customer/cart", { cache: "no-store" });
+        if (!res.ok || cancelled) return;
+        const data = (await res.json().catch(() => null)) as { state?: unknown } | null;
+        const remote = fromSyncedState(data?.state ?? null);
+        if (cancelled) return;
+        setState((current) => mergeCartStates(current, remote) as CartState);
+        setSyncReady(true);
+      } catch {
+        /* Writes stay gated until a remote cart has actually been read. */
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [account, hydrated]);
+
+  useEffect(() => {
+    if (!hydrated || account.status !== "signedIn" || !syncReady) return;
+    const normalized = normalizeCartState(state);
+    if (!normalized) return;
+    const timer = window.setTimeout(() => {
+      void account
+        .accountFetch("/api/customer/cart", {
+          method: "PUT",
+          mutating: true,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ state: normalized }),
+        })
+        .catch(() => {
+          /* A failed mirror must not break the browser cart. */
+        });
+    }, 600);
+    return () => window.clearTimeout(timer);
+  }, [account, hydrated, state, syncReady]);
 
   const add = useCallback(
     (item: Omit<CartItem, "quantity">, restaurantSlug: string, restaurantName: string) => {

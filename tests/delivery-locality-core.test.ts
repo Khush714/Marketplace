@@ -67,6 +67,51 @@ test("an address-only legacy cart stays unverified rather than being blocked", (
   );
 });
 
+test("a served map pin can supply the locality when no claim was sent", () => {
+  assert.deepEqual(
+    resolveDeliveryLocality({
+      deliveryLocation: { latitude: 21.6947, longitude: 72.9974 },
+      restaurantLocality: "Old City",
+      addressText: "Somewhere",
+    }),
+    { ok: true, localityKey: "old-city", verified: true },
+  );
+});
+
+test("an out-of-area pin is refused without a locality claim", () => {
+  const rejected = resolveDeliveryLocality({
+    deliveryLocation: { latitude: 12.9716, longitude: 77.5946 },
+    restaurantLocality: "Old City",
+    addressText: "Somewhere",
+  });
+  assert.equal(rejected.ok, false);
+  if (!rejected.ok) {
+    assert.equal(rejected.code, "OUTSIDE_SERVICE_AREA");
+    assert.match(rejected.error, /outside our service area/);
+  }
+});
+
+test("an explicit locality claim still wins over a stale pin", () => {
+  const result = resolveDeliveryLocality({
+    localityKey: "maktampur",
+    deliveryLocation: { latitude: 12.9716, longitude: 77.5946 },
+    restaurantLocality: "Maktampur",
+    addressText: "Shop 12, 392012",
+  });
+  assert.deepEqual(result, { ok: true, localityKey: "maktampur", verified: true });
+});
+
+test("a malformed pin is ignored rather than rejecting a legacy cart", () => {
+  assert.deepEqual(
+    resolveDeliveryLocality({
+      deliveryLocation: { latitude: "21.6947", longitude: 72.9974 },
+      restaurantLocality: "Old City",
+      addressText: "Near the old bridge",
+    }),
+    { ok: true, localityKey: null, verified: false },
+  );
+});
+
 test("the URL locality claim is used only when the body has no selection", () => {
   const fromUrl = resolveDeliveryLocality({
     urlLocalityKey: "old-city",

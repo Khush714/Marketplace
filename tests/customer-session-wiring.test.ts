@@ -46,13 +46,13 @@ test("every per-order route authorises with the token OR the session", () => {
 
 test("paired merchant cancellations use the canonical merchant lifecycle", () => {
   const cancel = source("src/app/api/orders/[code]/cancel/route.ts");
-  assert.match(cancel, /cancelMerchantOrderByCode\(code\)/);
+  assert.match(cancel, /cancelMerchantOrderByCode\(code, reason\)/);
   assert.match(cancel, /merchant\.kind !== "NOT_MERCHANT"/);
   // Legacy POS orders still reach the signed request; the two paths must not
   // both run for the same order or a merchant cancel would also hit a dead POS.
-  assert.match(cancel, /requestCustomerCancellation\(code\)/);
+  assert.match(cancel, /requestCustomerCancellation\(code, reason\)/);
   assert.ok(
-    cancel.indexOf("cancelMerchantOrderByCode(code)") < cancel.indexOf("requestCustomerCancellation(code)"),
+    cancel.indexOf("cancelMerchantOrderByCode(code, reason)") < cancel.indexOf("requestCustomerCancellation(code, reason)"),
     "the merchant path must be resolved before the POS fallback",
   );
 });
@@ -76,12 +76,12 @@ test("the history read is budgeted, cookie-authenticated and bounded", () => {
   assert.match(history, /listOrders\(/);
   // No session is an empty history, never a 401 that reveals the difference
   // between an unknown, revoked and never-minted cookie.
-  assert.match(history, /if \(!session\) return Response\.json\(\{ orders: \[\] \}\)/);
+  assert.match(history, /if \(!session\) return Response\.json\(\{ orders: \[\], nextOffset: null \}\)/);
 });
 
 test("the history page merges the session read with the legacy token lookup", () => {
   const page = source("src/app/orders/page.tsx");
-  assert.match(page, /fetchSessionOrders\(\)/);
+  assert.match(page, /fetchSessionOrders\(\{/);
   assert.match(page, /\/api\/orders\/lookup/);
   assert.match(page, /new Map<string, PublicOrder>\(\)/);
   // It must not short-circuit on an empty web-storage list: that is exactly the
@@ -105,7 +105,7 @@ test("the client omits the header when the session is the credential", () => {
   assert.match(access, /headers: orderAuthHeaders\(token\)/);
   // A null token is no longer "denied" by the hook: the server's answer is.
   assert.doesNotMatch(access, /if \(!input\.token\) return "denied"/);
-  assert.match(access, /export async function fetchSessionOrders\(\)/);
+  assert.match(access, /export async function fetchSessionOrders\(/);
 });
 
 test("tracking and support screens use the same credential for actions", () => {
@@ -115,7 +115,7 @@ test("tracking and support screens use the same credential for actions", () => {
 
   const view = source("src/components/tracking-view.tsx");
   assert.match(view, /supportAccess = Boolean\(token\)/);
-  assert.match(view, /headers: orderAuthHeaders\(token\)/);
+  assert.match(view, /orderAuthHeaders\(token\)/);
   assert.match(view, /supportAccess \? \(/);
 
   const support = source("src/components/order-support.tsx");

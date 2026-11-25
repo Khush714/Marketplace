@@ -72,7 +72,10 @@ export async function listMerchantOrders(restaurantId: number, options: Merchant
       deliveryFeeCents: order.deliveryFeeCents,
       platformFeeCents: order.platformFeeCents,
       discountCents: order.discountCents,
+      tipCents: order.tipCents,
       totalCents: order.totalCents,
+      // Kitchen timing starts from the promised slot, not from payment time.
+      scheduledFor: order.scheduledFor ? order.scheduledFor.toISOString() : null,
       createdAt: order.createdAt.toISOString(),
       status: order.merchantStatus as MerchantOrderStatus,
       statusUpdatedAt: order.merchantStatusUpdatedAt.toISOString(),
@@ -366,9 +369,13 @@ export type CustomerMerchantCancelResult =
   | { kind: "CONFLICT"; currentStatus: string };
 
 /** Customer cancellation for Merchant-managed orders; legacy POS orders fall through to their POS authority. */
-export async function cancelMerchantOrderByCode(code: string): Promise<CustomerMerchantCancelResult> {
+export async function cancelMerchantOrderByCode(
+  code: string,
+  reason = "other",
+): Promise<CustomerMerchantCancelResult> {
   const upper = code.toUpperCase();
   const now = new Date();
+  const eventReason = reason === "other" ? "CUSTOMER_REQUEST" : `CUSTOMER_${reason.toUpperCase()}`;
   const result = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(orders).where(eq(orders.code, upper)).limit(1).for("update");
     if (!current) return { kind: "NOT_FOUND" } as const;
@@ -383,13 +390,13 @@ export async function cancelMerchantOrderByCode(code: string): Promise<CustomerM
     if (!updated) return { kind: "CONFLICT", currentStatus: current.merchantStatus } as const;
     await tx.insert(merchantOrderEvents).values({
       orderId: current.id, restaurantId: current.restaurantId, fromStatus: current.merchantStatus,
-      toStatus: "CANCELLED", reason: "CUSTOMER_REQUEST",
+      toStatus: "CANCELLED", reason: eventReason,
     });
     return { kind: "CANCELLED", idempotent: false, status: "CANCELLED", id: updated.id, restaurantId: updated.restaurantId, externalOrderId: updated.externalOrderId, orderCode: updated.code } as const;
   });
   if (result.kind === "CANCELLED" && !result.idempotent && "restaurantId" in result && result.externalOrderId) {
     await recordIntegrationAudit(result.restaurantId, "MERCHANT_ORDER_STATUS_UPDATED", { actor: "system" }, {
-      order_code: result.orderCode, from_status: "PLACED_OR_ACCEPTED", to_status: "CANCELLED", reason: "CUSTOMER_REQUEST",
+      order_code: result.orderCode, from_status: "PLACED_OR_ACCEPTED", to_status: "CANCELLED", reason: eventReason,
     }).catch(() => undefined);
     await handleCancelledOrderPayment(result.restaurantId, result.externalOrderId, "CUSTOMER_CANCELLED_ORDER").catch((error) => {
       console.error("[merchant-orders] customer cancellation payment settlement failed", error);

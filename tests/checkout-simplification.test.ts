@@ -101,8 +101,21 @@ test("simplification does not move money or consent into the browser", () => {
   );
   assert.ok(orderRequest.length > 0);
   assert.match(orderRequest, /acceptedTerms,/);
-  assert.match(orderRequest, /localityKey: currentLocalityKey\(\),/);
+  assert.match(orderRequest, /deliveryLocation,/);
+  assert.match(orderRequest, /localityKey,/);
+  assert.match(CHECKOUT, /currentLocalityKey\(\)/);
   assert.doesNotMatch(orderRequest, /\btotalCents\s*:/);
   assert.doesNotMatch(orderRequest, /\bsubtotalCents\s*:/);
   assert.doesNotMatch(orderRequest, /\bpaymentMethod:\s*choice\s*\?\s*"/);
+});
+
+test("checkout exposes a direct add-address action", () => {
+  const picker = readSource("src/components/address-picker.tsx");
+  assert.match(CHECKOUT, /type AddressPickerMode = "list" \| "location";/);
+  assert.match(CHECKOUT, /openAddressPicker\("location"\)/);
+  assert.match(CHECKOUT, /<Plus className="size-4" \/> Add address/);
+  assert.match(CHECKOUT, /key=\{addressPickerMode\}/);
+  assert.match(CHECKOUT, /initialView=\{addressPickerMode\}/);
+  assert.match(picker, /initialView\?: "list" \| "location"/);
+  assert.match(picker, /useState<View>\(initialView\)/);
 });

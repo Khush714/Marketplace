@@ -9,6 +9,7 @@ import {
   BadgeCheck,
   Ban,
   Check,
+  ClipboardList,
   Clock,
   Copy,
   Flame,
@@ -124,6 +125,7 @@ export default function OpsConsole({ open }: { open: boolean }) {
         <CodesPanel token={token} canAct={canAct} call={call} />
         <ProvisionPanel canAct={canAct} call={call} />
         <ConnectionsPanel token={token} canAct={canAct} call={call} />
+        <IntegrationAuditPanel canAct={canAct} call={call} />
         <TransferPanel canAct={canAct} call={call} />
       <WorkersPanel token={token} canAct={canAct} call={call} />
 
@@ -887,6 +889,214 @@ function ConnectionsPanel({
               ))}
             </ul>
           )}
+        </div>
+      )}
+    </section>
+  );
+}
+
+interface AuditRowDto {
+  id: number;
+  restaurantId: number | null;
+  restaurantSlug: string | null;
+  actor: string;
+  event: string;
+  detail: unknown;
+  ipAddress: string;
+  createdAt: string;
+}
+
+interface AuditReply {
+  ok: boolean;
+  rows: AuditRowDto[];
+  actors: readonly string[];
+  limit: number;
+  offset: number;
+}
+
+function auditWhen(iso: string): string {
+  return `${formatWhen(iso)} ${new Date(iso).toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  })}`;
+}
+
+function IntegrationAuditPanel({ canAct, call }: { canAct: boolean; call: OpsCall }) {
+  const [actor, setActor] = useState("");
+  const [event, setEvent] = useState("");
+  const [restaurantId, setRestaurantId] = useState("");
+  const [rows, setRows] = useState<AuditRowDto[]>([]);
+  const [actors, setActors] = useState<readonly string[]>([]);
+  const [limit, setLimit] = useState(50);
+  const [offset, setOffset] = useState(0);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [loaded, setLoaded] = useState(false);
+
+  const load = useCallback(
+    async (nextOffset = 0) => {
+      if (!canAct) return;
+      setBusy(true);
+      setError(null);
+      try {
+        const params = new URLSearchParams({
+          limit: String(limit),
+          offset: String(nextOffset),
+        });
+        if (actor) params.set("actor", actor);
+        if (event.trim()) params.set("event", event.trim());
+        if (/^\d+$/.test(restaurantId.trim())) params.set("restaurant_id", restaurantId.trim());
+        const data = await call<AuditReply>(`/api/ops/integration-audit?${params.toString()}`);
+        setRows(data.rows ?? []);
+        setActors(data.actors ?? []);
+        setOffset(data.offset);
+        setLoaded(true);
+      } catch (e) {
+        setRows([]);
+        setError(e instanceof Error ? e.message : "Could not load audit rows");
+      } finally {
+        setBusy(false);
+      }
+    },
+    [actor, call, canAct, event, limit, restaurantId],
+  );
+
+  return (
+    <section className="glass mt-5 rounded-3xl p-5 md:p-6">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 font-display text-base font-bold text-cream-50">
+            <ClipboardList className="size-4.5 text-ember-400" /> Integration audit
+          </h2>
+          <p className="mt-1 text-[13px] leading-relaxed text-cream-500">
+            Read-only integration history. Secrets are redacted and client addresses are masked
+            before they leave the server.
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={() => void load()}
+          disabled={!canAct || busy}
+          className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-white/8 px-3.5 py-2 text-xs font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-50"
+        >
+          <RefreshCw className={cn("size-3.5", busy && "animate-spin")} />
+          Load
+        </button>
+      </div>
+
+      <div className="mt-4 grid gap-2 sm:grid-cols-4">
+        <select
+          value={actor}
+          onChange={(e) => setActor(e.target.value)}
+          aria-label="Audit actor"
+          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-cream-50 focus:border-ember-400/60 focus:outline-none"
+        >
+          <option value="">All actors</option>
+          {(actors.length ? actors : ["restaurant", "partner", "system", "ops"]).map((value) => (
+            <option key={value} value={value} className="bg-coal">
+              {value}
+            </option>
+          ))}
+        </select>
+        <input
+          value={event}
+          onChange={(e) => setEvent(e.target.value.slice(0, 64))}
+          placeholder="Event contains…"
+          aria-label="Audit event"
+          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+        />
+        <input
+          value={restaurantId}
+          onChange={(e) => setRestaurantId(e.target.value.replace(/\D/g, "").slice(0, 10))}
+          placeholder="Restaurant ID"
+          inputMode="numeric"
+          aria-label="Restaurant ID"
+          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
+        />
+        <select
+          value={limit}
+          onChange={(e) => {
+            setLimit(Number(e.target.value));
+            setOffset(0);
+          }}
+          aria-label="Rows per page"
+          className="rounded-xl border border-white/10 bg-black/30 px-3 py-2 text-xs text-cream-50 focus:border-ember-400/60 focus:outline-none"
+        >
+          {[25, 50, 100].map((value) => (
+            <option key={value} value={value} className="bg-coal">
+              {value} rows
+            </option>
+          ))}
+        </select>
+      </div>
+
+      {error && (
+        <p className="mt-3 rounded-xl border border-chili-500/30 bg-chili-600/10 px-3.5 py-2.5 text-xs text-chili-300">
+          {error}
+        </p>
+      )}
+
+      {canAct && !error && loaded && (
+        <div className="mt-4">
+          {rows.length === 0 ? (
+            <p className="rounded-xl border border-dashed border-white/12 bg-white/[0.03] px-4 py-6 text-center text-xs text-cream-500">
+              No audit rows match these filters.
+            </p>
+          ) : (
+            <ul className="space-y-1.5">
+              {rows.map((row) => (
+                <details
+                  key={row.id}
+                  className="rounded-xl border border-white/10 bg-white/[0.045] px-3.5 py-2.5 text-xs"
+                >
+                  <summary className="flex cursor-pointer flex-wrap items-center gap-2 text-cream-300">
+                    <span className="font-mono text-[11px] text-cream-500">{auditWhen(row.createdAt)}</span>
+                    <span className="font-bold text-cream-50">{row.event}</span>
+                    <span className="rounded-full bg-white/8 px-2 py-0.5 text-[10px] font-bold text-cream-400">
+                      {row.actor}
+                    </span>
+                    {row.restaurantSlug && (
+                      <span className="font-mono text-[11px] text-cream-500">{row.restaurantSlug}</span>
+                    )}
+                    {row.ipAddress && (
+                      <span className="ml-auto font-mono text-[11px] text-cream-600">{row.ipAddress}</span>
+                    )}
+                  </summary>
+                  <div className="mt-2.5 border-t border-white/10 pt-2.5">
+                    <p className="text-[11px] text-cream-500">
+                      Audit #{row.id}
+                      {row.restaurantId !== null ? ` · restaurant ${row.restaurantId}` : ""}
+                    </p>
+                    <pre className="mt-2 max-h-56 overflow-auto whitespace-pre-wrap break-all rounded-lg bg-black/40 p-2.5 font-mono text-[11px] text-cream-300">
+                      {JSON.stringify(row.detail ?? null, null, 2).slice(0, 4000)}
+                    </pre>
+                  </div>
+                </details>
+              ))}
+            </ul>
+          )}
+
+          <div className="mt-3 flex items-center justify-between gap-2 text-[11px] text-cream-500">
+            <button
+              type="button"
+              onClick={() => void load(Math.max(0, offset - limit))}
+              disabled={busy || offset === 0}
+              className="press rounded-lg bg-white/8 px-3 py-1.5 font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-40"
+            >
+              Previous
+            </button>
+            <span className="font-mono">
+              {offset + 1}–{offset + rows.length}
+            </span>
+            <button
+              type="button"
+              onClick={() => void load(offset + limit)}
+              disabled={busy || rows.length < limit}
+              className="press rounded-lg bg-white/8 px-3 py-1.5 font-semibold text-cream-200 transition-colors hover:bg-white/12 disabled:opacity-40"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
     </section>

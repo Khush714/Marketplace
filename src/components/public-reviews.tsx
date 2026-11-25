@@ -1,8 +1,10 @@
 "use client";
 
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { ChevronDown, Star } from "lucide-react";
 import { cn } from "@/lib/domain";
+import { isLocalMediaUrl } from "@/lib/media-core";
 import type { PublicReviewDto, PublicReviewPage } from "@/lib/public-review-core";
 
 type ReviewsState =
@@ -157,6 +159,15 @@ export function PublicReviews({ slug }: { slug: string }) {
               )}>
                 {review.review || "Rated without a written comment."}
               </p>
+              {review.photoUrls?.filter(isLocalMediaUrl).slice(0, 3).length ? (
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {review.photoUrls.filter(isLocalMediaUrl).slice(0, 3).map((url) => (
+                    <span key={url} className="relative size-16 overflow-hidden rounded-xl border border-white/10 bg-white/6">
+                      <Image src={url} alt="Review photo" fill sizes="64px" unoptimized className="object-cover" />
+                    </span>
+                  ))}
+                </div>
+              ) : null}
               {review.merchantResponse && (
                 <div className="mt-3 rounded-xl border border-ember-400/15 bg-ember-500/[0.06] px-3 py-2.5">
                   <p className="text-[10px] font-bold uppercase tracking-[0.12em] text-ember-300">

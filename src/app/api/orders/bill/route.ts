@@ -1,6 +1,7 @@
 import { NextRequest } from "next/server";
 import { computeBill } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { parseScheduledFor, parseTipCents } from "@/lib/checkout-extras-core";
 import { parseOfferCode } from "@/lib/merchant-offer";
 import { sanitizeCart } from "@/lib/order-input-core";
 
@@ -16,11 +17,18 @@ export async function POST(req: NextRequest) {
   const blocked = await guardWrite(req, "billPreview");
   if (blocked) return blocked;
 
-  let body: { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown; promoCode?: unknown };
+  let body: {
+    restaurantSlug?: unknown;
+    items?: unknown;
+    applyOffer?: unknown;
+    promoCode?: unknown;
+    tipCents?: unknown;
+    scheduledFor?: unknown;
+  };
   {
     const parsed = await readJsonBody(req);
     if (!parsed.ok) return parsed.response;
-    body = parsed.body as { restaurantSlug?: unknown; items?: unknown; applyOffer?: unknown; promoCode?: unknown };
+    body = parsed.body as typeof body;
   }
 
   const restaurantSlug = typeof body?.restaurantSlug === "string" ? body.restaurantSlug.trim() : "";
@@ -55,11 +63,21 @@ export async function POST(req: NextRequest) {
     );
   }
 
+  const tip = parseTipCents(body?.tipCents);
+  if (!tip.ok) {
+    return Response.json({ ok: false, error: tip.error, code: "INVALID_TIP" }, { status: 400 });
+  }
+  const schedule = parseScheduledFor(body?.scheduledFor);
+  if (!schedule.ok) {
+    return Response.json({ ok: false, error: schedule.error, code: "INVALID_SCHEDULE" }, { status: 400 });
+  }
+
   const result = await computeBill(
     restaurantSlug,
     cart.items,
     body?.applyOffer === true,
     promoCode ?? undefined,
+    { tipCents: tip.tipCents, scheduledFor: schedule.scheduledFor },
   );
   if (!result.ok) {
     // Same status mapping as POST /api/orders: an integration/outlet refusal is

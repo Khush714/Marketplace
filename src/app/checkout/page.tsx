@@ -9,10 +9,13 @@ import {
   ArrowLeft,
   ArrowRight,
   BadgePercent,
+  Briefcase,
   Banknote,
+  CalendarClock,
   Check,
   ChevronDown,
   CreditCard,
+  Heart,
   House,
   LoaderCircle,
   MapPin,
@@ -25,12 +28,28 @@ import {
   Truck,
   X,
 } from "lucide-react";
+import { AddressPicker } from "@/components/address-picker";
 import { BLUR_DATA, VegDot } from "@/components/atoms";
 import { ensureInboxToken } from "@/lib/customer-notification-copy";
+import {
+  addressForOrder,
+  addressSummary,
+  loadSelectedAddressId,
+  persistSelectedAddressId,
+  type Address,
+  type MapPoint,
+} from "@/lib/delivery-address";
 import { AnimatedPrice } from "@/components/motion-primitives";
 import { CustomerAuthDialog } from "@/components/customer-auth-dialog";
 import { PaymentStage } from "@/components/payment-stage";
-import { cn, estimateBill, formatINR, type BillBreakdown } from "@/lib/domain";
+import {
+  MAX_SCHEDULE_DAYS,
+  MAX_TIP_CENTS,
+  MIN_SCHEDULE_LEAD_MS,
+  parseScheduledFor,
+  parseTipCents,
+} from "@/lib/checkout-extras-core";
+import { cn, estimateBill, formatDateTime, formatINR, localityNear, type BillBreakdown } from "@/lib/domain";
 import { parseOfferCode, type PublicMerchantOffer } from "@/lib/merchant-offer";
 import { useCart, cartModifierTotalCents, type CartItem } from "@/lib/cart";
 import {
@@ -45,7 +64,8 @@ import {
 import { useMenuAvailability } from "@/lib/menu-availability";
 import { availableCartSubtotalCents, cartItemIsSoldOut } from "@/lib/menu-availability-core";
 import { useCustomerAccount } from "@/lib/customer-account";
-import { useProfileIdentity, useProfileOrders, useProfileReady, type Address } from "@/lib/profile";
+import { useLocation } from "@/lib/location";
+import { useProfileIdentity, useProfileOrders, useProfileReady } from "@/lib/profile";
 import type { PaymentTarget, ProviderMode } from "@/lib/razorpay-checkout";
 import { LEGAL, LEGAL_ROUTES } from "@/lib/site-legal";
 import { useToast } from "@/lib/toast";
@@ -58,6 +78,7 @@ import type { OrderDto } from "@/lib/types";
  */
 type PayChoice = "online" | "cod";
 type PlaceState = "idle" | "loading" | "success" | "error";
+type AddressPickerMode = "list" | "location";
 
 type CartLinePayload = CheckoutBillLine;
 
@@ -102,6 +123,23 @@ function currentLocalityKey(): string | undefined {
   }
 }
 
+/** Coordinates attached to a structured picker address, if it has a pin. */
+function pointFromAddress(address: Address | null): MapPoint | undefined {
+  if (
+    !address ||
+    typeof address.latitude !== "number" ||
+    typeof address.longitude !== "number"
+  ) {
+    return undefined;
+  }
+  return { latitude: address.latitude, longitude: address.longitude };
+}
+
+function localityKeyForPoint(point: MapPoint): string | undefined {
+  const match = localityNear(point.latitude, point.longitude);
+  return match.served ? match.locality.key : undefined;
+}
+
 interface DroppedCartItem {
   menuItemId: number;
   name: string;
@@ -144,22 +182,15 @@ const PROMO_ERROR_CODES = new Set([
   "MIN_ORDER_NOT_MET",
 ]);
 
-async function postBill(
-  restaurantSlug: string,
-  items: CartLinePayload[],
-  applyOffer: boolean,
-  promoCode: string,
-): Promise<BillPreview | null> {
-  try {
-    const res = await fetch("/api/orders/bill", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ restaurantSlug, items, applyOffer, promoCode }),
-    });
-    return (await res.json()) as BillPreview;
-  } catch {
-    return null;
-  }
+function toLocalInputValue(date: Date): string {
+  const pad = (value: number) => String(value).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
+
+function scheduleInputToIso(raw: string): string {
+  if (!raw) return "";
+  const stamp = Date.parse(raw);
+  return Number.isFinite(stamp) ? new Date(stamp).toISOString() : raw;
 }
 
 export default function CheckoutPage() {
@@ -178,17 +209,23 @@ export default function CheckoutPage() {
   );
   const router = useRouter();
   const { toast } = useToast();
+  const { setLocality } = useLocation();
   const [accountAddresses, setAccountAddresses] = useState<Address[]>([]);
+  const [accountAddressesLoaded, setAccountAddressesLoaded] = useState(false);
 
   const [addressId, setAddressId] = useState<string | null>(null);
-  const label = "Home";
-  const [addressText, setAddressText] = useState("");
-  const [showAddressForm, setShowAddressForm] = useState(false);
-  const [saveNewAddressToAccount, setSaveNewAddressToAccount] = useState(false);
+  const [addressPickerOpen, setAddressPickerOpen] = useState(false);
+  const [addressPickerMode, setAddressPickerMode] = useState<AddressPickerMode>("list");
+  /** Pinned locality used when the URL has not caught up with the router replace yet. */
+  const [deliveryLocalityKey, setDeliveryLocalityKey] = useState<string | null>(null);
   const [name, setName] = useState("");
   const [phone, setPhone] = useState("");
   const [payChoice, setPayChoice] = useState<PayChoice>("online");
   const [instructions, setInstructions] = useState("");
+  /** -1 means the bounded custom tip input; presets store paise directly. */
+  const [tipChoice, setTipChoice] = useState(0);
+  const [customTipRupees, setCustomTipRupees] = useState("");
+  const [scheduleInput, setScheduleInput] = useState("");
   /**
    * DPDP Act 2023 §5–6 / IT Act §43A: the notice must be given and consent
    * obtained by affirmative action. An unchecked box that merely links the
@@ -231,6 +268,9 @@ export default function CheckoutPage() {
   // it so a lost-response retry never creates a duplicate order.
   const [placeRequestId] = useState(() => crypto.randomUUID());
   const [portalHost, setPortalHost] = useState<HTMLElement | null>(null);
+  // The persisted address id is applied once, after account addresses have had
+  // a chance to load, so a signed-in customer lands back on their last choice.
+  const addressSelectionInitialized = useRef(false);
 
   const allAddresses = useMemo(() => {
     if (!accountAddresses.length) return profile.addresses;
@@ -240,15 +280,50 @@ export default function CheckoutPage() {
   }, [accountAddresses, profile.addresses]);
 
   const cartPayload = useMemo(() => cartLines(cart.items), [cart.items]);
+  const parsedTip = parseTipCents(
+    tipChoice === -1 ? Math.round((Number(customTipRupees) || 0) * 100) : tipChoice,
+  );
+  const tipError = parsedTip.ok ? null : parsedTip.error;
+  const tipCents = parsedTip.ok ? parsedTip.tipCents : 0;
+  const parsedSchedule = parseScheduledFor(scheduleInputToIso(scheduleInput));
+  const scheduleError = parsedSchedule.ok ? null : parsedSchedule.error;
+  const scheduledFor = parsedSchedule.ok ? parsedSchedule.scheduledFor : "";
+  const postBill = useCallback(
+    async (
+      restaurantSlug: string,
+      items: CartLinePayload[],
+      applyOffer: boolean,
+      promoCode: string,
+    ): Promise<BillPreview | null> => {
+      try {
+        const res = await fetch("/api/orders/bill", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ restaurantSlug, items, applyOffer, promoCode, tipCents, scheduledFor }),
+        });
+        return (await res.json()) as BillPreview;
+      } catch {
+        return null;
+      }
+    },
+    [tipCents, scheduledFor],
+  );
+  const scheduleBounds = useMemo(() => {
+    const now = new Date();
+    return {
+      min: toLocalInputValue(new Date(now.getTime() + MIN_SCHEDULE_LEAD_MS)),
+      max: toLocalInputValue(new Date(now.getTime() + MAX_SCHEDULE_DAYS * 86_400_000)),
+    };
+  }, []);
   const selectionKey = useMemo(
     () =>
-      checkoutBillKey({
+      `${checkoutBillKey({
         restaurantSlug: cart.restaurantSlug,
         items: cartPayload,
         applyOffer,
         promoCode,
-      }),
-    [cart.restaurantSlug, cartPayload, applyOffer, promoCode],
+      })}|${tipCents}|${scheduledFor}`,
+    [cart.restaurantSlug, cartPayload, applyOffer, promoCode, tipCents, scheduledFor],
   );
 
   // Only the preview priced for THIS cart and THIS offer choice may drive the
@@ -342,7 +417,7 @@ export default function CheckoutPage() {
     return () => {
       cancelled = true;
     };
-  }, [cart.hydrated, cart.restaurantSlug, cart.items.length, cartPayload, applyOffer, promoCode, selectionKey, applyPreview]);
+  }, [cart.hydrated, cart.restaurantSlug, cart.items.length, cartPayload, applyOffer, promoCode, postBill, selectionKey, applyPreview]);
 
   // 10s grace on the success screen before auto-navigating to the order
   useEffect(() => {
@@ -362,48 +437,63 @@ export default function CheckoutPage() {
     const accountPhoneDigits = (accountAuth.account?.phoneE164 ?? "").replace(/\D/g, "").slice(-10);
     setName((n) => n || accountName || profile.name);
     setPhone((p) => p || accountPhoneDigits || profile.phone);
-    setAddressId((a) => a ?? allAddresses[0]?.id ?? null);
   }, [
     profile.hydrated,
     profile.name,
     profile.phone,
-    allAddresses,
     accountAuth.account?.name,
     accountAuth.account?.phoneE164,
   ]);
 
   useEffect(() => {
-    if (accountAuth.status !== "signedIn") {
+    if (addressSelectionInitialized.current) return;
+    if (!profile.hydrated || accountAuth.status === "loading") return;
+    // Signed-in customers may have saved the address on their account; wait for
+    // that list before deciding the persisted id is stale.
+    if (accountAuth.status === "signedIn" && !accountAddressesLoaded) return;
+    addressSelectionInitialized.current = true;
+    const savedId = loadSelectedAddressId();
+    setAddressId(
+      savedId && allAddresses.some((a) => a.id === savedId)
+        ? savedId
+        : allAddresses[0]?.id ?? null,
+    );
+  }, [profile.hydrated, accountAuth.status, accountAddressesLoaded, allAddresses]);
+
+  const refreshAccountAddresses = useCallback(async () => {
+    const { accountFetch, status } = accountAuth;
+    if (status !== "signedIn") {
       setAccountAddresses([]);
+      setAccountAddressesLoaded(true);
       return;
     }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await accountAuth.accountFetch("/api/customer/addresses", { cache: "no-store" });
-        const data = (await res.json().catch(() => null)) as
-          | { ok?: boolean; addresses?: { id: string | number; label: string; text: string }[] }
-          | null;
-        if (cancelled) return;
-        if (res.ok && data?.ok && Array.isArray(data.addresses)) {
-          setAccountAddresses(
-            data.addresses.map((a) => ({
-              id: String(a.id),
-              label: a.label || "Other",
-              text: a.text || "",
-            })),
-          );
-        } else {
-          setAccountAddresses([]);
-        }
-      } catch {
-        if (!cancelled) setAccountAddresses([]);
+    setAccountAddressesLoaded(false);
+    try {
+      const res = await accountFetch("/api/customer/addresses", { cache: "no-store" });
+      const data = (await res.json().catch(() => null)) as
+        | { ok?: boolean; addresses?: { id: string | number; label: string; text: string }[] }
+        | null;
+      if (res.ok && data?.ok && Array.isArray(data.addresses)) {
+        setAccountAddresses(
+          data.addresses.map((a) => ({
+            id: String(a.id),
+            label: a.label || "Other",
+            text: a.text || "",
+          })),
+        );
+      } else {
+        setAccountAddresses([]);
       }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    } catch {
+      setAccountAddresses([]);
+    } finally {
+      setAccountAddressesLoaded(true);
+    }
   }, [accountAuth]);
+
+  useEffect(() => {
+    void refreshAccountAddresses();
+  }, [refreshAccountAddresses]);
 
   const startCheckoutRef = useRef<() => Promise<void>>(async () => {});
   const signedInDuringAuthRef = useRef(false);
@@ -451,16 +541,21 @@ export default function CheckoutPage() {
     );
   }
 
-  const selectedAddress: Address | null =
-    (showAddressForm ? null : allAddresses.find((a) => a.id === addressId)) ?? null;
-  const effectiveAddressText = showAddressForm ? addressText : selectedAddress?.text ?? "";
-  const effectiveLabel = showAddressForm ? label || "Other" : selectedAddress?.label ?? "Home";
+  const selectedAddress: Address | null = allAddresses.find((a) => a.id === addressId) ?? null;
+  const addressText = selectedAddress ? addressForOrder(selectedAddress) : "";
+  const deliveryLocation = pointFromAddress(selectedAddress);
+  // A pin from the address picker is more specific than the header's locality
+  // pick; fall back to the URL/localStorage claim for legacy text addresses.
+  const localityKey =
+    deliveryLocalityKey ??
+    (deliveryLocation ? localityKeyForPoint(deliveryLocation) : undefined) ??
+    currentLocalityKey();
   const phoneDigits = checkoutPhoneDigits(phone);
   /** Everything needed to actually submit: contact, address and consent. */
   const detailsComplete = checkoutContactComplete({
     name,
     phone,
-    addressText: effectiveAddressText,
+    addressText,
   });
   const hasBillableItems = cart.items.some((i) => !cartItemIsSoldOut(availability, i.menuItemId));
   const unavailableNames = dropped.length
@@ -471,8 +566,9 @@ export default function CheckoutPage() {
   // An unapplied code must not look successful, and an order must never be
   // placed from the optimistic fallback. Both the code and the final total come
   // from the authoritative preview for the current selection.
+  const extrasValid = !tipError && !scheduleError;
   const canPlace =
-    detailsComplete && acceptedTerms && !promoError && !billError && hasBillableItems && !!bill;
+    detailsComplete && acceptedTerms && !promoError && !billError && hasBillableItems && !!bill && extrasValid;
   const issueMessage = checkoutIssueMessage(
     checkoutIssue({ detailsComplete, acceptedTerms, promoError, billError, hasBillableItems }),
     billError,
@@ -502,6 +598,67 @@ export default function CheckoutPage() {
     selectPromo(parsed);
   };
 
+  /** Align the header locality with a newly chosen, pinned address. */
+  const applyAddressLocality = (address: Address) => {
+    const point = pointFromAddress(address);
+    const key = point ? localityKeyForPoint(point) : undefined;
+    setDeliveryLocalityKey(key ?? null);
+    if (key) setLocality(key);
+  };
+
+  /** `location` opens the picker straight into the add-address flow. */
+  const openAddressPicker = (mode: AddressPickerMode = "list") => {
+    setAddressPickerMode(mode);
+    setAddressPickerOpen(true);
+  };
+
+  const chooseAddress = (id: string) => {
+    const next = allAddresses.find((a) => a.id === id);
+    if (!next) return;
+    setAddressId(id);
+    persistSelectedAddressId(id);
+    applyAddressLocality(next);
+  };
+
+  const saveAddressFromPicker = (raw: Address, saveToAccount: boolean) => {
+    const saved = profile.saveDeliveryAddress(raw);
+    setAddressId(saved.id);
+    persistSelectedAddressId(saved.id);
+    applyAddressLocality(saved);
+    if (saveToAccount && accountAuth.status === "signedIn" && saved.text.trim()) {
+      void (async () => {
+        try {
+          const res = await accountAuth.accountFetch("/api/customer/addresses", {
+            method: "POST",
+            mutating: true,
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ label: saved.label || "Other", text: saved.text }),
+          });
+          if (res.ok) await refreshAccountAddresses();
+        } catch {
+          /* The local address is already saved; the account copy is best-effort. */
+        }
+      })();
+    }
+  };
+
+  const deleteAddress = (id: string) => {
+    profile.removeAddress(id);
+    if (addressId !== id) return;
+    const remaining = allAddresses.find((a) => a.id !== id && profile.addresses.some((p) => p.id === a.id));
+    setAddressId(remaining?.id ?? null);
+    persistSelectedAddressId(remaining?.id ?? null);
+    setDeliveryLocalityKey(null);
+    if (remaining) applyAddressLocality(remaining);
+  };
+
+  /** Live feedback while a pin is dragged, before the address is saved. */
+  const handlePinChange = (point: MapPoint) => {
+    const key = localityKeyForPoint(point);
+    setDeliveryLocalityKey(key ?? null);
+    if (key) setLocality(key);
+  };
+
   /**
    * Create the order first, then take the money. For online payments the server
    * holds the order at PAYMENT_PENDING and hands back a provider session; the
@@ -512,10 +669,6 @@ export default function CheckoutPage() {
     setPlaceState("loading");
     setError(null);
 
-    let newAddress = selectedAddress;
-    if (showAddressForm && addressText.trim().length > 10) {
-      newAddress = profile.addAddress(label || "Other", addressText.trim());
-    }
     const digits = phoneDigits.slice(-10);
     profile.setIdentity(name.trim(), digits);
 
@@ -530,8 +683,10 @@ export default function CheckoutPage() {
           // the server stores only its SHA-256 hash on the order.
           inboxToken: ensureInboxToken(),
           items: cartLines(cart.items),
-          addressLabel: newAddress?.label ?? effectiveLabel,
-          addressText: newAddress?.text ?? effectiveAddressText,
+          addressLabel: selectedAddress?.label ?? "Home",
+          addressText,
+          // Used only for the delivery-area admission check, never stored.
+          deliveryLocation,
           customerName: name.trim(),
           phone: digits,
           paymentMethod: choice === "online" ? "upi" : "cod",
@@ -541,10 +696,13 @@ export default function CheckoutPage() {
           applyOffer,
           // Explicit code selection, re-resolved and repriced by the server.
           promoCode,
+          // Bounded customer choice; the server validates and re-adds the tip.
+          tipCents,
+          scheduledFor,
           // The server re-checks this: `canPlace` only gates the button.
           acceptedTerms,
           // Customer's active delivery area, rechecked against this restaurant.
-          localityKey: currentLocalityKey(),
+          localityKey,
         }),
       });
       // Safari/WebKit throws a DOMException ("The string did not match the
@@ -592,33 +750,6 @@ export default function CheckoutPage() {
       const trackingToken = data.trackingToken ?? null;
       setPlacedTrackingToken(trackingToken);
       profile.rememberOrder(code, token, trackingToken ?? undefined);
-
-      // Explicit, best-effort: optionally persist a newly entered checkout
-      // address to the signed-in account (never blocks or affects the order).
-      if (
-        showAddressForm &&
-        saveNewAddressToAccount &&
-        accountAuth.status === "signedIn" &&
-        newAddress?.text?.trim()
-      ) {
-        const saveLabel = (newAddress.label || "Other").trim() || "Other";
-        const saveText = newAddress.text.trim();
-        const alreadySaved = accountAddresses.some(
-          (a) => a.label.trim().toLowerCase() === saveLabel.toLowerCase() && a.text.trim() === saveText,
-        );
-        if (!alreadySaved) {
-          void accountAuth
-            .accountFetch("/api/customer/addresses", {
-              method: "POST",
-              mutating: true,
-              headers: { "Content-Type": "application/json" },
-              body: JSON.stringify({ label: saveLabel, text: saveText }),
-            })
-            .catch(() => {
-              /* best-effort account address save */
-            });
-        }
-      }
 
       void fetch("/api/orders/attach", {
         method: "POST",
@@ -785,92 +916,75 @@ export default function CheckoutPage() {
         <div className="min-w-0 space-y-4">
           <Section title="Delivery details" Icon={MapPin}>
             <div className="space-y-2.5">
-              {accountAuth.status === "signedIn" && (
-                <p className="text-xs text-cream-500">
-                  Signed in{accountAuth.account?.phoneE164 ? ` as ${accountAuth.account.phoneE164}` : ""}. Saved account addresses appear here when available.
-                </p>
-              )}
-              {allAddresses.map((a) => (
-                <label
-                  key={a.id}
-                  className={cn(
-                    "press flex cursor-pointer items-start gap-3 rounded-2xl border p-4 transition-all duration-200",
-                    !showAddressForm && addressId === a.id
-                      ? "border-ember-400/50 bg-ember-400/8"
-                      : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]",
-                  )}
-                >
-                  <input
-                    type="radio"
-                    name="address"
-                    className="sr-only"
-                    checked={!showAddressForm && addressId === a.id}
-                    onChange={() => {
-                      setAddressId(a.id);
-                      setShowAddressForm(false);
-                      setSaveNewAddressToAccount(false);
-                    }}
-                  />
-                  <span
-                    className={cn(
-                      "mt-0.5 grid size-5 shrink-0 place-items-center rounded-full border-2 transition-all",
-                      !showAddressForm && addressId === a.id ? "border-ember-400" : "border-white/25",
+              {selectedAddress ? (
+                <div className="flex items-start gap-3 rounded-2xl border border-ember-400/45 bg-ember-400/7 p-4">
+                  <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-chili-500/18 text-chili-400">
+                    {selectedAddress.label === "Work" ? (
+                      <Briefcase className="size-4" />
+                    ) : selectedAddress.label === "Other" ? (
+                      <MapPin className="size-4" />
+                    ) : (
+                      <House className="size-4" />
                     )}
-                  >
-                    {!showAddressForm && addressId === a.id && <span className="size-2.5 rounded-full bg-gradient-to-b from-ember-400 to-chili-500" />}
                   </span>
-                  <span className="min-w-0">
-                    <span className="flex items-center gap-1.5 text-sm font-bold text-cream-50">
-                      <House className="size-3.5 text-cream-400" /> {a.label}
-                    </span>
-                    <span className="mt-0.5 block text-[13px] leading-relaxed text-cream-400">{a.text}</span>
-                  </span>
-                </label>
-              ))}
-
-              {showAddressForm ? (
-                <div className="animate-fade-in space-y-2.5 rounded-2xl border border-ember-400/40 bg-ember-400/6 p-4">
-                  <textarea
-                    value={addressText}
-                    onChange={(e) => setAddressText(e.target.value)}
-                    placeholder="Flat, street, landmark, city, pincode"
-                    rows={2}
-                    className="w-full resize-none rounded-xl border border-white/10 bg-black/30 px-3.5 py-2.5 text-sm text-cream-50 placeholder:text-cream-600 focus:border-ember-400/60 focus:outline-none"
-                  />
-                  {accountAuth.status === "signedIn" && (
-                    <label className="flex cursor-pointer items-center gap-2 pt-0.5 text-xs font-semibold text-cream-300">
-                      <input
-                        type="checkbox"
-                        checked={saveNewAddressToAccount}
-                        onChange={(e) => setSaveNewAddressToAccount(e.target.checked)}
-                        className="size-4 rounded border-white/20 bg-black/30 accent-ember-400"
-                      />
-                      Save this address to my account
-                    </label>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setShowAddressForm(false);
-                      setSaveNewAddressToAccount(false);
-                    }}
-                    className="press text-xs font-semibold text-cream-400 hover:text-cream-200"
-                  >
-                    Cancel
-                  </button>
+                  <div className="min-w-0 flex-1">
+                    <p className="text-xs font-bold uppercase tracking-[0.12em] text-ember-300">
+                      Deliver to {selectedAddress.label}
+                    </p>
+                    <p className="mt-1 break-words text-[13px] leading-relaxed text-cream-200">
+                      {addressSummary(selectedAddress)}
+                    </p>
+                    {selectedAddress.instructions && (
+                      <p className="mt-1 text-xs text-cream-500">
+                        Note: {selectedAddress.instructions}
+                      </p>
+                    )}
+                    {deliveryLocation && (
+                      <p className="mt-1 flex items-center gap-1 text-[11px] text-mint-300">
+                        <Check className="size-3" /> Pin placed on map
+                      </p>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => openAddressPicker("list")}
+                      className="press rounded-full border border-white/15 bg-white/6 px-3 py-1.5 text-xs font-bold text-cream-200 transition-colors hover:bg-white/12"
+                    >
+                      Change
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => openAddressPicker("location")}
+                      className="press inline-flex items-center gap-1 rounded-full border border-ember-400/45 bg-ember-400/12 px-3 py-1.5 text-xs font-bold text-ember-200 transition-colors hover:bg-ember-400/20"
+                    >
+                      <Plus className="size-3.5" /> Add address
+                    </button>
+                  </div>
                 </div>
               ) : (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setShowAddressForm(true);
-                    setSaveNewAddressToAccount(false);
-                  }}
-                  className="press flex w-full items-center justify-center gap-1.5 rounded-2xl border border-dashed border-white/15 py-3 text-sm font-semibold text-cream-300 transition-colors hover:border-ember-400/40 hover:text-ember-300"
-                >
-                  <Plus className="size-4" /> Add new address
-                </button>
+                <div className="flex flex-col gap-2 sm:flex-row">
+                  <button
+                    type="button"
+                    onClick={() => openAddressPicker("list")}
+                    className="press flex flex-1 items-center justify-center gap-1.5 rounded-2xl border border-dashed border-ember-400/40 bg-ember-400/5 py-3.5 text-sm font-bold text-ember-200 transition-colors hover:bg-ember-400/10"
+                  >
+                    <MapPin className="size-4" /> Choose a delivery address
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openAddressPicker("location")}
+                    className="press flex flex-1 items-center justify-center gap-1.5 rounded-2xl border border-white/15 bg-white/6 py-3.5 text-sm font-bold text-cream-200 transition-colors hover:bg-white/12"
+                  >
+                    <Plus className="size-4" /> Add address
+                  </button>
+                </div>
               )}
+              <p className="text-xs text-cream-500">
+                {accountAuth.status === "signedIn"
+                  ? "Saved account addresses and addresses on this device are both available in the picker."
+                  : "Search by area, drop a map pin or type your address. Saved addresses stay on this device."}
+              </p>
             </div>
 
             <div className="mt-4 border-t border-white/8 pt-4">
@@ -1080,6 +1194,20 @@ export default function CheckoutPage() {
               </span>
             </div>
           )}
+          <div className="mb-4">
+            <TipSchedulePicker
+              tipChoice={tipChoice}
+              onTipChoice={setTipChoice}
+              customTipRupees={customTipRupees}
+              onCustomTip={setCustomTipRupees}
+              scheduleInput={scheduleInput}
+              onSchedule={setScheduleInput}
+              scheduleMin={scheduleBounds.min}
+              scheduleMax={scheduleBounds.max}
+              tipError={tipError}
+              scheduleError={scheduleError}
+            />
+          </div>
           <CheckoutSummary
             open={openSummary}
             onToggle={() => setOpenSummary((o) => !o)}
@@ -1088,6 +1216,8 @@ export default function CheckoutPage() {
             discountCents={bill?.discountCents ?? 0}
             deliveryFeeCents={bill?.deliveryFeeCents ?? estimate.deliveryFee}
             platformFeeCents={bill?.platformFeeCents ?? estimate.platformFee}
+            tipCents={bill ? tipCents : 0}
+            scheduledFor={bill ? scheduledFor : ""}
             offer={offer}
             offerAvailable={offerAvailable}
             applyOffer={applyOffer}
@@ -1175,6 +1305,28 @@ export default function CheckoutPage() {
           onAbandon={keepUnpaid}
           onSwitchToCash={switchToCash}
           onClose={keepUnpaid}
+        />
+      )}
+
+      {addressPickerOpen && (
+        <AddressPicker
+          key={addressPickerMode}
+          addresses={allAddresses}
+          selectedId={addressId}
+          signedIn={accountAuth.status === "signedIn"}
+          initialView={addressPickerMode}
+          deletableIds={new Set(profile.addresses.map((a) => a.id))}
+          onClose={() => setAddressPickerOpen(false)}
+          onSelect={(id) => {
+            chooseAddress(id);
+            setAddressPickerOpen(false);
+          }}
+          onSave={(address, saveToAccount) => {
+            saveAddressFromPicker(address, saveToAccount);
+            setAddressPickerOpen(false);
+          }}
+          onDelete={deleteAddress}
+          onPinChange={handlePinChange}
         />
       )}
 
@@ -1338,6 +1490,108 @@ function OfferPicker({
   );
 }
 
+function TipSchedulePicker({
+  tipChoice,
+  onTipChoice,
+  customTipRupees,
+  onCustomTip,
+  scheduleInput,
+  onSchedule,
+  scheduleMin,
+  scheduleMax,
+  tipError,
+  scheduleError,
+}: {
+  tipChoice: number;
+  onTipChoice: (value: number) => void;
+  customTipRupees: string;
+  onCustomTip: (value: string) => void;
+  scheduleInput: string;
+  onSchedule: (value: string) => void;
+  scheduleMin: string;
+  scheduleMax: string;
+  tipError: string | null;
+  scheduleError: string | null;
+}) {
+  const presets = [0, 2_000, 5_000, 10_000];
+  return (
+    <div className="glass rounded-3xl p-5">
+      <h2 className="font-display text-base font-bold text-cream-50">
+        Tip &amp; schedule <span className="ml-1 text-xs font-medium text-cream-500">optional</span>
+      </h2>
+      <p className="mt-1 text-[11px] text-cream-500">
+        Tips go to the kitchen and delivery team. Scheduled orders need at least 30 minutes&apos;
+        notice.
+      </p>
+      <div className="mt-3 flex flex-wrap gap-2" role="group" aria-label="Tip amount">
+        {presets.map((value) => (
+          <button
+            key={value}
+            type="button"
+            aria-pressed={tipChoice === value}
+            onClick={() => onTipChoice(value)}
+            className={cn(
+              "press rounded-xl px-3 py-2 text-xs font-semibold transition-colors",
+              tipChoice === value
+                ? "bg-ember-400/20 text-ember-300 ring-1 ring-ember-400/40"
+                : "bg-white/6 text-cream-400 hover:text-cream-100",
+            )}
+          >
+            {value === 0 ? "No tip" : formatINR(value)}
+          </button>
+        ))}
+        <button
+          type="button"
+          aria-pressed={tipChoice === -1}
+          onClick={() => onTipChoice(-1)}
+          className={cn(
+            "press rounded-xl px-3 py-2 text-xs font-semibold transition-colors",
+            tipChoice === -1
+              ? "bg-ember-400/20 text-ember-300 ring-1 ring-ember-400/40"
+              : "bg-white/6 text-cream-400 hover:text-cream-100",
+          )}
+        >
+          Custom
+        </button>
+      </div>
+      {tipChoice === -1 && (
+        <label htmlFor="custom-tip" className="mt-3 block text-xs font-semibold text-cream-300">
+          Custom tip in rupees
+          <input
+            id="custom-tip"
+            type="number"
+            min={0}
+            max={MAX_TIP_CENTS / 100}
+            step="1"
+            value={customTipRupees}
+            onChange={(event) => {
+              onCustomTip(event.target.value);
+              onTipChoice(-1);
+            }}
+            className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-cream-100 focus:border-ember-400/50 focus:outline-none"
+          />
+        </label>
+      )}
+      {tipError && <p role="alert" className="mt-2 text-xs text-chili-300">{tipError}</p>}
+      <label htmlFor="schedule-time" className="mt-4 block text-xs font-semibold text-cream-300">
+        <span className="flex items-center gap-1.5">
+          <CalendarClock className="size-3.5 text-ember-400" /> Schedule for later
+        </span>
+        <input
+          id="schedule-time"
+          type="datetime-local"
+          min={scheduleMin}
+          max={scheduleMax}
+          value={scheduleInput}
+          onChange={(event) => onSchedule(event.target.value)}
+          className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-cream-100 focus:border-ember-400/50 focus:outline-none"
+        />
+      </label>
+      {scheduleError && <p role="alert" className="mt-2 text-xs text-chili-300">{scheduleError}</p>}
+    </div>
+  );
+}
+
 function CheckoutSummary({
   open,
   onToggle,
@@ -1346,6 +1600,8 @@ function CheckoutSummary({
   discountCents,
   deliveryFeeCents,
   platformFeeCents,
+  tipCents,
+  scheduledFor,
   itemsNode,
   offer,
   offerAvailable,
@@ -1363,6 +1619,8 @@ function CheckoutSummary({
   discountCents: number;
   deliveryFeeCents: number;
   platformFeeCents: number;
+  tipCents: number;
+  scheduledFor: string;
   itemsNode: ReactNode;
   offer: string | null;
   offerAvailable: boolean;
@@ -1427,6 +1685,22 @@ function CheckoutSummary({
           <span className="text-cream-500">Platform fee</span>
           <span className="font-semibold text-cream-100 tabular-nums">{formatINR(platformFeeCents)}</span>
         </div>
+        {tipCents > 0 && (
+          <div className="flex items-center justify-between text-mint-400">
+            <span className="flex items-center gap-1.5">
+              <Heart className="size-3.5" /> Tip
+            </span>
+            <span className="font-semibold tabular-nums">{formatINR(tipCents)}</span>
+          </div>
+        )}
+        {scheduledFor && (
+          <div className="flex items-center justify-between gap-2 text-[11px] text-cream-500">
+            <span className="flex items-center gap-1.5">
+              <CalendarClock className="size-3.5 shrink-0 text-ember-400" /> Scheduled
+            </span>
+            <span className="truncate text-cream-300">{formatDateTime(scheduledFor)}</span>
+          </div>
+        )}
       </div>
       {promoCode && (
         <div className="mt-4 flex items-center justify-between gap-2 rounded-xl border border-mint-400/25 bg-mint-500/8 px-3 py-2.5">

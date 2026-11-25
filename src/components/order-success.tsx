@@ -1,9 +1,13 @@
 "use client";
 
 import Link from "next/link";
-import { CreditCard, MapPinned, ReceiptText, Sparkles } from "lucide-react";
+import { CreditCard, Download, MapPinned, ReceiptText, Sparkles } from "lucide-react";
+import { useState } from "react";
 import { AnimatedPrice, WordReveal, cssVars } from "@/components/motion-primitives";
 import { cn, formatINR } from "@/lib/domain";
+import { orderAuthHeaders } from "@/lib/order-access";
+import { useProfileOrders } from "@/lib/profile";
+import { useToast } from "@/lib/toast";
 import type { PublicOrder } from "@/lib/order-public";
 
 const SPARK_COLORS = [
@@ -28,6 +32,67 @@ const SPARKS = Array.from({ length: 26 }, (_, i) => {
   };
 });
 
+/** Anchors cannot carry the per-order token header, so fetch the receipt first. */
+export function InvoiceLink({
+  code,
+  token,
+  className,
+}: {
+  code: string;
+  token: string;
+  className?: string;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+  const href = `/api/orders/${encodeURIComponent(code)}/invoice`;
+
+  async function download() {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const res = await fetch(href, {
+        headers: orderAuthHeaders(token),
+        cache: "no-store",
+        credentials: "same-origin",
+      });
+      if (!res.ok) {
+        toast("Receipt unavailable", { sub: "Open the order page and try again.", kind: "error" });
+        return;
+      }
+      const url = URL.createObjectURL(await res.blob());
+      const anchor = document.createElement("a");
+      anchor.href = url;
+      anchor.download = `receipt-${code}.html`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      anchor.remove();
+      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+    } catch {
+      toast("Receipt unavailable", { sub: "Please try again.", kind: "error" });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <a
+      href={href}
+      download
+      aria-disabled={busy}
+      onClick={(event) => {
+        event.preventDefault();
+        void download();
+      }}
+      className={cn(
+        "press inline-flex items-center justify-center gap-1.5 rounded-xl border border-white/12 px-3 py-2 text-xs font-semibold text-cream-300 transition-colors hover:bg-white/6",
+        className,
+      )}
+    >
+      <Download className="size-3.5" /> {busy ? "Preparing…" : "Download receipt"}
+    </a>
+  );
+}
+
 export function OrderSuccess({
   order,
   onResumePayment,
@@ -45,6 +110,8 @@ export function OrderSuccess({
    */
   trackingHref: string;
 }) {
+  const { orders } = useProfileOrders();
+  const token = orders.find((row) => row.code === order.code)?.token;
   // Only say "payment confirmed" when the server says the payment is captured.
   // A COD order is with the kitchen but unpaid; an unpaid online order is not
   // even with the kitchen yet, and claiming otherwise is the exact lie this
@@ -150,6 +217,11 @@ export function OrderSuccess({
         </span>
         <AnimatedPrice cents={order.totalCents} className="text-sm font-bold text-cream-50" />
       </div>
+      {token && (
+        <div className="animate-rise mt-3" style={cssVars({ animationDelay: "0.9s" })}>
+          <InvoiceLink code={order.code} token={token} />
+        </div>
+      )}
 
       <div className="animate-rise mt-7 flex w-full flex-col gap-2.5 sm:flex-row" style={cssVars({ animationDelay: "0.98s" })}>
         {unpaidOnline && onResumePayment ? (
@@ -199,4 +271,3 @@ export function OrderSuccess({
     </div>
   );
 }
-

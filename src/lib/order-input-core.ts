@@ -34,6 +34,8 @@
  * bound the routes enforce.
  */
 
+import { mapPoint, type MapPoint } from "./delivery-address";
+import { parseScheduledFor, parseTipCents } from "./checkout-extras-core";
 import { isInboxToken } from "./customer-notification-copy";
 import { parseOfferCode } from "./merchant-offer";
 
@@ -74,7 +76,9 @@ export type OrderInputErrorCode =
   | "CART_TOO_LARGE"
   | "PAYMENT_METHOD_NOT_ALLOWED"
   | "TERMS_NOT_ACCEPTED"
-  | "INVALID_PROMO_CODE";
+  | "INVALID_PROMO_CODE"
+  | "INVALID_TIP"
+  | "INVALID_SCHEDULE";
 
 /**
  * A cart line after validation: every field read here was checked, every other
@@ -127,6 +131,15 @@ export interface CheckoutRequest {
   inboxToken?: string;
   /** Selected delivery locality key; rechecked against the restaurant's served locality before the write. */
   localityKey?: string;
+  /**
+   * Optional pin from the address picker. Used only for the delivery-area
+   * admission check; the coordinates are never persisted on the order.
+   */
+  deliveryLocation?: MapPoint;
+  /** Customer-chosen gratuity in integer paise. Repriced into the server bill. */
+  tipCents?: number;
+  /** Optional ISO timestamp for a future slot, rechecked against published hours. */
+  scheduledFor?: string;
 }
 
 export type CheckoutResult =
@@ -295,6 +308,9 @@ export function validateCheckout(raw: unknown): CheckoutResult {
     typeof body.localityKey === "string" && body.localityKey.trim()
       ? body.localityKey.trim().toLowerCase().slice(0, 40)
       : undefined;
+  // A malformed pin is dropped, never rejected: the address text and locality
+  // claim still go through their existing checks.
+  const deliveryLocation = mapPoint(body.deliveryLocation);
 
   // A code is a *selection*, not a price assertion. Reject malformed input here
   // so no half-formed string ever reaches the database lookup; existence,
@@ -309,6 +325,11 @@ export function validateCheckout(raw: unknown): CheckoutResult {
       code: "INVALID_PROMO_CODE",
     };
   }
+
+  const tip = parseTipCents(body.tipCents);
+  if (!tip.ok) return { ok: false, error: tip.error, code: "INVALID_TIP" };
+  const schedule = parseScheduledFor(body.scheduledFor);
+  if (!schedule.ok) return { ok: false, error: schedule.error, code: "INVALID_SCHEDULE" };
 
   return {
     ok: true,
@@ -329,6 +350,9 @@ export function validateCheckout(raw: unknown): CheckoutResult {
       ...(inboxToken !== undefined ? { inboxToken } : {}),
       ...(outletId !== undefined ? { outletId } : {}),
       ...(localityKey !== undefined ? { localityKey } : {}),
+      ...(deliveryLocation ? { deliveryLocation } : {}),
+      ...(tip.tipCents > 0 ? { tipCents: tip.tipCents } : {}),
+      ...(schedule.scheduledFor ? { scheduledFor: schedule.scheduledFor } : {}),
     },
   };
 }

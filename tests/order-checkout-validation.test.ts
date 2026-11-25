@@ -226,6 +226,30 @@ test("validateCheckout keeps the locality selection as a bounded claim", () => {
   if (blob.ok) assert.equal(blob.request.localityKey?.length, 40);
 });
 
+test("validateCheckout whitelists a bounded map pin and drops malformed ones", () => {
+  const good = validateCheckout(
+    checkoutBody({ deliveryLocation: { latitude: 21.6947, longitude: 72.9974, zoom: 15 } }),
+  );
+  assert.ok(good.ok);
+  if (good.ok) {
+    assert.deepEqual(good.request.deliveryLocation, { latitude: 21.6947, longitude: 72.9974 });
+    assert.equal("zoom" in good.request.deliveryLocation, false);
+  }
+
+  for (const raw of [
+    { latitude: "21.6947", longitude: 72.9974 },
+    { latitude: 91, longitude: 72.9974 },
+    { latitude: 21.6947, longitude: 181 },
+    { latitude: 21.6947 },
+    null,
+    "21.6947,72.9974",
+  ]) {
+    const result = validateCheckout(checkoutBody({ deliveryLocation: raw }));
+    assert.ok(result.ok, `${JSON.stringify(raw)} must not reject an otherwise valid order`);
+    if (result.ok) assert.equal("deliveryLocation" in result.request, false);
+  }
+});
+
 test("validateCheckout rejects a request missing any required field", () => {
   const cases: Record<string, unknown> = {
     restaurantSlug: "   ",
@@ -313,7 +337,7 @@ test("consent is enforced by the server, not only by the checkbox", () => {
 
 test("the shipped checkout form sends the consent flag the server checks", () => {
   const source = readSource("src/app/checkout/page.tsx");
-  assert.match(source, /acceptedTerms,[\s\S]*?localityKey: currentLocalityKey\(\),[\s\S]*?\}\)/);
+  assert.match(source, /acceptedTerms,[\s\S]*?deliveryLocation,[\s\S]*?localityKey,[\s\S]*?\}\)/);
   // The consent state is read by the request, not merely by the button, and an
   // order cannot be placed until the matching authoritative bill exists.
   assert.match(

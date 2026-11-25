@@ -1,7 +1,9 @@
 "use client";
 
+import Image from "next/image";
 import Link from "next/link";
-import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useRef, useState, type ChangeEvent, type FormEvent } from "react";
 import {
   BadgeCheck,
   Ban,
@@ -22,9 +24,17 @@ import {
   XCircle,
   type LucideIcon,
 } from "lucide-react";
+import { InvoiceLink } from "@/components/order-success";
 import { RollingNumber } from "@/components/motion-primitives";
 import { OrderSupport, OrderSupportFallback } from "@/components/order-support";
 import { orderItemLineTotalCents } from "@/db/schema";
+import { useCart } from "@/lib/cart";
+import {
+  CANCEL_REASONS,
+  MAX_TIP_CENTS,
+  parseScheduledFor,
+  parseTipCents,
+} from "@/lib/checkout-extras-core";
 import { cn, formatDateTime, formatINR } from "@/lib/domain";
 import {
   fetchOrderByTrackingToken,
@@ -35,6 +45,11 @@ import {
 } from "@/lib/order-access";
 import { MAX_REVIEW_CHARS } from "@/lib/order-feedback";
 import { isOrderLive, type PublicOrder } from "@/lib/order-public";
+import { MAX_MEDIA_BYTES, MAX_REVIEW_PHOTOS, parsePhotoIds } from "@/lib/media-core";
+import { buildReorderLines, menuItemsFromPayload } from "@/lib/reorder-core";
+import { useToast } from "@/lib/toast";
+
+const REVIEW_PHOTO_ACCEPT = "image/jpeg,image/png,image/webp";
 
 /* Canonical Marketplace stage keys — always rendered from the server-provided
    `status.stages`, never re-derived in a component (Phase 5 mapping rule). */
@@ -61,6 +76,24 @@ type CancelState =
   | { kind: "pending" }
   | { kind: "error"; message: string };
 
+const CANCEL_LABELS: Record<(typeof CANCEL_REASONS)[number], string> = {
+  changed_mind: "Changed my mind",
+  ordered_by_mistake: "Ordered by mistake",
+  delivery_too_late: "Delivery too late",
+  other: "Other",
+};
+
+const REVIEW_IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+
+function readFileAsBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? "").split(",")[1] ?? "");
+    reader.onerror = () => reject(new Error("Could not read that photo. Please try again."));
+    reader.readAsDataURL(file);
+  });
+}
+
 export function TrackingView({
   initialOrder,
   token,
@@ -84,7 +117,13 @@ export function TrackingView({
   supportAccess?: boolean;
 }) {
   const [order, setOrder] = useState(initialOrder);
+  const router = useRouter();
+  const { toast } = useToast();
+  const cart = useCart();
   const [cancel, setCancel] = useState<CancelState>({ kind: "idle" });
+  const [cancelReason, setCancelReason] = useState("");
+  const [reviewPhotos, setReviewPhotos] = useState<File[]>([]);
+  const [reviewUploadError, setReviewUploadError] = useState("");
   const [reviewOpen, setReviewOpen] = useState(false);
   const [reviewRating, setReviewRating] = useState(0);
   const [reviewText, setReviewText] = useState("");
@@ -117,9 +156,14 @@ export function TrackingView({
     if (!supportAccess) return;
     setCancel({ kind: "sending" });
     try {
+      const reason = cancelReason;
       const res = await fetch(`/api/orders/${order.code}/cancel`, {
         method: "POST",
-        headers: orderAuthHeaders(token),
+        headers: {
+          ...orderAuthHeaders(token),
+          ...(reason ? { "Content-Type": "application/json" } : {}),
+        },
+        ...(reason ? { body: JSON.stringify({ reason }) } : {}),
         cache: "no-store",
         credentials: "same-origin",
       });
@@ -142,11 +186,103 @@ export function TrackingView({
     }
   }
 
+  function onReviewFiles(event: ChangeEvent<HTMLInputElement>) {
+    const picked = Array.from(event.target.files ?? []);
+    const accepted = picked
+      .filter((file) => REVIEW_IMAGE_TYPES.has(file.type) && file.size <= MAX_MEDIA_BYTES)
+      .slice(0, MAX_REVIEW_PHOTOS - reviewPhotos.length);
+    if (accepted.length) setReviewPhotos((current) => [...current, ...accepted].slice(0, MAX_REVIEW_PHOTOS));
+    if (accepted.length !== picked.length) {
+      setReviewUploadError(`Use JPEG, PNG or WebP images under 2 MB (max ${MAX_REVIEW_PHOTOS} photos).`);
+    } else {
+      setReviewUploadError("");
+    }
+    event.target.value = "";
+  }
+
+  async function uploadReviewPhotos(): Promise<number[]> {
+    const ids: number[] = [];
+    for (const file of reviewPhotos.slice(0, MAX_REVIEW_PHOTOS)) {
+      const dataBase64 = await readFileAsBase64(file);
+      const res = await fetch("/api/media", {
+        method: "POST",
+        headers: { ...orderAuthHeaders(token), "Content-Type": "application/json" },
+        body: JSON.stringify({ kind: "review", code: order.code, contentType: file.type, dataBase64 }),
+        credentials: "same-origin",
+        cache: "no-store",
+      });
+      const data = (await res.json().catch(() => null)) as {
+        ok?: boolean;
+        id?: number;
+        error?: string;
+      } | null;
+      if (!res.ok || !data?.ok || typeof data.id !== "number") {
+        throw new Error(data?.error ?? "Could not upload your photo. Please try again.");
+      }
+      ids.push(data.id);
+    }
+    return parsePhotoIds(ids);
+  }
+
+  async function reorder() {
+    const href = `/restaurants/${encodeURIComponent(order.restaurantSlug)}`;
+    try {
+      const res = await fetch(`/api/restaurants/${encodeURIComponent(order.restaurantSlug)}`, {
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        router.push(href);
+        return;
+      }
+      const items = menuItemsFromPayload(await res.json().catch(() => null));
+      if (items.length === 0) {
+        router.push(href);
+        return;
+      }
+      const result = buildReorderLines(order, items);
+      const requested = result.lines.reduce((sum, line) => sum + line.quantity, 0);
+      if (result.lines.length === 0) {
+        toast("Nothing from that order is available now", { sub: "Opening the menu instead", kind: "error" });
+        router.push(href);
+        return;
+      }
+      let added = 0;
+      for (const line of result.lines) {
+        for (let unit = 0; unit < line.quantity && added < 50; unit += 1) {
+          if (!cart.add(line, order.restaurantSlug, order.restaurantName)) break;
+          added += 1;
+        }
+      }
+      if (added === 0) {
+        toast("Your cart holds another kitchen", {
+          sub: "Choose Replace in the cart prompt, then try again",
+          kind: "error",
+        });
+        router.push(href);
+        return;
+      }
+      toast(
+        added < requested ? "Some items could not be added" : result.changed ? "Added using today's menu" : "Order added to cart",
+        {
+          sub: result.unavailableNames.length
+            ? `${result.unavailableNames.slice(0, 2).join(", ")}${result.unavailableNames.length > 2 ? " and more" : ""} unavailable`
+            : undefined,
+          kind: added < requested ? "error" : "info",
+        },
+      );
+      router.push(href);
+    } catch {
+      router.push(href);
+    }
+  }
+
   function openReview() {
     // Seed the form from the saved review so "View review" is truthful and a
     // duplicate submit can still report the original rating back to the user.
     setReviewRating(order.feedback?.rating ?? 0);
     setReviewText(order.feedback?.review ?? "");
+    setReviewPhotos([]);
+    setReviewUploadError("");
     setReviewError("");
     setReviewNotice("");
     setReviewOpen(true);
@@ -163,10 +299,11 @@ export function TrackingView({
     setReviewError("");
     setReviewNotice("");
     try {
+      const photoIds = await uploadReviewPhotos();
       const res = await fetch(`/api/orders/${encodeURIComponent(order.code)}/review`, {
         method: "POST",
         headers: { ...orderAuthHeaders(token), "Content-Type": "application/json" },
-        body: JSON.stringify({ rating: reviewRating, review: reviewText }),
+        body: JSON.stringify({ rating: reviewRating, review: reviewText, photoIds }),
         cache: "no-store",
         credentials: "same-origin",
       });
@@ -180,7 +317,12 @@ export function TrackingView({
         throw new Error(data?.error ?? "Could not save your review. Please try again.");
       }
       const savedFeedback = data.feedback;
-      setOrder((current) => ({ ...current, feedback: savedFeedback }));
+      setOrder((current) => ({
+        ...current,
+        feedback: savedFeedback,
+        reviewPhotoIds: photoIds.length ? photoIds : current.reviewPhotoIds ?? [],
+      }));
+      setReviewPhotos([]);
       setReviewNotice(
         data.alreadySubmitted
           ? "You already rated this order — here is what you saved."
@@ -421,7 +563,14 @@ export function TrackingView({
               Also not offered on a shared tracking link: cancelling needs this
               browser's token or session, not the widely-shared tracking URL. */}
           {inFlight && cancel.kind !== "cancelled" && supportAccess && (
-            <CancelCard state={cancel} disabled={!s.cancellable} reason={s.cancelReason} onCancel={handleCancel} />
+            <CancelCard
+              state={cancel}
+              disabled={!s.cancellable}
+              reason={s.cancelReason}
+              selectedReason={cancelReason}
+              onReasonChange={setCancelReason}
+              onCancel={handleCancel}
+            />
           )}
           {(cancel.kind === "cancelled" || s.stageKey === "cancelled") && (
             <div className="animate-pop-in rounded-3xl bg-gradient-to-br from-chili-400/15 to-transparent p-5 ring-1 ring-chili-400/25">
@@ -482,6 +631,7 @@ export function TrackingView({
                     <span className="ml-1 font-semibold text-cream-200">Thanks for sharing.</span>
                   </div>
                   {order.feedback.review && <p className="mt-1.5 leading-relaxed">“{order.feedback.review}”</p>}
+                  <ReviewPhotos photoIds={order.reviewPhotoIds ?? []} />
                   {order.feedback.merchantResponse && (
                     <p className="mt-1.5 leading-relaxed">
                       <span className="font-semibold text-mint-400">The kitchen replied:</span>{" "}
@@ -493,6 +643,10 @@ export function TrackingView({
               <div className="mt-4 flex flex-wrap gap-2.5">
                 <Link
                   href={`/restaurants/${order.restaurantSlug}`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    void reorder();
+                  }}
                   className="press flex items-center gap-1.5 rounded-xl bg-mint-500 px-4 py-2.5 text-sm font-bold text-emerald-950"
                 >
                   <RefreshCcw className="size-4" /> Reorder
@@ -557,11 +711,26 @@ export function TrackingView({
                 <dt className="text-cream-500">Platform fee</dt>
                 <dd className="text-cream-50 tabular-nums">{formatINR(order.platformFeeCents)}</dd>
               </div>
+              {typeof order.tipCents === "number" &&
+                order.tipCents > 0 &&
+                order.tipCents <= MAX_TIP_CENTS &&
+                parseTipCents(order.tipCents).ok && (
+                  <div className="flex justify-between text-mint-400">
+                    <dt>Tip for the team</dt>
+                    <dd className="tabular-nums">{formatINR(order.tipCents)}</dd>
+                  </div>
+                )}
               <div className="flex justify-between border-t border-white/10 pt-3 font-display text-base font-bold">
                 <dt className="text-cream-50">{paymentLine(order)}</dt>
                 <dd className="text-cream-50 tabular-nums">{formatINR(order.totalCents)}</dd>
               </div>
             </dl>
+            {order.scheduledFor && parseScheduledFor(order.scheduledFor, new Date(0)).ok && (
+              <p className="mt-3 flex items-center gap-2 rounded-xl bg-white/[0.04] px-3.5 py-2.5 text-xs text-cream-400">
+                <ReceiptText className="size-3.5 shrink-0 text-ember-400" />
+                Scheduled for {formatDateTime(order.scheduledFor)}
+              </p>
+            )}
             <div className="mt-4 flex items-start gap-2 rounded-2xl bg-white/[0.04] px-3.5 py-3 text-xs text-cream-400">
               {isPickup ? (
                 <>
@@ -580,6 +749,11 @@ export function TrackingView({
                 </>
               )}
             </div>
+            {token && (
+              <div className="mt-3 border-t border-white/8 pt-3">
+                <InvoiceLink code={order.code} token={token} />
+              </div>
+            )}
           </div>
 
           {/* A shared tracking link has neither a token nor a bound session, so
@@ -634,6 +808,9 @@ export function TrackingView({
                   {order.feedback.review && (
                     <p className="mt-3 text-sm leading-relaxed text-cream-300">“{order.feedback.review}”</p>
                   )}
+                  {order.reviewPhotoIds && order.reviewPhotoIds.length > 0 && (
+                    <ReviewPhotos photoIds={order.reviewPhotoIds} />
+                  )}
                   {order.feedback.merchantResponse && (
                     <p className="mt-3 rounded-2xl bg-white/[0.05] p-3 text-sm leading-relaxed text-cream-400">
                       <span className="font-semibold text-mint-400">The kitchen replied:</span>{" "}
@@ -687,6 +864,38 @@ export function TrackingView({
                     placeholder="Tell the kitchen what worked and what didn’t."
                     className="mt-2 w-full resize-none rounded-2xl border border-white/10 bg-white/[0.04] px-3.5 py-3 text-sm text-cream-100 placeholder:text-cream-600 focus:border-ember-400/50 focus:outline-none"
                   />
+                  <div className="mt-4">
+                    <label htmlFor="review-photos" className="block text-xs font-semibold text-cream-300">
+                      Add a photo <span className="font-normal text-cream-600">(optional, up to {MAX_REVIEW_PHOTOS})</span>
+                    </label>
+                    <input
+                      id="review-photos"
+                      type="file"
+                      accept={REVIEW_PHOTO_ACCEPT}
+                      multiple
+                      onChange={onReviewFiles}
+                      disabled={reviewBusy || reviewPhotos.length >= MAX_REVIEW_PHOTOS}
+                      className="mt-2 block w-full text-xs text-cream-400 file:mr-3 file:rounded-lg file:border-0 file:bg-white/8 file:px-3 file:py-2 file:text-xs file:font-semibold file:text-cream-200 hover:file:bg-white/12 disabled:opacity-50"
+                    />
+                    {reviewPhotos.length > 0 && (
+                      <ul className="mt-2 flex flex-wrap gap-2">
+                        {reviewPhotos.map((file, index) => (
+                          <li key={`${file.name}-${index}`} className="flex items-center gap-1.5 rounded-lg bg-white/6 px-2.5 py-1.5 text-[11px] text-cream-300">
+                            <span className="max-w-32 truncate">{file.name}</span>
+                            <button
+                              type="button"
+                              aria-label={`Remove ${file.name}`}
+                              onClick={() => setReviewPhotos((current) => current.filter((_, i) => i !== index))}
+                              className="text-cream-500 transition-colors hover:text-chili-300"
+                            >
+                              <X className="size-3.5" />
+                            </button>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    {reviewUploadError && <p role="alert" className="mt-2 text-xs text-chili-300">{reviewUploadError}</p>}
+                  </div>
                   {reviewError && <p role="alert" className="mt-2 text-sm text-chili-300">{reviewError}</p>}
                   {reviewNotice && <p role="status" className="mt-2 text-sm text-mint-400">{reviewNotice}</p>}
                   <button
@@ -702,6 +911,28 @@ export function TrackingView({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+/* ------------------------------ review photos ---------------------------- */
+
+function ReviewPhotos({ photoIds }: { photoIds: number[] }) {
+  const ids = parsePhotoIds(photoIds);
+  if (ids.length === 0) return null;
+  return (
+    <div className="mt-3 flex flex-wrap gap-2" aria-label="Review photos">
+      {ids.map((id) => (
+        <Image
+          key={id}
+          src={`/api/media/${id}`}
+          alt="Photo from this review"
+          width={72}
+          height={72}
+          unoptimized
+          className="size-16 rounded-xl object-cover ring-1 ring-white/10"
+        />
+      ))}
     </div>
   );
 }
@@ -726,11 +957,15 @@ function CancelCard({
   state,
   disabled,
   reason,
+  selectedReason,
+  onReasonChange,
   onCancel,
 }: {
   state: CancelState;
   disabled: boolean;
   reason: string | null;
+  selectedReason: string;
+  onReasonChange: (reason: string) => void;
   onCancel: () => void;
 }) {
   if (state.kind === "pending") {
@@ -775,14 +1010,33 @@ function CancelCard({
         back-and-forth.
       </p>
       {!disabled && (
-        <button
-          type="button"
-          onClick={onCancel}
-          disabled={state.kind === "sending"}
-          className="press mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-b from-chili-400 to-red-700 px-4 py-2.5 text-sm font-bold text-white transition-opacity disabled:opacity-60"
-        >
-          {state.kind === "sending" ? "Requesting…" : "Cancel order"}
-        </button>
+        <>
+          <label className="mt-3 block text-[11px] font-bold uppercase tracking-[0.14em] text-cream-500" htmlFor="cancel-reason">
+            Reason (optional)
+            <select
+              id="cancel-reason"
+              value={selectedReason}
+              onChange={(e) => onReasonChange(e.target.value)}
+              disabled={state.kind === "sending"}
+              className="mt-1.5 w-full rounded-xl border border-white/10 bg-white/6 px-3 py-2.5 text-sm font-medium text-cream-100 outline-none transition-colors focus:border-ember-400/60 disabled:opacity-60"
+            >
+              <option value="">No reason</option>
+              {CANCEL_REASONS.map((value) => (
+                <option key={value} value={value}>
+                  {CANCEL_LABELS[value]}
+                </option>
+              ))}
+            </select>
+          </label>
+          <button
+            type="button"
+            onClick={onCancel}
+            disabled={state.kind === "sending"}
+            className="press mt-3 flex items-center gap-2 rounded-xl bg-gradient-to-b from-chili-400 to-red-700 px-4 py-2.5 text-sm font-bold text-white transition-opacity disabled:opacity-60"
+          >
+            {state.kind === "sending" ? "Requesting…" : "Cancel order"}
+          </button>
+        </>
       )}
       {disabled && reason && <p className="mt-3 text-xs text-cream-600">{reason}</p>}
     </div>

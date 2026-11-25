@@ -547,13 +547,15 @@ export async function linkUnlinkedOrdersToAccountByCodes(
 export async function listOrdersByCustomerAccountId(
   accountId: number,
   limit = 30,
+  offset = 0,
 ): Promise<OrderRow[]> {
   return db
     .select()
     .from(orders)
     .where(eq(orders.customerAccountId, accountId))
     .orderBy(desc(orders.createdAt), desc(orders.id))
-    .limit(Math.max(1, Math.min(100, limit)));
+    .limit(Math.max(1, Math.min(100, limit)))
+    .offset(Math.max(0, Math.min(10_000, Math.floor(offset))));
 }
 
 /**

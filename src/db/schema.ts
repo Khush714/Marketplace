@@ -474,7 +474,10 @@ export const integrationAudit = pgTable(
     ipAddress: text("ip_address"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
-  (t) => [index("integration_audit_restaurant_idx").on(t.restaurantId)],
+  (t) => [
+    index("integration_audit_restaurant_idx").on(t.restaurantId),
+    index("integration_audit_created_idx").on(t.createdAt.desc(), t.id.desc()),
+  ],
 );
 
 /**
@@ -611,6 +614,26 @@ export const customerFavorites = pgTable(
 
 export type CustomerFavoriteRow = typeof customerFavorites.$inferSelect;
 
+/**
+ * Server-side cart for a signed-in account. The browser cart remains the source
+ * for guests; this row is a bounded sync mirror so a cart survives a device
+ * reset. Order money is never read from it — checkout still reprices every line.
+ */
+export const customerCarts = pgTable(
+  "customer_carts",
+  {
+    id: serial("id").primaryKey(),
+    accountId: integer("account_id")
+      .notNull()
+      .references(() => customerAccounts.id, { onDelete: "cascade" }),
+    state: jsonb("state").notNull(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("customer_carts_account_unique").on(t.accountId)],
+);
+
+export type CustomerCartRow = typeof customerCarts.$inferSelect;
+
 export const orders = pgTable(
   "orders",
   {
@@ -727,6 +750,10 @@ export const orders = pgTable(
     merchantStatus: text("merchant_status").notNull().default("PLACED"),
     merchantStatusUpdatedAt: timestamp("merchant_status_updated_at", { withTimezone: true }).notNull().defaultNow(),
     merchantPrepMinutes: integer("merchant_prep_minutes"),
+    /** Customer-selected gratuity in integer paise, added once to the captured total. */
+    tipCents: integer("tip_cents").notNull().default(0),
+    /** Optional future fulfilment slot. Checkout validates the horizon and hours. */
+    scheduledFor: timestamp("scheduled_for", { withTimezone: true }),
     merchantRejectionReason: text("merchant_rejection_reason").notNull().default(""),
     merchantFulfilment: text("merchant_fulfilment").notNull().default("delivery"),
     /**
@@ -748,6 +775,11 @@ export const orders = pgTable(
     feedbackAt: timestamp("feedback_at", { withTimezone: true }),
     merchantResponse: text("merchant_response").notNull().default(""),
     merchantRespondedAt: timestamp("merchant_responded_at", { withTimezone: true }),
+    /** Ids of tenant-scoped uploaded review photos, in display order. */
+    reviewPhotoIds: integer("review_photo_ids")
+      .array()
+      .notNull()
+      .default(sql`'{}'::integer[]`),
   },
   (t) => [
     index("orders_phone_idx").on(t.phone),
@@ -774,6 +806,34 @@ export const orders = pgTable(
     uniqueIndex("orders_tracking_token_hash_unique").on(t.trackingTokenHash),
   ],
 );
+
+/**
+ * Uploaded images live as private database bytes and are served through
+ * `/api/media/[id]`. IDs are the only public handle, and every row carries its
+ * restaurant so a route can refuse cross-tenant attachment.
+ */
+export const mediaAssets = pgTable(
+  "media_assets",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id")
+      .notNull()
+      .references(() => restaurants.id, { onDelete: "cascade" }),
+    orderId: integer("order_id").references(() => orders.id, { onDelete: "cascade" }),
+    /** `menu` rows are public once stored; `review` rows become public with the review. */
+    kind: text("kind").notNull(),
+    contentType: text("content_type").notNull(),
+    byteSize: integer("byte_size").notNull(),
+    dataBase64: text("data_base64").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("media_assets_restaurant_kind_idx").on(t.restaurantId, t.kind),
+    index("media_assets_order_idx").on(t.orderId),
+  ],
+);
+
+export type MediaAssetRow = typeof mediaAssets.$inferSelect;
 
 /**
  * Device-scoped customer notification inbox. No customer identity, contact
@@ -1255,10 +1315,141 @@ export const merchantPayoutAccounts = pgTable(
   (t) => [index("merchant_payout_accounts_restaurant_idx").on(t.restaurantId)],
 );
 
+/**
+ * Owner-owned payout cadence for a paired listing. The cycle is policy only: it
+ * never authorises a transfer, and the Merchant App can read/change it through
+ * the authenticated integration API.
+ */
+export const merchantPayoutSettings = pgTable(
+  "merchant_payout_settings",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().unique().references(() => restaurants.id, { onDelete: "cascade" }),
+    cycle: text("cycle").notNull().default("weekly"),
+    enabled: boolean("enabled").notNull().default(true),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [index("merchant_payout_settings_restaurant_idx").on(t.restaurantId)],
+);
+
+/**
+ * Immutable snapshot of one closed payout window. `checksum` fingerprints the
+ * exact settlement lines that were priced; approval must revalidate it before
+ * any future processor is allowed to move money.
+ */
+export const merchantPayoutBatches = pgTable(
+  "merchant_payout_batches",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "restrict" }),
+    reference: text("reference").notNull().unique(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    cycle: text("cycle").notNull(),
+    periodStart: timestamp("period_start", { withTimezone: true }).notNull(),
+    periodEnd: timestamp("period_end", { withTimezone: true }).notNull(),
+    status: text("status").notNull().default("PREVIEW"),
+    currency: text("currency").notNull().default("INR"),
+    grossCents: integer("gross_cents").notNull().default(0),
+    commissionCents: integer("commission_cents").notNull().default(0),
+    refundCents: integer("refund_cents").notNull().default(0),
+    adjustmentCents: integer("adjustment_cents").notNull().default(0),
+    netCents: integer("net_cents").notNull().default(0),
+    lineCount: integer("line_count").notNull().default(0),
+    checksum: text("checksum").notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    paidAt: timestamp("paid_at", { withTimezone: true }),
+    failureCode: text("failure_code"),
+    failureMessage: text("failure_message"),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_payout_batches_restaurant_idem_idx").on(t.restaurantId, t.idempotencyKey),
+    index("merchant_payout_batches_restaurant_idx").on(t.restaurantId, t.createdAt),
+    index("merchant_payout_batches_status_idx").on(t.status),
+  ],
+);
+
+/**
+ * One payment-derived settlement inside a payout batch. Rows are snapshots:
+ * no FK to `marketplace_payments` so a later provider correction can never
+ * silently rewrite an already priced payout.
+ */
+export const merchantPayoutBatchLines = pgTable(
+  "merchant_payout_batch_lines",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "restrict" }),
+    batchId: uuid("batch_id").notNull().references(() => merchantPayoutBatches.id, { onDelete: "restrict" }),
+    settlementExternalId: text("settlement_external_id").notNull(),
+    marketplaceOrderId: text("marketplace_order_id").notNull(),
+    grossCents: integer("gross_cents").notNull().default(0),
+    commissionCents: integer("commission_cents").notNull().default(0),
+    refundCents: integer("refund_cents").notNull().default(0),
+    adjustmentCents: integer("adjustment_cents").notNull().default(0),
+    netCents: integer("net_cents").notNull().default(0),
+    currency: text("currency").notNull().default("INR"),
+    capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    uniqueIndex("merchant_payout_lines_batch_settlement_idx").on(t.batchId, t.settlementExternalId),
+    // The global uniqueness is what makes a double payout impossible, even if
+    // two preview jobs race or a later batch is built for an overlapping window.
+    uniqueIndex("merchant_payout_lines_restaurant_settlement_idx").on(t.restaurantId, t.settlementExternalId),
+    index("merchant_payout_lines_batch_idx").on(t.batchId),
+  ],
+);
+
+/** Durable intent for a future payout processor. No processor is wired yet. */
+export const merchantPayoutOutbox = pgTable(
+  "merchant_payout_outbox",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "restrict" }),
+    batchId: uuid("batch_id").notNull().references(() => merchantPayoutBatches.id, { onDelete: "restrict" }),
+    eventId: text("event_id").notNull().unique(),
+    jobType: text("job_type").notNull(),
+    status: text("status").notNull().default("PENDING"),
+    attempts: integer("attempts").notNull().default(0),
+    nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }),
+    lockedAt: timestamp("locked_at", { withTimezone: true }),
+    lastError: text("last_error"),
+    payload: jsonb("payload").$type<Record<string, unknown>>().notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_payout_outbox_status_attempt_idx").on(t.status, t.nextAttemptAt),
+    index("merchant_payout_outbox_batch_idx").on(t.batchId),
+  ],
+);
+
+/** Append-only history for every payout state change; no UPDATE surface exists. */
+export const merchantPayoutEvents = pgTable(
+  "merchant_payout_events",
+  {
+    id: serial("id").primaryKey(),
+    restaurantId: integer("restaurant_id").notNull().references(() => restaurants.id, { onDelete: "restrict" }),
+    batchId: uuid("batch_id").references(() => merchantPayoutBatches.id, { onDelete: "restrict" }),
+    eventType: text("event_type").notNull(),
+    detail: jsonb("detail").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [
+    index("merchant_payout_events_restaurant_idx").on(t.restaurantId, t.createdAt),
+    index("merchant_payout_events_batch_idx").on(t.batchId),
+  ],
+);
+
 export type MerchantOrderEventRow = typeof merchantOrderEvents.$inferSelect;
 export type MerchantLinkCodeRow = typeof merchantLinkCodes.$inferSelect;
 export type MerchantAppLinkRow = typeof merchantAppLinks.$inferSelect;
 export type MerchantPayoutAccountRow = typeof merchantPayoutAccounts.$inferSelect;
+export type MerchantPayoutSettingsRow = typeof merchantPayoutSettings.$inferSelect;
+export type MerchantPayoutBatchRow = typeof merchantPayoutBatches.$inferSelect;
+export type MerchantPayoutBatchLineRow = typeof merchantPayoutBatchLines.$inferSelect;
 
 /**
  * Idempotency ledger for paired Merchant App full-menu replacements.

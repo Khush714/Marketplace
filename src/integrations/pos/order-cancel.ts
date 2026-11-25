@@ -31,7 +31,10 @@ export type CustomerCancelOutcome =
 
 const CANCEL_REASON = "CUSTOMER_REQUEST";
 
-export async function requestCustomerCancellation(code: string): Promise<CustomerCancelOutcome> {
+export async function requestCustomerCancellation(
+  code: string,
+  reason = "other",
+): Promise<CustomerCancelOutcome> {
   const ctx = await loadOrderCancelContext(code);
   if (!ctx) {
     return { kind: "error", ok: false, code: "ORDER_NOT_FOUND", currentStatus: null, reason: "Order not found" };
@@ -78,7 +81,7 @@ export async function requestCustomerCancellation(code: string): Promise<Custome
     event: "order.cancelled",
     external_order_id: ctx.externalOrderId,
     restaurant_id: ctx.marketplaceId,
-    reason: CANCEL_REASON,
+    reason: reason === "other" ? CANCEL_REASON : `CUSTOMER_${reason.toUpperCase()}`,
     requested_at: new Date().toISOString(),
   };
   const rawBody = JSON.stringify(payload);

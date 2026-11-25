@@ -31,14 +31,16 @@ test("a public review inherits the feedback DTO and nothing else", () => {
     feedbackAt: new Date("2026-11-19T10:00:00.000Z"),
     merchantResponse: "Thank you!",
     merchantRespondedAt: new Date("2026-11-19T11:00:00.000Z"),
+    reviewPhotoIds: [12, 13],
   });
 
   assert.deepEqual(Object.keys(dto).sort(), [
-    "feedbackAt", "merchantRespondedAt", "merchantResponse", "rating", "review",
+    "feedbackAt", "merchantRespondedAt", "merchantResponse", "photoUrls", "rating", "review",
   ]);
   assert.equal(dto.rating, 4);
   assert.equal(dto.feedbackAt, "2026-11-19T10:00:00.000Z");
   assert.equal(dto.merchantRespondedAt, "2026-11-19T11:00:00.000Z");
+  assert.deepEqual(dto.photoUrls, ["/api/media/12", "/api/media/13"]);
 });
 
 test("a page size is bounded and bad input falls back to the default", () => {

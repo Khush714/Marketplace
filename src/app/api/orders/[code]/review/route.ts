@@ -1,6 +1,8 @@
+import { getReviewAssetIds } from "@/db/media";
 import { submitOrderFeedback } from "@/db/order-feedback";
 import { getOrderByCode } from "@/db/queries";
 import { guardWrite, readJsonBody } from "@/lib/abuse";
+import { parsePhotoIds } from "@/lib/media-core";
 import { parseReviewInput } from "@/lib/order-feedback";
 import { orderAuthorized } from "@/lib/order-authorized";
 
@@ -23,9 +25,10 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
 
   const parsed = await readJsonBody(req);
   if (!parsed.ok) return parsed.response;
-  const input = parsed.body && typeof parsed.body === "object" && !Array.isArray(parsed.body)
-    ? parseReviewInput(parsed.body as Record<string, unknown>)
-    : null;
+  const body = parsed.body && typeof parsed.body === "object" && !Array.isArray(parsed.body)
+    ? (parsed.body as Record<string, unknown>)
+    : {};
+  const input = parseReviewInput(body);
   if (!input) {
     return Response.json({ ok: false, error: "Choose a rating between 1 and 5 stars." }, { status: 400 });
   }
@@ -41,7 +44,14 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     );
   }
 
-  const result = await submitOrderFeedback({ code, ...input });
+  // Ids are only accepted when the uploaded row belongs to THIS order and
+  // restaurant; an id from another tenant is silently dropped, not an oracle.
+  const photoIds = await getReviewAssetIds(
+    order.id,
+    order.restaurantId,
+    parsePhotoIds(body.photoIds),
+  );
+  const result = await submitOrderFeedback({ code, ...input, photoIds });
   if (result.kind === "NOT_FOUND") return Response.json({ error: "Not found" }, { status: 404 });
   return Response.json({
     ok: true,

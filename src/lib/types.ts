@@ -199,7 +199,13 @@ export interface OrderDto {
   deliveryFeeCents: number;
   platformFeeCents: number;
   discountCents: number;
+  /** Customer-selected gratuity in integer paise, already included in totalCents. */
+  tipCents: number;
   totalCents: number;
+  /** ISO timestamp for a pre-ordered slot; null for immediate orders. */
+  scheduledFor: string | null;
+  /** Uploaded review photo ids, in display order. */
+  reviewPhotoIds: number[];
   /** Merchant App promo code used for this discount; null for legacy/no offer. */
   offerCode: string | null;
   /** One immutable customer review per delivered order; empty until submitted. */

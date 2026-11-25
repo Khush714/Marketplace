@@ -29,6 +29,7 @@ export async function submitOrderFeedback(input: {
   code: string;
   rating: number;
   review: string;
+  photoIds?: number[];
 }): Promise<SubmitFeedbackResult> {
   const result = await db.transaction(async (tx) => {
     const [current] = await tx.select().from(orders)
@@ -39,7 +40,12 @@ export async function submitOrderFeedback(input: {
     }
 
     const [updated] = await tx.update(orders)
-      .set({ rating: input.rating, review: input.review, feedbackAt: new Date() })
+      .set({
+        rating: input.rating,
+        review: input.review,
+        feedbackAt: new Date(),
+        reviewPhotoIds: input.photoIds ?? [],
+      })
       .where(and(eq(orders.id, current.id), isNull(orders.feedbackAt)))
       .returning();
     if (!updated) {

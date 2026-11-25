@@ -371,6 +371,21 @@ export const ABUSE_BUDGETS = {
    * after a dropped response fit comfortably inside 60.
    */
   notificationWrite: { limit: 60, windowMs: MINUTE_MS },
+
+  /** Account cart sync: one read per page load and a debounced write per cart edit. */
+  cartSync: { limit: 120, windowMs: MINUTE_MS },
+
+  /** Uploaded image bytes: two megabytes each, so the route is charged tightly. */
+  mediaUpload: { limit: 20, windowMs: 10 * MINUTE_MS },
+  mediaRead: { limit: 240, windowMs: MINUTE_MS },
+
+  /** Receipt download and ops audit browsing are cheap bounded reads. */
+  invoiceRead: { limit: 60, windowMs: MINUTE_MS },
+  auditRead: { limit: 120, windowMs: MINUTE_MS },
+
+  /** KDS/print boards poll while a shift is active; partner bulk edits are rare writes. */
+  kdsRead: { limit: 240, windowMs: MINUTE_MS },
+  partnerBulkMenu: { limit: 30, windowMs: 10 * MINUTE_MS },
 } as const satisfies Record<string, AbuseBudget>;
 
 export type AbuseScope = keyof typeof ABUSE_BUDGETS;

@@ -1,3 +1,4 @@
+import { isLocalMediaUrl } from "./media-core";
 import { validateImageUrl } from "./image-policy";
 
 /* ------------------------------- formatting ------------------------------ */
@@ -173,7 +174,7 @@ export const DEFAULT_DISH_IMAGE =
  * reserved hosts; see that module for the full rationale.
  */
 export function sanitizeImageUrl(raw: unknown, fallback: string): string {
-  return validateImageUrl(raw) ?? fallback;
+  return isLocalMediaUrl(raw) ? (raw as string) : validateImageUrl(raw) ?? fallback;
 }
 
 export const DELIVERY_FREE_ABOVE_CENTS = 49900;

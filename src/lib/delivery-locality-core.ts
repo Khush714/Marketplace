@@ -1,4 +1,5 @@
-import { LOCALITIES, localityByKey } from "@/lib/domain";
+import { mapPoint, type MapPoint } from "@/lib/delivery-address";
+import { LOCALITIES, localityByKey, localityNear } from "@/lib/domain";
 
 /**
  * Delivery-area policy for checkout, kept pure so it can be tested without the
@@ -31,10 +32,29 @@ export function resolveDeliveryLocality(input: {
   /** `?loc=` from the checkout URL, used when the body carries no selection. */
   urlLocalityKey?: unknown;
   addressText?: unknown;
+  /** Optional map pin from the address picker; used only as an admission signal. */
+  deliveryLocation?: unknown;
   restaurantLocality: string;
 }): DeliveryLocalityResult {
   const served = input.restaurantLocality.trim().toLowerCase();
-  const key = knownLocalityKey(input.localityKey) ?? knownLocalityKey(input.urlLocalityKey);
+  const point: MapPoint | undefined = mapPoint(input.deliveryLocation);
+  const nearby = point ? localityNear(point.latitude, point.longitude) : null;
+  const key =
+    knownLocalityKey(input.localityKey) ??
+    knownLocalityKey(input.urlLocalityKey) ??
+    (nearby?.served ? nearby.locality.key : null);
+
+  // A dropped pin is stronger evidence than a typed address: if it is outside
+  // every served area, refuse before an order is written. Legacy address-only
+  // carts (no pin) keep the existing claim-based behaviour. An explicit locality
+  // claim still wins so an older saved address is not broken by a stale pin.
+  if (nearby && !nearby.served && !key) {
+    return {
+      ok: false,
+      code: "OUTSIDE_SERVICE_AREA",
+      error: "This delivery pin is outside our service area.",
+    };
+  }
 
   if (key) {
     const locality = localityByKey(key);

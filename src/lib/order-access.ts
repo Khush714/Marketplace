@@ -48,11 +48,28 @@ export async function fetchOrderByTrackingToken(trackingToken: string): Promise<
  * web storage and none in the request body. The cookie rides the same-origin
  * fetch automatically; no session simply means an empty list.
  */
-export async function fetchSessionOrders(): Promise<PublicOrder[]> {
-  const res = await fetch("/api/orders/history", { cache: "no-store" });
-  if (!res.ok) return [];
-  const data = (await res.json().catch(() => null)) as { orders?: PublicOrder[] } | null;
-  return data?.orders ?? [];
+export async function fetchSessionOrders(query: {
+  offset?: number;
+  limit?: number;
+  status?: string;
+  q?: string;
+  from?: string;
+  to?: string;
+} = {}): Promise<{ orders: PublicOrder[]; nextOffset: number | null }> {
+  const params = new URLSearchParams();
+  if (query.offset) params.set("offset", String(query.offset));
+  if (query.limit) params.set("limit", String(query.limit));
+  if (query.status && query.status !== "all") params.set("status", query.status);
+  if (query.q) params.set("q", query.q);
+  if (query.from) params.set("from", query.from);
+  if (query.to) params.set("to", query.to);
+  const suffix = params.size ? `?${params.toString()}` : "";
+  const res = await fetch(`/api/orders/history${suffix}`, { cache: "no-store" });
+  if (!res.ok) return { orders: [], nextOffset: null };
+  const data = (await res.json().catch(() => null)) as
+    | { orders?: PublicOrder[]; nextOffset?: number | null }
+    | null;
+  return { orders: data?.orders ?? [], nextOffset: data?.nextOffset ?? null };
 }
 
 export type OrderAccess = "loading" | "ready" | "denied";

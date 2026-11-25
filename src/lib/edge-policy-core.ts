@@ -103,7 +103,7 @@ export function contentSecurityPolicy(nodeEnv?: string): string {
     "style-src 'self' 'unsafe-inline'",
     "img-src 'self' data: blob: https:",
     "font-src 'self' data:",
-    "connect-src 'self' https://razorpay.com https://*.razorpay.com",
+    "connect-src 'self' https://razorpay.com https://*.razorpay.com https://nominatim.openstreetmap.org",
     "frame-src 'self' https://checkout.razorpay.com https://api.razorpay.com https://*.razorpay.com",
     "object-src 'none'",
     "base-uri 'self'",

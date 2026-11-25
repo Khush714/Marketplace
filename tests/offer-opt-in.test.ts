@@ -84,9 +84,9 @@ test("checkout whitelist normalises a promo code and rejects malformed ones", ()
 
 test("offer selection reaches billFor through both pricing paths", () => {
   const queries = readSource("src/db/queries.ts");
-  assert.match(queries, /async function computeBill\(\s*restaurantSlug: string,\s*items: CartLineSubmit\[\],\s*applyOffer = false,\s*promoCode\?: string,/);
+  assert.match(queries, /async function computeBill\(\s*restaurantSlug: string,\s*items: CartLineSubmit\[\],\s*applyOffer = false,\s*promoCode\?: string,\s*extras:/);
   assert.match(queries, /billFor\(subtotal, r\.offerPercent, r\.offerMaxCents, applyOffer\)/);
-  assert.match(queries, /computeBill\(\s*input\.restaurantSlug,\s*input\.items,\s*input\.applyOffer === true,\s*input\.promoCode,\s*\)/);
+  assert.match(queries, /computeBill\(\s*input\.restaurantSlug,\s*input\.items,\s*input\.applyOffer === true,\s*input\.promoCode,\s*\{ tipCents:/);
   assert.match(queries, /applyOffer\?: boolean/);
   // A promo is attributed from the server-resolved code, not from the request's
   // discount field, and the same value survives into the customer's order DTO.
@@ -94,7 +94,7 @@ test("offer selection reaches billFor through both pricing paths", () => {
   assert.match(queries, /offerCode: o\.offerCode/);
 
   const preview = readSource("src/app/api/orders/bill/route.ts");
-  assert.match(preview, /computeBill\(\s*restaurantSlug,\s*cart\.items,\s*body\?\.applyOffer === true,\s*promoCode \?\? undefined,\s*\)/);
+  assert.match(preview, /computeBill\(\s*restaurantSlug,\s*cart\.items,\s*body\?\.applyOffer === true,\s*promoCode \?\? undefined,\s*\{ tipCents:/);
 
   const checkout = readSource("src/app/checkout/page.tsx");
   assert.match(checkout, /postBill\(cart\.restaurantSlug, cartPayload, applyOffer, promoCode\)/);

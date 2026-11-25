@@ -109,6 +109,17 @@ test("the payment provider keeps every origin it needs", () => {
   assert.match(frame, /https:\/\/checkout\.razorpay\.com/);
 });
 
+test("the address picker's geocoder keeps its exact origin", () => {
+  // Nominatim is fetched from the browser by the address picker. Pin the full
+  // hostname rather than opening https: (which would also allow exfiltration).
+  const connect = directive(PRODUCTION, "connect-src") ?? "";
+  assert.match(connect, /https:\/\/nominatim\.openstreetmap\.org/);
+  assert.equal(/openstreetmap\.org/.test(connect.replace(/https:\/\/nominatim\.openstreetmap\.org/g, "")), false);
+  // OSM raster tiles are ordinary third-party images, allowed by img-src's
+  // https: rule; they must not be widened into the script/connect allowlists.
+  assert.match(directive(PRODUCTION, "img-src") ?? "", /\bhttps:/);
+});
+
 test("the policy is one header, semicolon-terminated and parseable", () => {
   assert.ok(PRODUCTION.endsWith(";"));
   assert.ok(PRODUCTION.split(";").length >= 10, "every directive must survive the round trip");

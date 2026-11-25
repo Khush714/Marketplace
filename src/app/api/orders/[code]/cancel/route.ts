@@ -1,6 +1,8 @@
 import { cancelMerchantOrderByCode } from "@/db/merchant-orders";
 import { requestCustomerCancellation } from "@/integrations/pos/order-cancel";
-import { guardWrite } from "@/lib/abuse";
+import { guardWrite, readRawBodyCapped } from "@/lib/abuse";
+import { MAX_JSON_BODY_BYTES } from "@/lib/abuse-core";
+import { parseCancelReason } from "@/lib/checkout-extras-core";
 import { orderAuthorized } from "@/lib/order-authorized";
 
 export const dynamic = "force-dynamic";
@@ -27,7 +29,21 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     return Response.json({ ok: false, error: "Not found" }, { status: 404 });
   }
 
-  const merchant = await cancelMerchantOrderByCode(code);
+  // Older clients POST no body; keep that path valid while accepting a bounded
+  // reason from the current UI. An unknown value collapses to `other` server-side.
+  let reason = "other";
+  const raw = await readRawBodyCapped(req, MAX_JSON_BODY_BYTES);
+  if (!raw.ok) return raw.response;
+  if (raw.text.trim()) {
+    try {
+      const body = JSON.parse(raw.text) as { reason?: unknown };
+      reason = parseCancelReason(body?.reason);
+    } catch {
+      return Response.json({ ok: false, error: "Invalid request" }, { status: 400 });
+    }
+  }
+
+  const merchant = await cancelMerchantOrderByCode(code, reason);
   if (merchant.kind !== "NOT_MERCHANT") {
     if (merchant.kind === "NOT_FOUND") {
       return Response.json({ ok: false, cancelled: false, code: "ORDER_NOT_FOUND" }, { status: 404 });
@@ -52,7 +68,7 @@ export async function POST(req: Request, ctx: { params: Promise<{ code: string }
     });
   }
 
-  const outcome = await requestCustomerCancellation(code);
+  const outcome = await requestCustomerCancellation(code, reason);
 
   if (outcome.kind === "cancelled") {
     return Response.json({
